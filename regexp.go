@@ -58,7 +58,13 @@ func (rd *arrayRuneReader) ReadRune() (r rune, size int, err error) {
 	return
 }
 
-// Not goroutine-safe. Use regexpPattern.clone()
+// Not goroutine-safe. Use regexpPattern.clone().
+//
+// A *regexpPattern may also be a process-global template held by the
+// compileRegexp cache (builtin_regexp.go) and shared by every Runtime. The
+// only method that may be called on a template is clone(); in particular
+// createRegexp2 and the find* methods mutate the receiver and must never
+// run on one.
 type regexpPattern struct {
 	src string
 
@@ -194,6 +200,10 @@ func (p *regexpPattern) findAllSubmatchIndex(s String, start int, limit int, sti
 }
 
 // clone creates a copy of the regexpPattern which can be used concurrently.
+//
+// clone returns a pattern that shares the compiled engines with p but has
+// its own mutable match state. It must not mutate p: p may be a cache
+// template read concurrently from other goroutines.
 func (p *regexpPattern) clone() *regexpPattern {
 	ret := &regexpPattern{
 		src:        p.src,
