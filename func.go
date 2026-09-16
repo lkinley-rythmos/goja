@@ -989,6 +989,11 @@ func (g *generatorObject) next(v Value) Value {
 	}
 	if g.delegated != nil {
 		res, done := g.tryCallDelegated(func() (Value, bool) {
+			// yield* forwards the inner iterator's result object verbatim
+			// (GeneratorYield(innerResult)), so its identity and any extra own
+			// properties are observable. This call therefore must not use
+			// iteratorRecord.fast, which exists only for consumers that read
+			// value/done and discard the object.
 			return g.callDelegated(g.delegated.next, v)
 		})
 		if !done {

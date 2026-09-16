@@ -862,7 +862,9 @@ func (o *Object) GetSymbol(sym *Symbol) Value {
 // (Undefined, true) — an own data property holding undefined — is
 // distinguishable from (nil, false). Exotic objects behave as for
 // Object.getOwnPropertyDescriptor: a Proxy's getOwnPropertyDescriptor trap
-// still runs.
+// still runs. The lookup itself does not allocate for ASCII names on
+// ordinary objects and arrays; non-ASCII names and some exotic objects
+// allocate as Get does.
 // This method will panic with an *Exception if a JavaScript exception is thrown in the process. Use Runtime.Try to catch these.
 func (o *Object) GetOwnDataValue(name string) (v Value, ok bool) {
 	switch p := o.self.getOwnPropStr(unistring.NewFromString(name)).(type) {
