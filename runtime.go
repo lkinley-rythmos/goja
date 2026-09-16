@@ -2738,6 +2738,10 @@ func (r *Runtime) intrinsicIterNexter(iter, nextObj *Object) iterNexter {
 		if nextObj == r.global.arrayIterProtoNext {
 			return it
 		}
+	case *regExpStringIterObject:
+		if nextObj == r.global.regExpStringIterProtoNext {
+			return it
+		}
 	}
 	return nil
 }

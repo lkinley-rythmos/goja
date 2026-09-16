@@ -246,3 +246,45 @@ func TestIteratorFastPathAllocationFree(t *testing.T) {
 func itoa(n int) string {
 	return intToValue(int64(n)).String()
 }
+
+func BenchmarkMatchAllLoop(b *testing.B) {
+	runBench(b, `var s = "ab".repeat(500); var re = /a/g; (function() { var n = 0; for (var m of s.matchAll(re)) n += m[0].length; return n; })`)
+}
+
+func TestRegExpStringIteratorFastPath(t *testing.T) {
+	if !fastPathEngaged(t, New(), `"abc".matchAll(/b/g)`) {
+		t.Fatal("expected fast path for a RegExp String Iterator")
+	}
+	r := New()
+	if _, err := r.RunString(`var __rp = Object.getPrototypeOf("a".matchAll(/a/g)); var __rn = __rp.next; __rp.next = function() { return __rn.call(this); };`); err != nil {
+		t.Fatal(err)
+	}
+	if fastPathEngaged(t, r, `"abc".matchAll(/b/g)`) {
+		t.Fatal("replaced %RegExpStringIteratorPrototype%.next must disable the fast path")
+	}
+	const wrapNext = `var __rp = Object.getPrototypeOf("a".matchAll(/a/g)); var __rn = __rp.next; __rp.next = function() { return __rn.call(this); };`
+	cases := []struct{ name, script, want string }{
+		{"global", `[..."a1b2c3".matchAll(/\d/g)].map(function(m) { return m[0]; }).join("");`, "123"},
+		{"empty matches advance", `[..."ab".matchAll(/(?:)/g)].map(function(m) { return m.index; }).join(",");`, "0,1,2"},
+		{"sticky+global", `[..."aab".matchAll(/a/gy)].map(function(m) { return m.index; }).join(",");`, "0,1"},
+		{"groups preserved", `var out = []; for (var m of "k=v;x=y".matchAll(/(\w)=(\w)/g)) out.push(m[1] + m[2]); out.join("|");`, "kv|xy"},
+		{"direct next()", `var it = "aa".matchAll(/a/g); var r1 = it.next(); var r2 = it.next(); var r3 = it.next(); [r1.value[0], r1.done, r2.done, r3.done, r3.value].join(",");`, "a,false,false,true,"},
+		{"incompatible receiver", `var msg = ""; try { Object.getPrototypeOf("a".matchAll(/a/g)).next.call([][Symbol.iterator]()); } catch (e) { msg = e.constructor.name; } msg;`, "TypeError"},
+	}
+	for _, c := range cases {
+		for _, generic := range []bool{false, true} {
+			r := New()
+			src := c.script
+			if generic {
+				src = wrapNext + src
+			}
+			v, err := r.RunString(src)
+			if err != nil {
+				t.Fatalf("%s (generic=%v): %v", c.name, generic, err)
+			}
+			if got := v.String(); got != c.want {
+				t.Fatalf("%s (generic=%v): got %q, want %q", c.name, generic, got, c.want)
+			}
+		}
+	}
+}

@@ -865,19 +865,22 @@ func regExpExec(r *Object, s String) Value {
 	panic(r.runtime.NewTypeError("no RegExpMatcher internal slot"))
 }
 
-func (ri *regExpStringIterObject) next() (v Value) {
+// nextValue is the body of %RegExpStringIteratorPrototype%.next without the
+// result object: same regExpExec call, same done latch, same lastIndex
+// advance on empty matches.
+func (ri *regExpStringIterObject) nextValue() (Value, bool) {
 	if ri.done {
-		return ri.val.runtime.createIterResultObject(_undefined, true)
+		return _undefined, true
 	}
 
 	match := regExpExec(ri.matcher, ri.s)
 	if IsNull(match) {
 		ri.done = true
-		return ri.val.runtime.createIterResultObject(_undefined, true)
+		return _undefined, true
 	}
 	if !ri.global {
 		ri.done = true
-		return ri.val.runtime.createIterResultObject(match, false)
+		return match, false
 	}
 
 	matchStr := nilSafe(ri.val.runtime.toObject(match).self.getIdx(valueInt(0), nil)).toString()
@@ -885,7 +888,12 @@ func (ri *regExpStringIterObject) next() (v Value) {
 		thisIndex := toLength(ri.matcher.self.getStr("lastIndex", nil))
 		ri.matcher.self.setOwnStr("lastIndex", valueInt(advanceStringIndex64(ri.s, thisIndex, ri.fullUnicode)), true)
 	}
-	return ri.val.runtime.createIterResultObject(match, false)
+	return match, false
+}
+
+func (ri *regExpStringIterObject) next() Value {
+	v, done := ri.nextValue()
+	return ri.val.runtime.createIterResultObject(v, done)
 }
 
 func (r *Runtime) regexpproto_stdSearch(call FunctionCall) Value {
@@ -1297,7 +1305,9 @@ func (r *Runtime) regExpStringIteratorProto_next(call FunctionCall) Value {
 func (r *Runtime) createRegExpStringIteratorPrototype(val *Object) objectImpl {
 	o := newBaseObjectObj(val, r.getIteratorPrototype(), classObject)
 
-	o._putProp("next", r.newNativeFunc(r.regExpStringIteratorProto_next, "next", 0), true, false, true)
+	next := r.newNativeFunc(r.regExpStringIteratorProto_next, "next", 0)
+	r.global.regExpStringIterProtoNext = next
+	o._putProp("next", next, true, false, true)
 	o._putSym(SymToStringTag, valueProp(asciiString(classRegExpStringIterator), false, false, true))
 
 	return o
