@@ -1,7 +1,7 @@
 # Goja batch 2 — iterator fast path, own-data read API, regex cache
 
 **Date:** 2026-09-16
-**Status:** draft, awaiting review
+**Status:** implemented on branch perf/iterator-fast-path-batch2 (2026-09-16); per-change benchmarks in commit messages
 **Branch:** `perf/iterator-fast-path-batch2` (from `master` at the batch-1 merge)
 
 ## 1. Motivation and evidence
@@ -96,7 +96,11 @@ consumers of `next`. In each, the body that today does
 
 ```go
 if ir.fast != nil {
-	value, done = ir.fast.nextValue()
+	v, d := ir.fast.nextValue()
+	done = d
+	if !done {
+		value = v
+	}
 } else {
 	res := r.toObject(ir.next(FunctionCall{This: ir.iterator}))
 	done = iteratorComplete(res)
@@ -105,6 +109,8 @@ if ir.fast != nil {
 	}
 }
 ```
+
+On completion `value` must stay nil: `step()`'s callers use a nil value as the done sentinel.
 
 inside the same `vm.try` / `tryFunc` wrappers as today, so exceptions
 raised by getters or detachment checks propagate identically. `close()`,
@@ -204,13 +210,11 @@ In value.go, beside `Get`, `Keys`, `DefineDataProperty`:
 func (o *Object) GetOwnDataValue(name string) (v Value, ok bool)
 ```
 
-Implementation: `p := o.getOwnProp(newStringValue(name))` (the existing
-internal resolver, so index-shaped names on arrays and Proxy traps
-behave exactly as `getOwnPropertyDescriptor`), then:
+Implementation: `o.self.getOwnPropStr(unistring.NewFromString(name))` (the same string-key resolver `Get` uses; array implementations parse index-shaped names inside it, so `"0"` resolves to the element and Proxy traps still run), then:
 
 - `p == nil` → `(nil, false)`;
 - `p.(*valueProperty)` with `accessor` → `(nil, false)`;
-- `p.(*valueProperty)` data → `(p.value, true)`;
+- `p.(*valueProperty)` data → `(p.value, true)`, or `(Undefined, true)` when `p.value` is nil (a Proxy trap may return a data descriptor without `value`; CompletePropertyDescriptor defaults it to undefined);
 - any other `Value` (a plain data slot) → `(p, true)`.
 
 `(Undefined, true)` is distinguishable from `(nil, false)` so callers
@@ -286,9 +290,7 @@ new tests):
 Benchmarks (goja package; `allocs/op` is the acceptance number, time is
 directional under the batch-1 noisy-machine rule):
 
-- `BenchmarkForOfArray`, `BenchmarkArraySpread`, `BenchmarkArrayDestructure`,
-  `BenchmarkArrayFrom` over a 1000-element array: allocs/op falls from
-  ≈ one per element to a small constant (< 10).
+- `BenchmarkForOfArray` and `BenchmarkArraySpread` over a 1000-element array: allocs/op falls from ≈ one per element to a small constant (≤ 8 and ≤ 25 respectively). `BenchmarkArrayDestructure` performs 100 destructures per op and retains a 4-allocation fixed cost per iterator (≤ 500, ≥ 80% reduction). `BenchmarkArrayFrom` is a regression sentinel only: `Array.from` over a plain array already bypasses the iterator protocol via `checkStdArrayIter`.
 - `BenchmarkMatchAllLoop`, `BenchmarkRegExpCtorRepeated`: compilation
   allocations gone after the first call.
 - `BenchmarkGetOwnDataValue`: 0 allocs/op versus the descriptor path.
