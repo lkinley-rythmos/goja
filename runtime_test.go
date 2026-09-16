@@ -3317,3 +3317,36 @@ func TestLeaveDropsOversizedValueStack(t *testing.T) {
 		t.Fatalf("expected oversized value stack to be dropped again, cap=%d", c)
 	}
 }
+
+func TestWrapReflectFuncVariadicArity(t *testing.T) {
+	r := New()
+	r.Set("count", func(sep string, parts ...string) int {
+		return len(parts)
+	})
+	r.Set("fixed", func(a int, b int) int {
+		return a*10 + b
+	})
+	r.testScript(`
+		var res = [];
+		res.push(count("-"));              // 0 variadic
+		res.push(count("-", "a"));         // 1
+		res.push(count("-", "a", "b", "c"));// 3
+		res.push(fixed(1, 2));             // 12
+		res.push(fixed(1));                // b zero-filled -> 10
+		res.push(fixed(1, 2, 3));          // extra ignored -> 12
+		res.join(",");
+	`, asciiString("0,1,3,12,10,12"), t)
+}
+
+func TestWrapReflectFuncTrailingError(t *testing.T) {
+	r := New()
+	r.Set("ok", func() (int, error) { return 7, nil })
+	r.Set("bad", func() (int, error) { return 0, errors.New("boom") })
+	r.Set("onlyErr", func() error { return errors.New("only") })
+	r.testScript(`
+		var res = [ok()];
+		try { bad(); res.push("no throw"); } catch (e) { res.push(String(e).indexOf("boom") >= 0); }
+		try { onlyErr(); res.push("no throw"); } catch (e) { res.push(String(e).indexOf("only") >= 0); }
+		res.join(",");
+	`, asciiString("7,true,true"), t)
+}

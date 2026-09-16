@@ -1985,43 +1985,51 @@ func (r *Runtime) toValue(i interface{}, origValue reflect.Value) Value {
 }
 
 func (r *Runtime) wrapReflectFunc(value reflect.Value) func(FunctionCall) Value {
+	// Everything derived from the function's static type is computed once
+	// here rather than on every call.
+	typ := value.Type()
+	nargs := typ.NumIn()
+	isVariadic := typ.IsVariadic()
+	inTypes := make([]reflect.Type, nargs)
+	for i := range inTypes {
+		inTypes[i] = typ.In(i)
+	}
+	if isVariadic {
+		inTypes[nargs-1] = inTypes[nargs-1].Elem()
+	}
+	numOut := typ.NumOut()
+	lastOutIsError := numOut > 0 && typ.Out(numOut-1) == reflectTypeError
+
 	return func(call FunctionCall) Value {
-		typ := value.Type()
-		nargs := typ.NumIn()
 		var in []reflect.Value
 
 		if l := len(call.Arguments); l < nargs {
 			// fill missing arguments with zero values
 			n := nargs
-			if typ.IsVariadic() {
+			if isVariadic {
 				n--
 			}
 			in = make([]reflect.Value, n)
 			for i := l; i < n; i++ {
-				in[i] = reflect.Zero(typ.In(i))
+				in[i] = reflect.Zero(inTypes[i])
 			}
 		} else {
-			if l > nargs && !typ.IsVariadic() {
+			if l > nargs && !isVariadic {
 				l = nargs
 			}
 			in = make([]reflect.Value, l)
 		}
 
 		for i, a := range call.Arguments {
-			var t reflect.Type
-
 			n := i
-			if n >= nargs-1 && typ.IsVariadic() {
+			if n >= nargs-1 && isVariadic {
 				if n > nargs-1 {
 					n = nargs - 1
 				}
-
-				t = typ.In(n).Elem()
 			} else if n > nargs-1 { // ignore extra arguments
 				break
-			} else {
-				t = typ.In(n)
 			}
+			t := inTypes[n]
 
 			v := reflect.New(t).Elem()
 			err := r.toReflectValue(a, v, &objectExportCtx{})
@@ -2036,8 +2044,8 @@ func (r *Runtime) wrapReflectFunc(value reflect.Value) func(FunctionCall) Value 
 			return _undefined
 		}
 
-		if last := out[len(out)-1]; last.Type() == reflectTypeError {
-			if !last.IsNil() {
+		if lastOutIsError {
+			if last := out[len(out)-1]; !last.IsNil() {
 				err := last.Interface().(error)
 				if _, ok := err.(*Exception); ok {
 					panic(err)
