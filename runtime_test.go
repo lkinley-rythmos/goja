@@ -3266,3 +3266,54 @@ func BenchmarkNew(b *testing.B) {
 		New()
 	}
 }
+
+func TestCallableRetainsValueStack(t *testing.T) {
+	r := New()
+	if _, err := r.RunString(`function f() { return 1; }`); err != nil {
+		t.Fatal(err)
+	}
+	f, ok := AssertFunction(r.Get("f"))
+	if !ok {
+		t.Fatal("f is not a function")
+	}
+	call := func() {
+		if _, err := f(_undefined); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 10; i++ {
+		call()
+	}
+	if cap(r.vm.stack) == 0 {
+		t.Fatal("value stack was not retained after returning to Go")
+	}
+	if allocs := testing.AllocsPerRun(200, call); allocs != 0 {
+		t.Fatalf("expected 0 allocs per Go->JS call, got %v", allocs)
+	}
+}
+
+func TestLeaveDropsOversizedValueStack(t *testing.T) {
+	r := New()
+	const n = maxRetainedStackCap * 4
+	_, err := r.RunString(`
+		function f() { return arguments.length; }
+		var big = new Array(` + strconv.Itoa(n) + `);
+		f.apply(null, big);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := cap(r.vm.stack); c != 0 {
+		t.Fatalf("expected oversized value stack to be dropped, cap=%d", c)
+	}
+	v, err := r.RunString(`f.apply(null, big)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.ToInteger() != n {
+		t.Fatalf("unexpected result after stack drop: %v", v)
+	}
+	if c := cap(r.vm.stack); c != 0 {
+		t.Fatalf("expected oversized value stack to be dropped again, cap=%d", c)
+	}
+}

@@ -2838,6 +2838,13 @@ func (r *Runtime) getHash() *maphash.Hash {
 	return r.hash
 }
 
+// maxRetainedStackCap is the largest value-stack capacity (in slots) kept
+// alive between top-level calls into the runtime. Below it the backing
+// array is reused, which makes repeated Go->JS calls allocation-free; above
+// it the array is released so a single deep call cannot pin memory for the
+// lifetime of the Runtime.
+const maxRetainedStackCap = 1024
+
 // called when the top level function returns normally (i.e. control is passed outside the Runtime).
 func (r *Runtime) leave() {
 	var jobs []func()
@@ -2848,7 +2855,15 @@ func (r *Runtime) leave() {
 		}
 	}
 	r.jobQueue = nil
-	r.vm.stack = nil
+	if cap(r.vm.stack) > maxRetainedStackCap {
+		r.vm.stack = nil
+		return
+	}
+	// Keep the backing array but drop every reference so nothing on the
+	// stack outlives the call.
+	st := r.vm.stack[:cap(r.vm.stack)]
+	clear(st)
+	r.vm.stack = st[:0]
 }
 
 // called when the top level function returns (i.e. control is passed outside the Runtime) but it was due to an interrupt
