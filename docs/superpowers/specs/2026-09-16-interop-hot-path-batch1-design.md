@@ -33,6 +33,10 @@ Findings that this batch addresses:
 | C | `str.length` on a primitive fetches the runtime string singleton, calls `stringObject.setLength()` which does a **map write** (`string.go:153–159`), then `getStr` attempts an index parse and does a **map read**. | `asciiString.baseObject` 14% of CPU when reading `.length` on Go-struct string fields; `StringLength` bench 29 740 allocs/op. |
 | D | `wrapReflectFunc` (`runtime.go:1987`) re-derives `typ.NumIn()`, `typ.IsVariadic()`, `typ.In(i)`, `typ.Out(n-1) == reflectTypeError` on every call, though all are fixed at wrap time. | `reflect.Value.call` 33%, `wrapReflectFunc.func1` 7.6% flat, `reflect.funcLayout` 6.8% for a `func(int64) int64`. |
 
+Prototype-era numbers; the landed branch's whole-branch benchstat against
+master is recorded in each change's commit message and in the final
+hand-off.
+
 Measured effect of the four prototypes combined (unit tests passing;
 test262 **not** run — see §7):
 
@@ -54,14 +58,17 @@ test262 **not** run — see §7):
 **Current:** `r.vm.stack = nil` after draining the job queue.
 
 **New:** keep the backing array when its capacity is at most
-`maxRetainedStackCap` (a new package constant, 1024 slots = 16 KiB of
+`maxRetainedStackCap` (a new package constant, 8192 slots = 128 KiB of
 interface headers); clear every slot to `nil` so no JS value is kept alive
 across calls; reslice to length 0. Above the threshold drop it as today, so
 a single pathological deep call cannot pin a large array for the runtime's
-lifetime.
+lifetime. `valueStack.expand` doubles capacity as it grows, so a stack
+whose peak use is N slots typically ends up with capacity ~2N; the
+effective retained peak use is therefore about half the constant, i.e.
+~4000 slots.
 
 ```go
-const maxRetainedStackCap = 1024
+const maxRetainedStackCap = 8192
 
 func (r *Runtime) leave() {
 	// ... drain jobQueue unchanged ...
@@ -85,7 +92,7 @@ allocating whenever `idx < cap`. Retaining capacity turns the per-call
 has already been consumed. Clearing slots preserves the current GC
 behaviour (nothing retained between calls). `leaveAbrupt()` is unchanged.
 
-**Memory:** at most 16 KiB retained per `Runtime`. With one runtime per
+**Memory:** at most 128 KiB retained per `Runtime`. With one runtime per
 goroutine or per request this is negligible; with thousands of idle
 runtimes it is still bounded and small.
 
@@ -115,31 +122,44 @@ const (
 )
 
 // ifaceWords mirrors the runtime layout of a non-empty interface value.
-// Holding the two words as uintptr keeps intCache out of the GC root set;
-// the pointees are package-level arrays that are never freed or moved.
 type ifaceWords struct {
 	typ  uintptr
 	data uintptr
 }
 
 var (
+	// intBacking holds one valueInt per cached integer. intToValue hands out
+	// interface values whose data word points into it; it is pointer-free and
+	// package-level, so the GC neither scans nor moves it.
 	intBacking [intCacheLen]valueInt
-	intCache   [intCacheLen]ifaceWords
+	// valueIntItab is the itab word of a Value holding a valueInt, captured
+	// from a real interface value in init.
+	valueIntItab uintptr
 )
 
 func init() {
 	var proto Value = valueInt(0)
-	typ := (*ifaceWords)(unsafe.Pointer(&proto)).typ
-	for i := range intCache {
+	if unsafe.Sizeof(proto) != unsafe.Sizeof(ifaceWords{}) || unsafe.Alignof(proto) != unsafe.Alignof(ifaceWords{}) {
+		panic("goja: unexpected interface value layout")
+	}
+	valueIntItab = (*ifaceWords)(unsafe.Pointer(&proto)).typ
+	for i := range intBacking {
 		intBacking[i] = valueInt(int64(i) + intCacheLo)
-		intCache[i] = ifaceWords{typ: typ, data: uintptr(unsafe.Pointer(&intBacking[i]))}
+	}
+	// Round-trip self-check at both ends of the range: catches a word-order
+	// change in the interface layout that the size/alignment test cannot.
+	for _, n := range [...]int64{intCacheLo, intCacheHi - 1} {
+		if v, ok := intToValue(n).(valueInt); !ok || int64(v) != n {
+			panic("goja: boxed-integer cache self-check failed")
+		}
 	}
 }
 
 // vm.go
 func intToValue(i int64) Value {
 	if i >= intCacheLo && i < intCacheHi {
-		return *(*Value)(unsafe.Pointer(&intCache[i-intCacheLo]))
+		w := ifaceWords{typ: valueIntItab, data: uintptr(unsafe.Pointer(&intBacking[i-intCacheLo]))}
+		return *(*Value)(unsafe.Pointer(&w))
 	}
 	if i >= -maxInt && i <= maxInt {
 		return valueInt(i)
@@ -148,12 +168,19 @@ func intToValue(i int64) Value {
 }
 ```
 
+The cache is just the `intBacking` array plus a single itab word
+(`valueIntItab`); there is no second `[N]ifaceWords` table. `intToValue`
+builds an `ifaceWords{typ: valueIntItab, data: &intBacking[i-intCacheLo]}`
+temporary on the fly and reinterprets it as a `Value` — the temporary is
+pointer-free and never itself stored anywhere the GC would scan it, so
+nothing new becomes visible to the GC on each call.
+
 **Soundness argument (to be kept as a comment in the code):**
 
 - A Go non-empty interface is two machine words: itab pointer, data
   pointer. `valueInt` is not pointer-shaped, so the data word points at
   storage holding the `int64`.
-- Both arrays are package-level; Go's GC is non-moving and never frees
+- `intBacking` is package-level; Go's GC is non-moving and never frees
   globals, so the `data` word is valid for the process lifetime without
   being visible to the GC.
 - The itab for `(Value, valueInt)` is immortal; capturing it once from a
@@ -164,11 +191,18 @@ func intToValue(i int64) Value {
   check and `-race`'s `checkptr` instrumentation are satisfied. The
   repository already uses `unsafe` in `value.go`, `string_unicode.go`, and
   `typedarrays.go`.
+- `init()` performs a size/alignment check against `ifaceWords` and a
+  round-trip self-check (`intToValue` then unbox) at both ends of the
+  cached range, so a future change to Go's interface layout fails loudly
+  at process start instead of corrupting values silently. The
+  ordering constraint this creates — nothing in the package may call
+  `intToValue` from a package-level variable initializer or from an
+  `init()` that runs before this one — is documented on `init()` itself.
 
-**Cost:** ~1.6 MiB of BSS per process (not per runtime): 66 560 × (8 + 16)
-bytes, zero GC scan cost, ~0.2 ms one-time `init`. The range is a tuning
-constant; the plan includes re-measuring `[-1024, 8192)` as a smaller
-fallback if the footprint is judged too large.
+**Cost:** ~520 KiB of BSS per process (not per runtime): 66 560 × 8 bytes
+for `intBacking`, zero GC scan cost, ~0.2 ms one-time `init`. The range is
+a tuning constant; the plan includes re-measuring `[-1024, 8192)` as a
+smaller fallback if the footprint is judged too large.
 
 **Semantics:** none. `intToValue` returns the same `valueInt` values; only
 their boxing differs. `valueInt` values are compared by value everywhere
@@ -289,11 +323,11 @@ Per change, in goja's own test files (not the throwaway suite):
 
 ## 7. Risks and prerequisites
 
-1. **test262 has not been run.** `testdata/test262` is absent locally, so
-   the tc39 suite skipped during prototyping; CI runs it via
-   `.tc39_test262_checkout.sh`. Running it locally before the first commit
-   is a hard prerequisite — changes B and C touch value and property
-   semantics at the edges.
+1. **test262 was run.** `testdata/test262` was absent during prototyping,
+   so the tc39 suite was skipped then. It was checked out locally via
+   `.tc39_test262_checkout.sh`, and the full suite (including `TestTC39`)
+   passed on every commit of the branch — changes B and C touch value and
+   property semantics at the edges.
 2. **`unsafe` in change B.** Contained to ~20 lines with a written
    soundness argument; must be reviewed by someone comfortable with Go's
    interface layout. If the reviewer rejects it, the fallback is a plain
@@ -302,7 +336,7 @@ Per change, in goja's own test files (not the throwaway suite):
 3. **Measurement noise.** The prototyping machine throttles; the plan's
    acceptance criteria use interleaved runs and both min and median. A
    quieter machine should be used for the final numbers.
-4. **Static footprint of change B** (~1.6 MiB/process) may matter for
+4. **Static footprint of change B** (~0.5 MiB/process) may matter for
    very small deployments; it is a two-constant tuning knob.
 
 ## 8. Sequencing
