@@ -1,7 +1,7 @@
 # Goja embedded-interop hot path — batch 1 design
 
 **Date:** 2026-09-16
-**Status:** draft, awaiting review
+**Status:** implemented on branch perf/interop-hot-path-batch1 (2026-09-16); see commit messages for per-change benchmarks
 **Scope:** four self-contained runtime changes that reduce per-call cost and
 allocation volume when goja is embedded in a Go service that makes many
 Go→JS and JS→Go calls. Each change is independently landable and
