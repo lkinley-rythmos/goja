@@ -1,6 +1,8 @@
 package goja
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 )
 
@@ -1055,4 +1057,188 @@ func BenchmarkRegexpSingleExec(b *testing.B) {
 		f("(?=)test", "aaaaaaaaaaaaaaaaaaaaaaaaa testing 😀", b)
 	})
 
+}
+
+func BenchmarkRegExpCtorRepeated(b *testing.B) {
+	r := New()
+	v, err := r.RunString(`(function() { var n = 0; for (var i = 0; i < 100; i++) { if (new RegExp("a+b", "g").test("aab")) n++; } return n; })`)
+	if err != nil {
+		b.Fatal(err)
+	}
+	f, _ := AssertFunction(v)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := f(nil); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func resetRegexpCache() {
+	regexpCache.Lock()
+	regexpCache.m = make(map[regexpCacheKey]*regexpPattern)
+	regexpCache.Unlock()
+}
+
+func regexpCacheLen() int {
+	regexpCache.Lock()
+	defer regexpCache.Unlock()
+	return len(regexpCache.m)
+}
+
+func TestRegexpCacheReturnsIndependentClones(t *testing.T) {
+	resetRegexpCache()
+	p1, err := compileRegexp("a(b)", "g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p2, err := compileRegexp("a(b)", "g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p1 == p2 {
+		t.Fatal("cache must hand out distinct clones, not the template")
+	}
+	if regexpCacheLen() != 1 {
+		t.Fatalf("cache len = %d, want 1", regexpCacheLen())
+	}
+	// A pattern that requires regexp2 (lookbehind) must share the compiled
+	// engine but not the per-clone match cache.
+	q1, err := compileRegexp("(?<=a)b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	q2, err := compileRegexp("(?<=a)b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q1.regexp2Wrapper == nil || q2.regexp2Wrapper == nil {
+		t.Fatal("expected regexp2 wrappers")
+	}
+	if q1.regexp2Wrapper == q2.regexp2Wrapper {
+		t.Fatal("regexp2 wrapper must be cloned per caller")
+	}
+	if q1.regexp2Wrapper.rx != q2.regexp2Wrapper.rx {
+		t.Fatal("compiled regexp2 engine must be shared")
+	}
+	if q1.regexp2Wrapper.cache != nil {
+		t.Fatal("clone must start with an empty match cache")
+	}
+}
+
+func TestRegexpCacheRuntimeStateIndependent(t *testing.T) {
+	resetRegexpCache()
+	const mk = `var re = new RegExp("a", "g");`
+	r1, r2 := New(), New()
+	v, err := r1.RunString(mk + `re.test("aa"); re.lastIndex`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.ToInteger() != 1 {
+		t.Fatalf("r1 lastIndex = %v, want 1", v)
+	}
+	v, err = r2.RunString(mk + `re.lastIndex`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.ToInteger() != 0 {
+		t.Fatalf("r2 lastIndex = %v, want 0 (state leaked across runtimes)", v)
+	}
+	v, err = r1.RunString(`re.test("aa"); re.lastIndex`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.ToInteger() != 2 {
+		t.Fatalf("r1 second lastIndex = %v, want 2", v)
+	}
+	// matchAll's per-call species clone is the main runtime compile site.
+	v, err = r1.RunString(`var out = []; for (var i = 0; i < 3; i++) { out.push([..."aXa".matchAll(/a/g)].length); } out.join(",")`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.String() != "2,2,2" {
+		t.Fatalf("matchAll results = %v", v)
+	}
+}
+
+func TestRegexpCacheCapResets(t *testing.T) {
+	resetRegexpCache()
+	for i := 0; i < regexpCacheMaxEntries+5; i++ {
+		if _, err := compileRegexp("p"+intToValue(int64(i)).String(), ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := regexpCacheLen(); n == 0 || n > regexpCacheMaxEntries {
+		t.Fatalf("cache len after overflow = %d, want in (0, %d]", n, regexpCacheMaxEntries)
+	}
+	if _, err := compileRegexp("after-reset", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compileRegexp("after-reset", ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRegexpCacheInvalidNotCached(t *testing.T) {
+	resetRegexpCache()
+	if _, err := compileRegexp("(", ""); err == nil {
+		t.Fatal("expected an error for an unterminated group")
+	}
+	if _, err := compileRegexp("(", ""); err == nil {
+		t.Fatal("error must be reported again, not served from cache")
+	}
+	if regexpCacheLen() != 0 {
+		t.Fatalf("invalid pattern was cached")
+	}
+	if _, err := compileRegexp("x", "gg"); err == nil {
+		t.Fatal("expected an error for duplicate flags")
+	}
+	if regexpCacheLen() != 0 {
+		t.Fatalf("invalid flags were cached")
+	}
+}
+
+func TestRegexpCacheConcurrent(t *testing.T) {
+	resetRegexpCache()
+	var wg sync.WaitGroup
+	errs := make(chan error, 8)
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r := New()
+			for i := 0; i < 100; i++ {
+				v, err := r.RunString(`new RegExp("x+y", "i").test("XXY") && new RegExp("(?<=a)b").test("ab")`)
+				if err != nil {
+					errs <- err
+					return
+				}
+				if !v.ToBoolean() {
+					errs <- fmt.Errorf("unexpected false")
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+}
+
+func TestRegexpCacheHitAllocations(t *testing.T) {
+	resetRegexpCache()
+	if _, err := compileRegexp("warm", "g"); err != nil {
+		t.Fatal(err)
+	}
+	allocs := testing.AllocsPerRun(200, func() {
+		if _, err := compileRegexp("warm", "g"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if allocs > 2 {
+		t.Fatalf("cache hit allocated %v times, want <= 2 (the clone)", allocs)
+	}
 }

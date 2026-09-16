@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"regexp/syntax"
 	"strings"
+	"sync"
 	"unicode/utf16"
 	"unicode/utf8"
 
@@ -185,7 +186,48 @@ func compileRegexpFromValueString(patternStr String, flags string) (*regexpPatte
 	return compileRegexp(escapeInvalidUtf16(patternStr), flags)
 }
 
-func compileRegexp(patternStr, flags string) (p *regexpPattern, err error) {
+type regexpCacheKey struct {
+	src, flags string
+}
+
+// regexpCache holds immutable compiled pattern templates shared by every
+// Runtime in the process. compileRegexp hands out clone()s, never the
+// template itself — exactly what the compiler does for regexp literals —
+// and the underlying *regexp.Regexp and *regexp2.Regexp are safe for
+// concurrent use. Per-object state (lastIndex, the regexp2 match cache)
+// lives on the clone or the regexpObject.
+var regexpCache = struct {
+	sync.Mutex
+	m map[regexpCacheKey]*regexpPattern
+}{m: make(map[regexpCacheKey]*regexpPattern)}
+
+// regexpCacheMaxEntries bounds the cache. Patterns built from user data are
+// unbounded; when the cap is reached the whole map is dropped, which keeps
+// memory at O(cap) with no LRU bookkeeping.
+const regexpCacheMaxEntries = 1024
+
+func compileRegexp(patternStr, flags string) (*regexpPattern, error) {
+	key := regexpCacheKey{src: patternStr, flags: flags}
+	regexpCache.Lock()
+	template := regexpCache.m[key]
+	regexpCache.Unlock()
+	if template != nil {
+		return template.clone(), nil
+	}
+	template, err := compileRegexpUncached(patternStr, flags)
+	if err != nil {
+		return nil, err
+	}
+	regexpCache.Lock()
+	if len(regexpCache.m) >= regexpCacheMaxEntries {
+		regexpCache.m = make(map[regexpCacheKey]*regexpPattern)
+	}
+	regexpCache.m[key] = template
+	regexpCache.Unlock()
+	return template.clone(), nil
+}
+
+func compileRegexpUncached(patternStr, flags string) (p *regexpPattern, err error) {
 	var global, ignoreCase, multiline, dotAll, sticky, unicode bool
 	var wrapper *regexpWrapper
 	var wrapper2 *regexp2Wrapper
