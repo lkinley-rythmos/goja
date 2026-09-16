@@ -39,15 +39,14 @@ In scope, as four independent commits:
 - **A.** Intrinsic-iterator fast path in `iteratorRecord`, applied to `*arrayIterObject`.
 - **B.** The same fast path applied to `*regExpStringIterObject`.
 - **C.** `func (o *Object) GetOwnDataValue(name string) (Value, bool)` — a non-allocating own data property read.
-- **D.** A bounded, process-global cache of compiled regex patterns in `compileRegexp`.
+- **D.** A bounded, process-global cache of compiled regex patterns in `compileRegexp`, plus `SetRegexpCacheSize(n int)` (0 disables) and `ResetRegexpCache()` as the embedder's escape hatch for process-global state.
 
 Out of scope: map-free arrays/functions; Map/Set/String iterators and
 generators (each is a ~10-line follow-up on the same mechanism, to be
 triggered by a profile that shows them); `regExpExec` match-result
-allocations (8.3% of bytes; next regex candidate); a public knob for
-the regex cache size; any change to `rcx-go-crud` (an app-side patch is
-provided in §8 for the user to apply within their own qualification
-process).
+allocations (8.3% of bytes; next regex candidate); any change to
+`rcx-go-crud` (an app-side patch is provided in §8 for the user to apply
+within their own qualification process).
 
 ## 3. Change A — intrinsic iterator fast path
 
@@ -89,8 +88,12 @@ must keep taking the generic path and throwing the spec'd TypeError.
 
 ### 3.3 Consumers
 
-`iteratorRecord.step` and `iteratorRecord.iterate` are the only two
-consumers of `next`. In each, the body that today does
+`iteratorRecord.step` and `iteratorRecord.iterate` are the two
+consumers that read `value`/`done` and discard the result object. The
+third reader of `next`, `generatorObject.callDelegated` (`yield*`),
+forwards the inner result object verbatim per GeneratorYield(innerResult)
+and therefore deliberately does not use `fast`. In each, the body that
+today does
 `res := r.toObject(ir.next(FunctionCall{This: ir.iterator}))`, then
 `iteratorComplete(res)` / `iteratorValue(res)`, becomes:
 
@@ -217,6 +220,10 @@ Implementation: `o.self.getOwnPropStr(unistring.NewFromString(name))` (the same 
 - `p.(*valueProperty)` data → `(p.value, true)`, or `(Undefined, true)` when `p.value` is nil (a Proxy trap may return a data descriptor without `value`; CompletePropertyDescriptor defaults it to undefined);
 - any other `Value` (a plain data slot) → `(p, true)`.
 
+The lookup is allocation-free for ASCII names on ordinary objects and
+arrays; non-ASCII names and some exotic objects (e.g. typed-array
+indices) allocate, as `Get` does.
+
 `(Undefined, true)` is distinguishable from `(nil, false)` so callers
 can tell "own data property holding undefined" from "absent".
 
@@ -248,11 +255,14 @@ const regexpCacheMaxEntries = 1024
   `escapeInvalidUtf16` on the runtime path) and the raw flags string;
   differently ordered flags simply miss.
 
+Embedders can bound or disable the cache with `SetRegexpCacheSize` and
+drop it with `ResetRegexpCache`.
+
 Soundness: the template is never handed out; every caller receives a
 `clone()`, exactly as the literal path already does per `Program`.
 `clone()` shares the compiled `*regexp.Regexp` (goroutine-safe by Go's
 contract) and `*regexp2.Regexp` (documented safe for concurrent use;
-runners are pooled under its own mutex) and gives the clone a fresh nil
+runners are pooled via sync.Pool) and gives the clone a fresh nil
 match cache. Goja already depends on this sharing whenever one `Program`
 runs in several `Runtime`s on different goroutines, so no new
 concurrency assumption is introduced. Mutable per-object state
@@ -291,8 +301,12 @@ Benchmarks (goja package; `allocs/op` is the acceptance number, time is
 directional under the batch-1 noisy-machine rule):
 
 - `BenchmarkForOfArray` and `BenchmarkArraySpread` over a 1000-element array: allocs/op falls from ≈ one per element to a small constant (≤ 8 and ≤ 25 respectively). `BenchmarkArrayDestructure` performs 100 destructures per op and retains a 4-allocation fixed cost per iterator (≤ 500, ≥ 80% reduction). `BenchmarkArrayFrom` is a regression sentinel only: `Array.from` over a plain array already bypasses the iterator protocol via `checkStdArrayIter`.
-- `BenchmarkMatchAllLoop`, `BenchmarkRegExpCtorRepeated`: compilation
-  allocations gone after the first call.
+- `BenchmarkRegExpCtorRepeated`: Go-regexp compilation allocations gone
+  after the first call. `BenchmarkMatchAllLoop`: the species-clone
+  compile is served from the cache, but global/sticky patterns still
+  build their regexp2 engine lazily per clone (`findSubmatchIndex` with
+  `start != 0`), leaving ≈2% of its allocations; eager regexp2
+  construction for such templates is a follow-up.
 - `BenchmarkGetOwnDataValue`: 0 allocs/op versus the descriptor path.
 
 Expected figures in the plan are to be measured on this codebase, not
