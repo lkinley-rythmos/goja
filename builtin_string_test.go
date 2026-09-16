@@ -320,3 +320,47 @@ func TestStringSplit(t *testing.T) {
 	`
 	testScriptWithTestLib(SCRIPT, _undefined, t)
 }
+
+func TestStringPrimitiveLength(t *testing.T) {
+	const SCRIPT = `
+	var r = [];
+	r.push("".length);                                  // 0
+	r.push("hello".length);                             // 5
+	r.push("héllo".length);                        // 5 (BMP)
+	r.push("a😀b".length);                    // 4 (astral = 2 code units)
+	r.push(goStr.length);                               // 5 (imported from Go)
+	r.push(new String("abc").length);                   // 3 (wrapper object, generic path)
+	r.push(({get length() { return 42; }}).length);     // 42 (own getter, generic path)
+	r.push([1,2,3].length);                             // 3 (array, generic path)
+	var msg;
+	try { undefined.length; } catch (e) { msg = e.message; }
+	r.push(msg);
+	try { null.length; } catch (e) { msg = e.message; }
+	r.push(msg);                                        // goja reports null as "undefined" here today; keep that
+	r.join("|");
+	`
+	r := New()
+	r.Set("goStr", "héllo")
+	r.testScript(SCRIPT, asciiString("0|5|5|4|5|3|42|3|Cannot read property 'length' of undefined|Cannot read property 'length' of undefined"), t)
+}
+
+func BenchmarkStringPrimitiveLength(b *testing.B) {
+	r := New()
+	v, err := r.RunString(`(function() {
+		var s = "hello world, this is a test string";
+		var n = 0;
+		for (var i = 0; i < 10000; i++) { n += s.length; }
+		return n;
+	})`)
+	if err != nil {
+		b.Fatal(err)
+	}
+	f, _ := AssertFunction(v)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := f(_undefined); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

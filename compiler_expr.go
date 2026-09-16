@@ -909,7 +909,11 @@ func (c *compiler) compileBracketExpression(v *ast.BracketExpression) compiledEx
 func (e *compiledDotExpr) emitGetter(putOnStack bool) {
 	e.left.emitGetter(true)
 	e.addSrcMap()
-	e.c.emit(getProp(e.name))
+	if e.name == "length" {
+		e.c.emit(getLength{})
+	} else {
+		e.c.emit(getProp(e.name))
+	}
 	if !putOnStack {
 		e.c.emit(pop)
 	}

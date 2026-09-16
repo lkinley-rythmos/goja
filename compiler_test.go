@@ -6162,3 +6162,34 @@ func BenchmarkCompile(b *testing.B) {
 		}
 	}
 }
+
+func TestGetLengthEmission(t *testing.T) {
+	count := func(prg *Program) (lengths, getProps int) {
+		for _, ins := range prg.code {
+			switch ins := ins.(type) {
+			case getLength:
+				lengths++
+			case getProp:
+				if unistring.String(ins) == "length" {
+					getProps++
+				}
+			}
+		}
+		return
+	}
+
+	l, g := count(MustCompile("", "s.length", false))
+	if l != 1 || g != 0 {
+		t.Fatalf("plain read: getLength=%d getProp(length)=%d, want 1/0", l, g)
+	}
+
+	l, g = count(MustCompile("", "s.length++", false))
+	if l != 0 || g != 1 {
+		t.Fatalf("update: getLength=%d getProp(length)=%d, want 0/1", l, g)
+	}
+
+	l, g = count(MustCompile("", "var {length} = s", false))
+	if l != 0 || g != 1 {
+		t.Fatalf("destructuring: getLength=%d getProp(length)=%d, want 0/1", l, g)
+	}
+}

@@ -2530,6 +2530,22 @@ func (g getProp) exec(vm *vm) {
 	vm.pc++
 }
 
+// getLength is emitted for the plain read `x.length`. When x is a string
+// primitive it returns the code-unit count directly instead of going
+// through the String wrapper singleton, which costs a map write in
+// stringObject.setLength plus a map read in getStr. Any other receiver
+// takes the generic getProp path unchanged.
+type getLength struct{}
+
+func (getLength) exec(vm *vm) {
+	if s, ok := vm.stack[vm.sp-1].(String); ok {
+		vm.stack[vm.sp-1] = intToValue(int64(s.Length()))
+		vm.pc++
+		return
+	}
+	getProp("length").exec(vm)
+}
+
 type getPropRecv unistring.String
 
 func (g getPropRecv) exec(vm *vm) {
