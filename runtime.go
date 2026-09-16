@@ -2850,8 +2850,11 @@ func (r *Runtime) getHash() *maphash.Hash {
 // alive between top-level calls into the runtime. Below it the backing
 // array is reused, which makes repeated Go->JS calls allocation-free; above
 // it the array is released so a single deep call cannot pin memory for the
-// lifetime of the Runtime.
-const maxRetainedStackCap = 1024
+// lifetime of the Runtime. Note that valueStack.expand doubles capacity
+// as it grows, so a stack whose peak use is N slots typically has
+// capacity ~2N; 8192 slots (128 KiB of interface headers) therefore
+// retains stacks whose peak use is up to ~4000 slots.
+const maxRetainedStackCap = 8192
 
 // called when the top level function returns normally (i.e. control is passed outside the Runtime).
 func (r *Runtime) leave() {
