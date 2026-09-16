@@ -1060,6 +1060,7 @@ func BenchmarkRegexpSingleExec(b *testing.B) {
 }
 
 func BenchmarkRegExpCtorRepeated(b *testing.B) {
+	resetRegexpCache()
 	r := New()
 	v, err := r.RunString(`(function() { var n = 0; for (var i = 0; i < 100; i++) { if (new RegExp("a+b", "g").test("aab")) n++; } return n; })`)
 	if err != nil {
@@ -1076,9 +1077,7 @@ func BenchmarkRegExpCtorRepeated(b *testing.B) {
 }
 
 func resetRegexpCache() {
-	regexpCache.Lock()
-	regexpCache.m = make(map[regexpCacheKey]*regexpPattern)
-	regexpCache.Unlock()
+	SetRegexpCacheSize(regexpCacheMaxEntries)
 }
 
 func regexpCacheLen() int {
@@ -1169,8 +1168,8 @@ func TestRegexpCacheCapResets(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if n := regexpCacheLen(); n == 0 || n > regexpCacheMaxEntries {
-		t.Fatalf("cache len after overflow = %d, want in (0, %d]", n, regexpCacheMaxEntries)
+	if n := regexpCacheLen(); n != 5 {
+		t.Fatalf("cache len after overflow = %d, want 5 (map dropped on the 1025th insert, then 5 inserted)", n)
 	}
 	if _, err := compileRegexp("after-reset", ""); err != nil {
 		t.Fatal(err)
@@ -1240,5 +1239,50 @@ func TestRegexpCacheHitAllocations(t *testing.T) {
 	})
 	if allocs > 2 {
 		t.Fatalf("cache hit allocated %v times, want <= 2 (the clone)", allocs)
+	}
+	if _, err := compileRegexp("(?<=a)b", ""); err != nil {
+		t.Fatal(err)
+	}
+	allocs = testing.AllocsPerRun(200, func() {
+		if _, err := compileRegexp("(?<=a)b", ""); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if allocs > 2 {
+		t.Fatalf("regexp2 cache hit allocated %v times, want <= 2 (pattern + wrapper)", allocs)
+	}
+}
+
+func TestRegexpCacheSizeControl(t *testing.T) {
+	defer resetRegexpCache()
+	SetRegexpCacheSize(0)
+	if _, err := compileRegexp("disabled", ""); err != nil {
+		t.Fatal(err)
+	}
+	if n := regexpCacheLen(); n != 0 {
+		t.Fatalf("cache must stay empty when disabled, len = %d", n)
+	}
+	r := New()
+	if v, err := r.RunString(`new RegExp("a+b", "g").test("aab")`); err != nil || !v.ToBoolean() {
+		t.Fatalf("regexps must still work with the cache disabled: %v %v", v, err)
+	}
+	SetRegexpCacheSize(2)
+	for _, p := range []string{"s1", "s2", "s3"} {
+		if _, err := compileRegexp(p, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := regexpCacheLen(); n != 1 {
+		t.Fatalf("cap 2: expected drop on the 3rd insert leaving 1, got %d", n)
+	}
+	ResetRegexpCache()
+	if n := regexpCacheLen(); n != 0 {
+		t.Fatalf("ResetRegexpCache left %d entries", n)
+	}
+	if _, err := compileRegexp("after", ""); err != nil {
+		t.Fatal(err)
+	}
+	if n := regexpCacheLen(); n != 1 {
+		t.Fatalf("cache must accept entries after reset, len = %d", n)
 	}
 }

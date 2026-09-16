@@ -190,25 +190,49 @@ type regexpCacheKey struct {
 	src, flags string
 }
 
+// regexpCacheMaxEntries is the default bound of the compiled-pattern cache;
+// see SetRegexpCacheSize.
+const regexpCacheMaxEntries = 1024
+
 // regexpCache holds immutable compiled pattern templates shared by every
 // Runtime in the process. compileRegexp hands out clone()s, never the
 // template itself — exactly what the compiler does for regexp literals —
 // and the underlying *regexp.Regexp and *regexp2.Regexp are safe for
 // concurrent use. Per-object state (lastIndex, the regexp2 match cache)
-// lives on the clone or the regexpObject.
+// lives on the clone or the regexpObject. When the cap is reached the whole
+// map is dropped, which keeps memory at O(cap) with no LRU bookkeeping.
 var regexpCache = struct {
 	sync.Mutex
-	m map[regexpCacheKey]*regexpPattern
-}{m: make(map[regexpCacheKey]*regexpPattern)}
+	m   map[regexpCacheKey]*regexpPattern
+	max int
+}{m: make(map[regexpCacheKey]*regexpPattern), max: regexpCacheMaxEntries}
 
-// regexpCacheMaxEntries bounds the cache. Patterns built from user data are
-// unbounded; when the cap is reached the whole map is dropped, which keeps
-// memory at O(cap) with no LRU bookkeeping.
-const regexpCacheMaxEntries = 1024
+// SetRegexpCacheSize sets the maximum number of compiled regular expression
+// patterns retained in the process-wide cache shared by all Runtimes.
+// A value of 0 disables the cache. Any currently cached patterns are
+// discarded. The default is 1024.
+func SetRegexpCacheSize(n int) {
+	if n < 0 {
+		n = 0
+	}
+	regexpCache.Lock()
+	regexpCache.max = n
+	regexpCache.m = make(map[regexpCacheKey]*regexpPattern)
+	regexpCache.Unlock()
+}
+
+// ResetRegexpCache discards all cached compiled regular expression patterns.
+// Patterns held by existing RegExp objects are unaffected.
+func ResetRegexpCache() {
+	regexpCache.Lock()
+	regexpCache.m = make(map[regexpCacheKey]*regexpPattern)
+	regexpCache.Unlock()
+}
 
 func compileRegexp(patternStr, flags string) (*regexpPattern, error) {
 	key := regexpCacheKey{src: patternStr, flags: flags}
 	regexpCache.Lock()
+	max := regexpCache.max
 	template := regexpCache.m[key]
 	regexpCache.Unlock()
 	if template != nil {
@@ -218,8 +242,11 @@ func compileRegexp(patternStr, flags string) (*regexpPattern, error) {
 	if err != nil {
 		return nil, err
 	}
+	if max <= 0 {
+		return template, nil
+	}
 	regexpCache.Lock()
-	if len(regexpCache.m) >= regexpCacheMaxEntries {
+	if len(regexpCache.m) >= max {
 		regexpCache.m = make(map[regexpCacheKey]*regexpPattern)
 	}
 	regexpCache.m[key] = template
