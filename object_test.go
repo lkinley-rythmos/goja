@@ -666,3 +666,105 @@ func BenchmarkAddString(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkGetOwnDataValue(b *testing.B) {
+	r := New()
+	v, err := r.RunString(`({a: 1, b: "two"})`)
+	if err != nil {
+		b.Fatal(err)
+	}
+	o := v.ToObject(r)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, ok := o.GetOwnDataValue("a"); !ok {
+			b.Fatal("missing")
+		}
+	}
+}
+
+// BenchmarkGetOwnPropertyDescriptorValue is the path GetOwnDataValue replaces:
+// calling Object.getOwnPropertyDescriptor from Go and reading .value.
+func BenchmarkGetOwnPropertyDescriptorValue(b *testing.B) {
+	r := New()
+	v, err := r.RunString(`({a: 1, b: "two"})`)
+	if err != nil {
+		b.Fatal(err)
+	}
+	o := v.ToObject(r)
+	desc, ok := AssertFunction(r.Get("Object").ToObject(r).Get("getOwnPropertyDescriptor"))
+	if !ok {
+		b.Fatal("no getOwnPropertyDescriptor")
+	}
+	key := r.ToValue("a")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		d, err := desc(Undefined(), o, key)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if d.ToObject(r).Get("value") == nil {
+			b.Fatal("missing")
+		}
+	}
+}
+
+func TestGetOwnDataValue(t *testing.T) {
+	r := New()
+	v, err := r.RunString(`
+	var o = { a: 1, u: undefined, get g() { return 2; } };
+	Object.defineProperty(o, "h", { value: 3, enumerable: false });
+	var arr = [10, 20];
+	var trapLog = [];
+	var p = new Proxy({ x: 5 }, { getOwnPropertyDescriptor(t, k) { trapLog.push(String(k)); return Reflect.getOwnPropertyDescriptor(t, k); } });
+	({ o: o, arr: arr, p: p, trapLog: trapLog });
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := v.ToObject(r)
+	o := root.Get("o").ToObject(r)
+	arr := root.Get("arr").ToObject(r)
+	p := root.Get("p").ToObject(r)
+
+	check := func(obj *Object, name string, wantOK bool, want Value) {
+		t.Helper()
+		got, ok := obj.GetOwnDataValue(name)
+		if ok != wantOK {
+			t.Fatalf("%s: ok = %v, want %v", name, ok, wantOK)
+		}
+		if !wantOK {
+			if got != nil {
+				t.Fatalf("%s: value must be nil when ok is false, got %v", name, got)
+			}
+			return
+		}
+		if !got.StrictEquals(want) {
+			t.Fatalf("%s: got %v, want %v", name, got, want)
+		}
+	}
+	check(o, "a", true, intToValue(1))
+	check(o, "u", true, _undefined)
+	check(o, "g", false, nil)
+	check(o, "h", true, intToValue(3))
+	check(o, "missing", false, nil)
+	check(o, "toString", false, nil) // inherited, not own
+	check(arr, "0", true, intToValue(10))
+	check(arr, "1", true, intToValue(20))
+	check(arr, "2", false, nil)
+	check(arr, "length", true, intToValue(2))
+	check(p, "x", true, intToValue(5))
+	check(p, "y", false, nil)
+	if log := root.Get("trapLog").ToObject(r); log.Get("length").ToInteger() != 2 || log.Get("0").String() != "x" || log.Get("1").String() != "y" {
+		t.Fatalf("proxy trap must run for each lookup, got %v", log.Export())
+	}
+
+	goObj := r.ToValue(struct{ A int }{7}).ToObject(r)
+	check(goObj, "A", true, intToValue(7))
+	check(goObj, "B", false, nil)
+
+	if allocs := testing.AllocsPerRun(1000, func() { o.GetOwnDataValue("a") }); allocs != 0 {
+		t.Fatalf("GetOwnDataValue allocated %v times per call, want 0", allocs)
+	}
+}

@@ -856,6 +856,28 @@ func (o *Object) GetSymbol(sym *Symbol) Value {
 	return o.self.getSym(sym, nil)
 }
 
+// GetOwnDataValue returns the value of the object's own data property name
+// without invoking accessors and without allocating a property descriptor.
+// ok is false when the property is absent or is an accessor property, so
+// (Undefined, true) — an own data property holding undefined — is
+// distinguishable from (nil, false). Exotic objects behave as for
+// Object.getOwnPropertyDescriptor: a Proxy's getOwnPropertyDescriptor trap
+// still runs.
+// This method will panic with an *Exception if a JavaScript exception is thrown in the process. Use Runtime.Try to catch these.
+func (o *Object) GetOwnDataValue(name string) (v Value, ok bool) {
+	switch p := o.self.getOwnPropStr(unistring.NewFromString(name)).(type) {
+	case nil:
+		return nil, false
+	case *valueProperty:
+		if p.accessor {
+			return nil, false
+		}
+		return p.value, true
+	default:
+		return p, true
+	}
+}
+
 // Keys returns a list of Object's enumerable keys.
 // This method will panic with an *Exception if a JavaScript exception is thrown in the process. Use Runtime.Try to catch these.
 func (o *Object) Keys() (keys []string) {
