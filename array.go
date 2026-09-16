@@ -17,9 +17,12 @@ type arrayIterObject struct {
 	kind    iterationKind
 }
 
-func (ai *arrayIterObject) next() Value {
+// nextValue is the body of %ArrayIteratorPrototype%.next without the result
+// object: same reads (length, element), same order, same state transitions.
+// iteratorRecord calls it directly when the intrinsic next is in effect.
+func (ai *arrayIterObject) nextValue() (Value, bool) {
 	if ai.obj == nil {
-		return ai.val.runtime.createIterResultObject(_undefined, true)
+		return _undefined, true
 	}
 	if ta, ok := ai.obj.self.(*typedArrayObject); ok {
 		ta.viewedArrayBuf.ensureNotDetached(true)
@@ -28,21 +31,23 @@ func (ai *arrayIterObject) next() Value {
 	index := ai.nextIdx
 	if index >= l {
 		ai.obj = nil
-		return ai.val.runtime.createIterResultObject(_undefined, true)
+		return _undefined, true
 	}
 	ai.nextIdx++
 	idxVal := valueInt(index)
 	if ai.kind == iterationKindKey {
-		return ai.val.runtime.createIterResultObject(idxVal, false)
+		return idxVal, false
 	}
 	elementValue := nilSafe(ai.obj.self.getIdx(idxVal, nil))
-	var result Value
 	if ai.kind == iterationKindValue {
-		result = elementValue
-	} else {
-		result = ai.val.runtime.newArrayValues([]Value{idxVal, elementValue})
+		return elementValue, false
 	}
-	return ai.val.runtime.createIterResultObject(result, false)
+	return ai.val.runtime.newArrayValues([]Value{idxVal, elementValue}), false
+}
+
+func (ai *arrayIterObject) next() Value {
+	v, done := ai.nextValue()
+	return ai.val.runtime.createIterResultObject(v, done)
 }
 
 func (r *Runtime) createArrayIterator(iterObj *Object, kind iterationKind) Value {

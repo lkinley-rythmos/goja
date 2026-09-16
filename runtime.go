@@ -131,6 +131,11 @@ type global struct {
 	StringIteratorPrototype       *Object
 	RegExpStringIteratorPrototype *Object
 
+	// Intrinsic iterator next functions. iteratorRecord takes its
+	// allocation-free path only when the resolved next is one of these.
+	arrayIterProtoNext        *Object
+	regExpStringIterProtoNext *Object
+
 	ErrorPrototype *Object
 
 	Eval *Object
@@ -2704,9 +2709,37 @@ func (r *Runtime) getV(v Value, p Value) Value {
 	return o.get(p, v)
 }
 
+// iterNexter is implemented by intrinsic iterator objects whose next() can
+// be evaluated in Go without materializing the {value, done} result object.
+// nextValue must perform exactly the observable work of next(): the same
+// reads, in the same order, with the same state transitions. When done is
+// false, value must be non-nil.
+type iterNexter interface {
+	nextValue() (value Value, done bool)
+}
+
 type iteratorRecord struct {
 	iterator *Object
 	next     func(FunctionCall) Value
+	// fast is non-nil only when getIterator verified that next is this
+	// runtime's own intrinsic next for the iterator's concrete type, so
+	// calling nextValue is indistinguishable from calling next.
+	fast iterNexter
+}
+
+// intrinsicIterNexter returns iter's Go-level nexter when nextObj is the
+// runtime's own intrinsic next function for iter's concrete type. Any
+// tampering — a replaced Symbol.iterator, a replaced or shadowed next, an
+// accessor, a user iterator, or an object from another Runtime — fails one
+// of the two checks and yields nil, so the generic protocol is used.
+func (r *Runtime) intrinsicIterNexter(iter, nextObj *Object) iterNexter {
+	switch it := iter.self.(type) {
+	case *arrayIterObject:
+		if nextObj == r.global.arrayIterProtoNext {
+			return it
+		}
+	}
+	return nil
 }
 
 func (r *Runtime) getIterator(obj Value, method func(FunctionCall) Value) *iteratorRecord {
@@ -2722,16 +2755,19 @@ func (r *Runtime) getIterator(obj Value, method func(FunctionCall) Value) *itera
 	}))
 
 	var next func(FunctionCall) Value
+	var fast iterNexter
 
 	if obj, ok := iter.self.getStr("next", nil).(*Object); ok {
 		if call, ok := obj.self.assertCallable(); ok {
 			next = call
+			fast = r.intrinsicIterNexter(iter, obj)
 		}
 	}
 
 	return &iteratorRecord{
 		iterator: iter,
 		next:     next,
+		fast:     fast,
 	}
 }
 
@@ -2749,11 +2785,20 @@ func (ir *iteratorRecord) iterate(step func(Value)) {
 		if ir.next == nil {
 			panic(r.NewTypeError("iterator.next is missing or not a function"))
 		}
-		res := r.toObject(ir.next(FunctionCall{This: ir.iterator}))
-		if iteratorComplete(res) {
-			break
+		var value Value
+		if ir.fast != nil {
+			var done bool
+			value, done = ir.fast.nextValue()
+			if done {
+				break
+			}
+		} else {
+			res := r.toObject(ir.next(FunctionCall{This: ir.iterator}))
+			if iteratorComplete(res) {
+				break
+			}
+			value = iteratorValue(res)
 		}
-		value := iteratorValue(res)
 		ret := tryFunc(func() {
 			step(value)
 		})
@@ -2769,11 +2814,21 @@ func (ir *iteratorRecord) iterate(step func(Value)) {
 func (ir *iteratorRecord) step() (value Value, ex *Exception) {
 	r := ir.iterator.runtime
 	ex = r.vm.try(func() {
-		res := r.toObject(ir.next(FunctionCall{This: ir.iterator}))
-		done := iteratorComplete(res)
-		if !done {
-			value = iteratorValue(res)
+		var done bool
+		if ir.fast != nil {
+			var v Value
+			v, done = ir.fast.nextValue()
+			if !done {
+				value = v
+			}
 		} else {
+			res := r.toObject(ir.next(FunctionCall{This: ir.iterator}))
+			done = iteratorComplete(res)
+			if !done {
+				value = iteratorValue(res)
+			}
+		}
+		if done {
 			ir.close()
 		}
 	})
@@ -2790,11 +2845,13 @@ func (ir *iteratorRecord) returnIter() {
 	}
 	ir.iterator = nil
 	ir.next = nil
+	ir.fast = nil
 }
 
 func (ir *iteratorRecord) close() {
 	ir.iterator = nil
 	ir.next = nil
+	ir.fast = nil
 }
 
 // ForOf is a Go equivalent of for-of loop. The function panics if an exception is thrown at any point
