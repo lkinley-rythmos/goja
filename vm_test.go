@@ -291,7 +291,7 @@ func BenchmarkIntToValue(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		// Straddles 65536, the top of the widened cache, so both the cached
 		// and the boxing path are exercised in equal measure.
-		sink = intToValue(int64(i&0x1ffff) + 65536 - 0x10000)
+		sink = intToValue(int64(i & 0x1ffff))
 	}
 	_ = sink
 }
@@ -321,7 +321,19 @@ func TestIntCacheIdentity(t *testing.T) {
 			t.Fatalf("intToValue(%d) has dynamic type %T, want valueInt", i, v)
 		}
 	}
+
+	for i := int64(intCacheLo); i < intCacheHi; i++ {
+		if got := intToValue(i).ToInteger(); got != i {
+			t.Fatalf("sweep: intToValue(%d).ToInteger() = %d", i, got)
+		}
+	}
 }
+
+// intCacheProbe is deliberately a variable, not a constant: converting a
+// constant valueInt to an interface is folded into a static read-only value
+// by the compiler and would never allocate, which would make the negative
+// assertion below vacuous.
+var intCacheProbe int64 = intCacheHi
 
 func TestIntCacheIsAllocationFree(t *testing.T) {
 	var sink Value
@@ -329,9 +341,22 @@ func TestIntCacheIsAllocationFree(t *testing.T) {
 		for i := int64(intCacheLo); i < intCacheHi; i += 997 {
 			sink = intToValue(i)
 		}
+		sink = intToValue(intCacheLo)
+		sink = intToValue(0)
+		sink = intToValue(255)
+		sink = intToValue(256)
+		sink = intToValue(intCacheHi - 1)
 	})
 	if allocs != 0 {
 		t.Fatalf("expected 0 allocs for cached ints, got %v", allocs)
+	}
+	// A value just outside the range must still box, proving the guard's
+	// upper bound is real.
+	allocs = testing.AllocsPerRun(1000, func() {
+		sink = intToValue(intCacheProbe)
+	})
+	if allocs == 0 {
+		t.Fatalf("expected intToValue(%d) to allocate", intCacheProbe)
 	}
 	_ = sink
 }

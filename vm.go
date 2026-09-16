@@ -392,7 +392,8 @@ type instruction interface {
 
 func intToValue(i int64) Value {
 	if i >= intCacheLo && i < intCacheHi {
-		return *(*Value)(unsafe.Pointer(&intCache[i-intCacheLo]))
+		w := ifaceWords{typ: valueIntItab, data: uintptr(unsafe.Pointer(&intBacking[i-intCacheLo]))}
+		return *(*Value)(unsafe.Pointer(&w))
 	}
 	if i >= -maxInt && i <= maxInt {
 		return valueInt(i)

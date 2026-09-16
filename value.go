@@ -60,20 +60,25 @@ var (
 // Boxed-integer cache.
 //
 // Value is an interface, so converting a valueInt to a Value normally heap
-// allocates. intToValue serves integers in [intCacheLo, intCacheHi) from a
-// prebuilt table instead. The table is deliberately stored as raw interface
-// words (uintptr) over a package-level valueInt array so that it contains no
-// pointers as far as the garbage collector is concerned; a plain [N]Value
-// table of this size was measured to slow allocation-heavy workloads by
-// ~40% purely from the GC scanning it as a root on every cycle.
+// allocates. intToValue serves integers in [intCacheLo, intCacheHi) without
+// allocating: the cache is just the intBacking array plus a single itab
+// word (valueIntItab); intToValue builds the two interface words on the fly
+// as a pointer-free temporary and reinterprets it as a Value, so nothing
+// new is ever visible to the GC. There is no uintptr->unsafe.Pointer
+// conversion anywhere, so vet's unsafeptr check and -race's checkptr are
+// satisfied. Footprint is intCacheLen*8 bytes (~520 KiB) of BSS.
+//
+// A plain [N]Value table (one interface value per cached integer) was
+// tried first and rejected: it was measured to slow allocation-heavy
+// workloads by ~40% purely from the GC scanning it as a root on every
+// cycle. Storing only the pointer-free intBacking array sidesteps that
+// scan entirely.
 //
 // Soundness: a non-empty interface is two words (itab, data). valueInt is
-// not pointer-shaped, so the data word points at storage holding the int64.
-// Both arrays below are package-level: they are never freed and Go's GC
-// does not move them, so the data words stay valid without being visible
-// to the GC. The itab captured in init is immortal. There is no
-// uintptr->unsafe.Pointer conversion anywhere, so vet's unsafeptr check and
-// -race's checkptr are satisfied.
+// not pointer-shaped, so the data word points at storage holding the
+// int64. intBacking is package-level: it is never freed and Go's GC does
+// not move it, so a data word built from it stays valid without being
+// visible to the GC. The itab captured in init is immortal.
 const (
 	intCacheLo  = -1024
 	intCacheHi  = 65536
@@ -87,8 +92,13 @@ type ifaceWords struct {
 }
 
 var (
+	// intBacking holds one valueInt per cached integer. intToValue hands out
+	// interface values whose data word points into it; it is pointer-free and
+	// package-level, so the GC neither scans nor moves it.
 	intBacking [intCacheLen]valueInt
-	intCache   [intCacheLen]ifaceWords
+	// valueIntItab is the itab word of a Value holding a valueInt, captured
+	// from a real interface value in init.
+	valueIntItab uintptr
 )
 
 // Value represents an ECMAScript value.
@@ -1221,11 +1231,23 @@ func typeErrorResult(throw bool, args ...interface{}) {
 
 }
 
+// Nothing in this package may call intToValue from a package-level variable
+// initializer or from an init() that runs before this one: until this init
+// has run, intToValue would return a zero (nil) Value for the cached range.
 func init() {
 	var proto Value = valueInt(0)
-	typ := (*ifaceWords)(unsafe.Pointer(&proto)).typ
-	for i := range intCache {
+	if unsafe.Sizeof(proto) != unsafe.Sizeof(ifaceWords{}) || unsafe.Alignof(proto) != unsafe.Alignof(ifaceWords{}) {
+		panic("goja: unexpected interface value layout")
+	}
+	valueIntItab = (*ifaceWords)(unsafe.Pointer(&proto)).typ
+	for i := range intBacking {
 		intBacking[i] = valueInt(int64(i) + intCacheLo)
-		intCache[i] = ifaceWords{typ: typ, data: uintptr(unsafe.Pointer(&intBacking[i]))}
+	}
+	// Round-trip self-check at both ends of the range: catches a word-order
+	// change in the interface layout that the size/alignment test cannot.
+	for _, n := range [...]int64{intCacheLo, intCacheHi - 1} {
+		if v, ok := intToValue(n).(valueInt); !ok || int64(v) != n {
+			panic("goja: boxed-integer cache self-check failed")
+		}
 	}
 }
