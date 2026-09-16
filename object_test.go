@@ -718,7 +718,8 @@ func TestGetOwnDataValue(t *testing.T) {
 	var arr = [10, 20];
 	var trapLog = [];
 	var p = new Proxy({ x: 5 }, { getOwnPropertyDescriptor(t, k) { trapLog.push(String(k)); return Reflect.getOwnPropertyDescriptor(t, k); } });
-	({ o: o, arr: arr, p: p, trapLog: trapLog });
+	var pNoValue = new Proxy({}, { getOwnPropertyDescriptor(t, k) { return { configurable: true, enumerable: true }; } });
+	({ o: o, arr: arr, p: p, pNoValue: pNoValue, trapLog: trapLog });
 	`)
 	if err != nil {
 		t.Fatal(err)
@@ -759,6 +760,9 @@ func TestGetOwnDataValue(t *testing.T) {
 	if log := root.Get("trapLog").ToObject(r); log.Get("length").ToInteger() != 2 || log.Get("0").String() != "x" || log.Get("1").String() != "y" {
 		t.Fatalf("proxy trap must run for each lookup, got %v", log.Export())
 	}
+
+	pNoValue := root.Get("pNoValue").ToObject(r)
+	check(pNoValue, "x", true, _undefined)
 
 	goObj := r.ToValue(struct{ A int }{7}).ToObject(r)
 	check(goObj, "A", true, intToValue(7))

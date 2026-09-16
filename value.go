@@ -872,6 +872,11 @@ func (o *Object) GetOwnDataValue(name string) (v Value, ok bool) {
 		if p.accessor {
 			return nil, false
 		}
+		if p.value == nil {
+			// A data descriptor supplied by a Proxy trap may omit "value";
+			// CompletePropertyDescriptor defaults it to undefined.
+			return _undefined, true
+		}
 		return p.value, true
 	default:
 		return p, true
