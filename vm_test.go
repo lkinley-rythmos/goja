@@ -284,3 +284,54 @@ func BenchmarkLoadVal(b *testing.B) {
 		_ = ins
 	}
 }
+
+func BenchmarkIntToValue(b *testing.B) {
+	var sink Value
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		// Straddles 65536, the top of the widened cache, so both the cached
+		// and the boxing path are exercised in equal measure.
+		sink = intToValue(int64(i&0x1ffff) + 65536 - 0x10000)
+	}
+	_ = sink
+}
+
+func TestIntCacheIdentity(t *testing.T) {
+	samples := []int64{
+		intCacheLo - 1, intCacheLo, intCacheLo + 1,
+		-256, -1, 0, 1, 255, 256, 1000, 65535,
+		intCacheHi - 1, intCacheHi, intCacheHi + 1,
+		1 << 40, -(1 << 40),
+	}
+	for _, i := range samples {
+		v := intToValue(i)
+		if got := v.ToInteger(); got != i {
+			t.Fatalf("intToValue(%d).ToInteger() = %d", i, got)
+		}
+		if !v.StrictEquals(valueInt(i)) {
+			t.Fatalf("intToValue(%d) !== valueInt(%d)", i, i)
+		}
+		if !v.SameAs(intToValue(i)) {
+			t.Fatalf("intToValue(%d) not SameAs itself", i)
+		}
+		if exp, ok := v.Export().(int64); !ok || exp != i {
+			t.Fatalf("intToValue(%d).Export() = %v (%T)", i, v.Export(), v.Export())
+		}
+		if _, ok := v.(valueInt); !ok {
+			t.Fatalf("intToValue(%d) has dynamic type %T, want valueInt", i, v)
+		}
+	}
+}
+
+func TestIntCacheIsAllocationFree(t *testing.T) {
+	var sink Value
+	allocs := testing.AllocsPerRun(1000, func() {
+		for i := int64(intCacheLo); i < intCacheHi; i += 997 {
+			sink = intToValue(i)
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("expected 0 allocs for cached ints, got %v", allocs)
+	}
+	_ = sink
+}

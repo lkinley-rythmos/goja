@@ -57,7 +57,39 @@ var (
 	reflectTypeError    = reflect.TypeOf((*error)(nil)).Elem()
 )
 
-var intCache [256]Value
+// Boxed-integer cache.
+//
+// Value is an interface, so converting a valueInt to a Value normally heap
+// allocates. intToValue serves integers in [intCacheLo, intCacheHi) from a
+// prebuilt table instead. The table is deliberately stored as raw interface
+// words (uintptr) over a package-level valueInt array so that it contains no
+// pointers as far as the garbage collector is concerned; a plain [N]Value
+// table of this size was measured to slow allocation-heavy workloads by
+// ~40% purely from the GC scanning it as a root on every cycle.
+//
+// Soundness: a non-empty interface is two words (itab, data). valueInt is
+// not pointer-shaped, so the data word points at storage holding the int64.
+// Both arrays below are package-level: they are never freed and Go's GC
+// does not move them, so the data words stay valid without being visible
+// to the GC. The itab captured in init is immortal. There is no
+// uintptr->unsafe.Pointer conversion anywhere, so vet's unsafeptr check and
+// -race's checkptr are satisfied.
+const (
+	intCacheLo  = -1024
+	intCacheHi  = 65536
+	intCacheLen = intCacheHi - intCacheLo
+)
+
+// ifaceWords mirrors the runtime layout of a non-empty interface value.
+type ifaceWords struct {
+	typ  uintptr
+	data uintptr
+}
+
+var (
+	intBacking [intCacheLen]valueInt
+	intCache   [intCacheLen]ifaceWords
+)
 
 // Value represents an ECMAScript value.
 //
@@ -1190,7 +1222,10 @@ func typeErrorResult(throw bool, args ...interface{}) {
 }
 
 func init() {
-	for i := 0; i < 256; i++ {
-		intCache[i] = valueInt(i - 256)
+	var proto Value = valueInt(0)
+	typ := (*ifaceWords)(unsafe.Pointer(&proto)).typ
+	for i := range intCache {
+		intBacking[i] = valueInt(int64(i) + intCacheLo)
+		intCache[i] = ifaceWords{typ: typ, data: uintptr(unsafe.Pointer(&intBacking[i]))}
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/dop251/goja/unistring"
 )
@@ -390,8 +391,8 @@ type instruction interface {
 }
 
 func intToValue(i int64) Value {
-	if idx := 256 + i; idx >= 0 && idx < 256 {
-		return intCache[idx]
+	if i >= intCacheLo && i < intCacheHi {
+		return *(*Value)(unsafe.Pointer(&intCache[i-intCacheLo]))
 	}
 	if i >= -maxInt && i <= maxInt {
 		return valueInt(i)
