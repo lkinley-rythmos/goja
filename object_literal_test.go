@@ -37,19 +37,21 @@ func TestObjectLiteralCharacterization(t *testing.T) {
 // created with room for k, so initialising it neither grows the map nor
 // the key list. Before (e41cf0f): {} = 2 (Object + baseObject);
 // {a,b,c} = 7 (2 + map header + first group + 3 propNames growths);
-// ten keys = 12. After (derived): {} unchanged; {a,b,c} = 5 (2 + header
-// + first group on the first insert + one propNames allocation); ten
-// keys = 7 (2 + the 4 allocations Go makes creating a map hinted above 8 +
-// one propNames allocation).
+// ten keys = 12. After pre-sizing (9686db5, still two allocations per
+// object): {} = 2; {a,b,c} = 5 (2 + header + first group on the first
+// insert + one propNames allocation); ten keys = 7 (2 + the 4 allocations
+// Go makes creating a map hinted above 8 + one propNames allocation).
+// After Task 3 boxes the object and its impl into one allocation, each
+// case measures one fewer: {} = 1; {a,b,c} = 4; ten keys = 6.
 func TestObjectLiteralPresized(t *testing.T) {
 	vm := New()
 	for _, tc := range []struct {
 		src  string
 		want float64
 	}{
-		{"({})", 2},
-		{"({a: 1, b: 2, c: 3})", 5},
-		{"({a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8, i: 9, j: 10})", 7},
+		{"({})", 1},
+		{"({a: 1, b: 2, c: 3})", 4},
+		{"({a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8, i: 9, j: 10})", 6},
 	} {
 		if got := measureProgramAllocs(t, vm, tc.src); got != tc.want {
 			t.Errorf("%s: %v allocations, want %v", tc.src, got, tc.want)

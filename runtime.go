@@ -513,9 +513,28 @@ func newGuardedObj(proto *Object, class string) *guardedObject {
 	}
 }
 
-func (r *Runtime) newBaseObject(proto *Object, class string) (o *baseObject) {
-	v := &Object{runtime: r}
-	return newBaseObjectObj(v, proto, class)
+// baseObjectBox co-allocates an ordinary object's impl with its Object so
+// that creating one costs a single allocation. The impl comes first, so
+// &box.baseObject == &box; either pointer keeps the whole box alive. When
+// an object later swaps its impl (templated materialisation, guarded to
+// base) the box's impl becomes dead weight held by the Object — rare and
+// bounded.
+type baseObjectBox struct {
+	baseObject
+	obj Object
+}
+
+func (r *Runtime) newBaseObject(proto *Object, class string) *baseObject {
+	b := &baseObjectBox{}
+	b.obj.runtime = r
+	o := &b.baseObject
+	o.class = class
+	o.val = &b.obj
+	o.extensible = true
+	o.prototype = proto
+	b.obj.self = o
+	o.init()
+	return o
 }
 
 func (r *Runtime) newGuardedObject(proto *Object, class string) (o *guardedObject) {
