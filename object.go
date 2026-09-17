@@ -1371,18 +1371,20 @@ func (o *baseObject) fixPropOrder() {
 
 func (o *baseObject) stringKeys(all bool, keys []Value) []Value {
 	o.ensurePropOrder()
-	if all {
-		for _, k := range o.propNames {
-			keys = append(keys, stringValueFromRaw(k))
-		}
-	} else {
-		for _, k := range o.propNames {
-			prop := o.values[k]
-			if prop, ok := prop.(*valueProperty); ok && !prop.enumerable {
+	return o.appendStringKeys(all, keys, o.propNames)
+}
+
+// appendStringKeys appends names (a sub-slice of propNames, already in
+// enumeration order) to keys, skipping non-enumerable properties when
+// all is false.
+func (o *baseObject) appendStringKeys(all bool, keys []Value, names []unistring.String) []Value {
+	for _, k := range names {
+		if !all {
+			if prop, ok := o.values[k].(*valueProperty); ok && !prop.enumerable {
 				continue
 			}
-			keys = append(keys, stringValueFromRaw(k))
 		}
+		keys = append(keys, stringValueFromRaw(k))
 	}
 	return keys
 }

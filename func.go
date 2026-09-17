@@ -2,6 +2,7 @@ package goja
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 
 	"github.com/dop251/goja/unistring"
@@ -59,7 +60,12 @@ type funcObjectImpl interface {
 type baseFuncObject struct {
 	baseObject
 
-	lenProp valueProperty
+	lenProp  valueProperty
+	nameProp valueProperty
+	// intrinsicsVirtual is true while length and name live only in the
+	// fields above. The first define or delete of either materializes both
+	// into values/propNames (see materializeIntrinsics) and clears it.
+	intrinsicsVirtual bool
 }
 
 type baseJsFuncObject struct {
@@ -188,12 +194,12 @@ func (f *funcObject) getOwnPropStr(name unistring.String) Value {
 		return v
 	}
 
-	return f.baseObject.getOwnPropStr(name)
+	return f.baseFuncObject.getOwnPropStr(name)
 }
 
 func (f *funcObject) setOwnStr(name unistring.String, val Value, throw bool) bool {
 	f._addProto(name)
-	return f.baseObject.setOwnStr(name, val, throw)
+	return f.baseFuncObject.setOwnStr(name, val, throw)
 }
 
 func (f *funcObject) setForeignStr(name unistring.String, val, receiver Value, throw bool) (bool, bool) {
@@ -202,12 +208,12 @@ func (f *funcObject) setForeignStr(name unistring.String, val, receiver Value, t
 
 func (f *funcObject) defineOwnPropertyStr(name unistring.String, descr PropertyDescriptor, throw bool) bool {
 	f._addProto(name)
-	return f.baseObject.defineOwnPropertyStr(name, descr, throw)
+	return f.baseFuncObject.defineOwnPropertyStr(name, descr, throw)
 }
 
 func (f *funcObject) deleteStr(name unistring.String, throw bool) bool {
 	f._addProto(name)
-	return f.baseObject.deleteStr(name, throw)
+	return f.baseFuncObject.deleteStr(name, throw)
 }
 
 func (f *funcObject) addPrototype() Value {
@@ -217,7 +223,7 @@ func (f *funcObject) addPrototype() Value {
 }
 
 func (f *funcObject) hasOwnPropertyStr(name unistring.String) bool {
-	if f.baseObject.hasOwnPropertyStr(name) {
+	if f.baseFuncObject.hasOwnPropertyStr(name) {
 		return true
 	}
 
@@ -515,9 +521,180 @@ func (f *baseFuncObject) init(name unistring.String, length Value) {
 
 	f.lenProp.configurable = true
 	f.lenProp.value = length
-	f._put("length", &f.lenProp)
 
-	f._putProp("name", stringValueFromRaw(name), false, false, true)
+	f.nameProp.configurable = true
+	f.nameProp.value = stringValueFromRaw(name)
+
+	f.intrinsicsVirtual = true
+}
+
+// materializeIntrinsics moves length and name into the property map, at
+// the front of propNames where init used to put them, so enumeration order
+// is unchanged whether or not the intrinsics were ever materialized.
+func (f *baseFuncObject) materializeIntrinsics() {
+	if !f.intrinsicsVirtual {
+		return
+	}
+	f.intrinsicsVirtual = false
+	f.ensureValues()
+	f.values["length"] = &f.lenProp
+	f.values["name"] = &f.nameProp
+	names := copyNamesIfNeeded(f.propNames, 2)
+	names = append(names, "", "")
+	copy(names[2:], names[:len(names)-2])
+	names[0] = "length"
+	names[1] = "name"
+	f.propNames = names
+	// Integer-like keys must still sort first; force fixPropOrder to
+	// re-scan from the beginning on the next enumeration.
+	f.lastSortedPropLen = 0
+	f.idxPropCount = 0
+}
+
+func (f *baseFuncObject) intrinsicProp(name unistring.String) *valueProperty {
+	if !f.intrinsicsVirtual {
+		return nil
+	}
+	switch name {
+	case "length":
+		return &f.lenProp
+	case "name":
+		return &f.nameProp
+	}
+	return nil
+}
+
+func (f *baseFuncObject) getStr(p unistring.String, receiver Value) Value {
+	return f.getStrWithOwnProp(f.getOwnPropStr(p), p, receiver)
+}
+
+func (f *baseFuncObject) getOwnPropStr(name unistring.String) Value {
+	if p := f.intrinsicProp(name); p != nil {
+		return p
+	}
+	return f.baseObject.getOwnPropStr(name)
+}
+
+func (f *baseFuncObject) hasOwnPropertyStr(name unistring.String) bool {
+	if f.intrinsicProp(name) != nil {
+		return true
+	}
+	return f.baseObject.hasOwnPropertyStr(name)
+}
+
+func (f *baseFuncObject) setOwnStr(name unistring.String, val Value, throw bool) bool {
+	if p := f.intrinsicProp(name); p != nil {
+		if p.accessor {
+			f.materializeIntrinsics()
+			return f.baseObject.setOwnStr(name, val, throw)
+		}
+		f.val.runtime.typeErrorResult(throw, "Cannot assign to read only property '%s'", name)
+		return false
+	}
+	return f.baseObject.setOwnStr(name, val, throw)
+}
+
+func (f *baseFuncObject) setForeignStr(name unistring.String, val, receiver Value, throw bool) (bool, bool) {
+	return f._setForeignStr(name, f.getOwnPropStr(name), val, receiver, throw)
+}
+
+func (f *baseFuncObject) defineOwnPropertyStr(name unistring.String, descr PropertyDescriptor, throw bool) bool {
+	if p := f.intrinsicProp(name); p != nil {
+		v, ok := f._defineOwnProperty(name, p, descr, throw)
+		if !ok {
+			return false
+		}
+		if v == Value(p) {
+			// Updated in place (the SetFunctionName case and every other
+			// descriptor except the all-true data form): still virtual.
+			return true
+		}
+		f.materializeIntrinsics()
+		f.values[name] = v
+		return true
+	}
+	return f.baseObject.defineOwnPropertyStr(name, descr, throw)
+}
+
+func (f *baseFuncObject) deleteStr(name unistring.String, throw bool) bool {
+	if f.intrinsicProp(name) != nil {
+		f.materializeIntrinsics()
+	}
+	return f.baseObject.deleteStr(name, throw)
+}
+
+func (f *baseFuncObject) stringKeys(all bool, accum []Value) []Value {
+	if !f.intrinsicsVirtual {
+		return f.baseObject.stringKeys(all, accum)
+	}
+	// Integer-like keys sort before every other string key, including the
+	// intrinsics; ensurePropOrder leaves them as the first idxPropCount
+	// entries of propNames.
+	f.ensurePropOrder()
+	n := f.idxPropCount
+	accum = f.appendStringKeys(all, accum, f.propNames[:n])
+	// length/name are non-enumerable by default, but an in-place redefine
+	// (e.g. Object.defineProperty(f, "length", {enumerable: true})) can flip
+	// that without materializing; honor it the same way appendStringKeys
+	// honors enumerability for real map entries.
+	if all || f.lenProp.enumerable {
+		accum = append(accum, asciiString("length"))
+	}
+	if all || f.nameProp.enumerable {
+		accum = append(accum, asciiString("name"))
+	}
+	return f.appendStringKeys(all, accum, f.propNames[n:])
+}
+
+// funcIntrinsicsIter yields a virtual function's own string keys in
+// enumeration order: the sorted integer-like keys first, then length and
+// name (with the field pointers, so Object.freeze mutates real storage),
+// then the remaining keys.
+type funcIntrinsicsIter struct {
+	f          *baseFuncObject
+	wrapped    iterNextFunc
+	phase      int
+	pending    propIterItem
+	hasPending bool
+}
+
+func (i *funcIntrinsicsIter) next() (propIterItem, iterNextFunc) {
+	for {
+		switch i.phase {
+		case 0:
+			var item propIterItem
+			item, i.wrapped = i.wrapped()
+			if i.wrapped != nil && strToArrayIdx(item.name.string()) != math.MaxUint32 {
+				return item, i.next
+			}
+			if i.wrapped != nil {
+				i.pending, i.hasPending = item, true
+			}
+			i.phase = 1
+		case 1:
+			i.phase = 2
+			return propIterItem{name: asciiString("length"), value: &i.f.lenProp}, i.next
+		case 2:
+			i.phase = 3
+			return propIterItem{name: asciiString("name"), value: &i.f.nameProp}, i.next
+		default:
+			if i.hasPending {
+				i.hasPending = false
+				return i.pending, i.next
+			}
+			if i.wrapped == nil {
+				return propIterItem{}, nil
+			}
+			return i.wrapped()
+		}
+	}
+}
+
+func (f *baseFuncObject) iterateStringKeys() iterNextFunc {
+	if f.intrinsicsVirtual {
+		return (&funcIntrinsicsIter{f: f, wrapped: f.baseObject.iterateStringKeys()}).next
+	}
+	return f.baseObject.iterateStringKeys()
 }
 
 func hasInstance(val *Object, v Value) bool {

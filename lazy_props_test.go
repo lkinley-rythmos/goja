@@ -1,6 +1,7 @@
 package goja
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/dop251/goja/unistring"
@@ -162,5 +163,132 @@ func TestArrayLengthNotInMap(t *testing.T) {
 		if n == "length" {
 			t.Error("converted dense array has length in propNames")
 		}
+	}
+}
+
+func BenchmarkFunctionCreate(b *testing.B) {
+	runBenchClosure(b, `(function() { var n = 0; for (var i = 0; i < 1000; i++) { var f = function() { return i; }; n += f.length; } return n; })`)
+}
+
+// Object-literal methods get their name via defineOwnPropertyStr right after
+// creation; that path must stay allocation-free for the intrinsics.
+func BenchmarkMethodLiteralCreate(b *testing.B) {
+	runBenchClosure(b, `(function() { var n = 0; for (var i = 0; i < 1000; i++) { var o = { m() { return i; } }; n += o.m.length; } return n; })`)
+}
+
+const funcIntrinsicsGoldenScript = `
+function names(f) { return Object.getOwnPropertyNames(f).join(","); }
+var out = [];
+function decl(a, b) {}
+var expr = function(a) {};
+var arrow = (a, b, c) => 0;
+var obj = { m(a) {}, get g() { return 1; } };
+class K2 { static s(a, b) {} m() {} }
+var bound = decl.bind(null, 1);
+function* gen(a) {}
+async function asy(a, b) {}
+var native = Array.prototype.push;
+var fns = [decl, expr, arrow, obj.m, K2, K2.s, K2.prototype.m, bound, gen, asy, native, Object.getOwnPropertyDescriptor(obj, "g").get];
+for (var i = 0; i < fns.length; i++) {
+	var f = fns[i];
+	out.push(names(f) + ":" + f.name + ":" + f.length + ":" + JSON.stringify(Object.getOwnPropertyDescriptor(f, "name")) + ":" + JSON.stringify(Object.getOwnPropertyDescriptor(f, "length")));
+}
+function p1() {} p1.prototype; p1.u = 1; out.push(names(p1));
+function p2() {} p2.u = 1; p2.prototype; out.push(names(p2));
+function d1() {} out.push(delete d1.name, names(d1), d1.name, Object.prototype.hasOwnProperty.call(d1, "name"));
+function d2() {} Object.defineProperty(d2, "name", { value: "renamed" }); out.push(names(d2), d2.name, JSON.stringify(Object.getOwnPropertyDescriptor(d2, "name")));
+function d3() {} d3.u = 1; Object.defineProperty(d3, "name", { value: "w", writable: true, enumerable: true, configurable: true }); out.push(names(d3), Object.keys(d3).join(","), d3.name);
+function d4() {} d4.name = "x"; out.push(d4.name);
+out.push((function() { "use strict"; function d5() {} try { d5.name = "x"; return "no"; } catch (e) { return e.constructor.name; } })());
+function d6() {} Object.freeze(d6); out.push(Object.isFrozen(d6), JSON.stringify(Object.getOwnPropertyDescriptor(d6, "name")), JSON.stringify(Object.getOwnPropertyDescriptor(d6, "length")));
+class K3 { static name() { return "N"; } } out.push(typeof K3.name, names(K3));
+function d7() {} d7[5] = 1; d7.u = 2; out.push(names(d7));
+function d8() {} Object.defineProperty(d8, "length", { get() { return 42; } }); out.push(d8.length, names(d8));
+function d9() {} out.push(Object.keys(d9).length, JSON.stringify(d9), d9.hasOwnProperty("length"), d9.hasOwnProperty("name"), d9.hasOwnProperty("x"));
+out.join("|");
+`
+
+// Captured from the unmodified engine at 43617bb. Must pass before and after Task 3.
+const funcIntrinsicsGolden = `prototype,length,name:decl:2:{"value":"decl","writable":false,"enumerable":false,"configurable":true}:{"value":2,"writable":false,"enumerable":false,"configurable":true}|prototype,length,name:expr:1:{"value":"expr","writable":false,"enumerable":false,"configurable":true}:{"value":1,"writable":false,"enumerable":false,"configurable":true}|length,name:arrow:3:{"value":"arrow","writable":false,"enumerable":false,"configurable":true}:{"value":3,"writable":false,"enumerable":false,"configurable":true}|length,name:m:1:{"value":"m","writable":false,"enumerable":false,"configurable":true}:{"value":1,"writable":false,"enumerable":false,"configurable":true}|length,name,prototype,s:K2:0:{"value":"K2","writable":false,"enumerable":false,"configurable":true}:{"value":0,"writable":false,"enumerable":false,"configurable":true}|length,name:s:2:{"value":"s","writable":false,"enumerable":false,"configurable":true}:{"value":2,"writable":false,"enumerable":false,"configurable":true}|length,name:m:0:{"value":"m","writable":false,"enumerable":false,"configurable":true}:{"value":0,"writable":false,"enumerable":false,"configurable":true}|length,name:bound decl:1:{"value":"bound decl","writable":false,"enumerable":false,"configurable":true}:{"value":1,"writable":false,"enumerable":false,"configurable":true}|length,name,prototype:gen:1:{"value":"gen","writable":false,"enumerable":false,"configurable":true}:{"value":1,"writable":false,"enumerable":false,"configurable":true}|length,name:asy:2:{"value":"asy","writable":false,"enumerable":false,"configurable":true}:{"value":2,"writable":false,"enumerable":false,"configurable":true}|length,name:push:1:{"value":"push","writable":false,"enumerable":false,"configurable":true}:{"value":1,"writable":false,"enumerable":false,"configurable":true}|length,name:get g:0:{"value":"get g","writable":false,"enumerable":false,"configurable":true}:{"value":0,"writable":false,"enumerable":false,"configurable":true}|length,name,prototype,u|length,name,u,prototype|true|prototype,length||false|prototype,length,name|renamed|{"value":"renamed","writable":false,"enumerable":false,"configurable":true}|prototype,length,name,u|name,u|w|d4|TypeError|true|{"value":"d6","writable":false,"enumerable":false,"configurable":false}|{"value":0,"writable":false,"enumerable":false,"configurable":false}|function|length,name,prototype|prototype,5,length,name,u|42|prototype,length,name|0||true|true|false`
+
+func TestFuncIntrinsicsCharacterization(t *testing.T) {
+	testScript(funcIntrinsicsGoldenScript, asciiString(funcIntrinsicsGolden), t)
+}
+
+func funcImpl(t *testing.T, r *Runtime, src string) *baseFuncObject {
+	t.Helper()
+	v, err := r.RunString(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	switch f := v.(*Object).self.(type) {
+	case *funcObject:
+		return &f.baseFuncObject
+	case *arrowFuncObject:
+		return &f.baseFuncObject
+	case *methodFuncObject:
+		return &f.baseFuncObject
+	case *classFuncObject:
+		return &f.baseFuncObject
+	case *nativeFuncObject:
+		return &f.baseFuncObject
+	case *boundFuncObject:
+		return &f.baseFuncObject
+	case *generatorFuncObject:
+		return &f.baseFuncObject
+	case *asyncFuncObject:
+		return &f.baseFuncObject
+	default:
+		t.Fatalf("unexpected function impl %T", f)
+		return nil
+	}
+}
+
+func TestFuncIntrinsicsVirtual(t *testing.T) {
+	r := New()
+	virtual := []string{
+		`(function f(a) {})`,
+		`(() => 0)`,
+		`({ m() {} }).m`,
+		`Array.prototype.push`,
+		`(function() { function f() {} f.u = 1; return f; })()`,
+		`(function() { function f() {} Object.defineProperty(f, "name", { value: "renamed" }); return f; })()`,
+		`(function() { class K { static name() {} } return K; })()`,
+		`(function() { function f() {} return f.bind(null); })()`,
+		`(function*() {})`,
+		`(async function() {})`,
+	}
+	for _, src := range virtual {
+		f := funcImpl(t, r, src)
+		if !f.intrinsicsVirtual {
+			t.Errorf("%s: intrinsics unexpectedly materialized", src)
+		}
+		if _, ok := f.values["length"]; ok {
+			t.Errorf("%s: length is in the property map", src)
+		}
+	}
+	materialized := []string{
+		`(function() { function f() {} delete f.name; return f; })()`,
+		`(function() { function f() {} Object.defineProperty(f, "name", { value: "w", writable: true, enumerable: true, configurable: true }); return f; })()`,
+	}
+	for _, src := range materialized {
+		f := funcImpl(t, r, src)
+		if f.intrinsicsVirtual {
+			t.Errorf("%s: expected intrinsics to be materialized", src)
+		}
+	}
+	// Materialization places length, name at the front of propNames.
+	f := funcImpl(t, r, `(function() { function f() {} f.u = 1; f.prototype; Object.defineProperty(f, "name", { value: "w", writable: true, enumerable: true, configurable: true }); return f; })()`)
+	if len(f.propNames) < 2 || f.propNames[0] != "length" || f.propNames[1] != "name" {
+		t.Errorf("propNames after materialization = %v, want length, name first", f.propNames)
+	}
+
+	f = funcImpl(t, r, `(function() { function f() {} f[5] = 1; f.u = 2; return f; })()`)
+	var order []string
+	for item, next := f.iterateStringKeys()(); next != nil; item, next = next() {
+		order = append(order, item.name.String())
+	}
+	if got := strings.Join(order, ","); got != "5,length,name,u" {
+		t.Errorf("virtual iterator order = %q, want 5,length,name,u", got)
 	}
 }
