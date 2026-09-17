@@ -117,11 +117,13 @@ out.push(Object.getOwnPropertyNames(s).join(","), s.length);
 for (var i = 0; i < 20000; i++) s[i] = i;
 out.push(Object.getOwnPropertyNames(s).length, s.length, Object.keys(s).length, JSON.stringify(Object.getOwnPropertyDescriptor(s, "length")));
 var e = []; out.push(Object.getOwnPropertyNames(e).join(","), Object.keys(e).length, e.hasOwnProperty("length"), e.hasOwnProperty("x"), delete e.x);
+var g = []; g.x = 1; g[100000] = 2; out.push(Object.getOwnPropertyNames(g).join(","));
+var h = []; h.q = 1; h[100000] = 2; Object.freeze(h); out.push(Object.getOwnPropertyNames(h).join(","), Object.isFrozen(h));
 out.join("|");
 `
 
 // Captured from the unmodified engine at 43617bb. Must pass before and after Task 2.
-const arrayLengthGolden = `0,1,2,length,x/0,1,2,x/0,1,2,x/[1,2,3]/{"value":3,"writable":true,"enumerable":false,"configurable":false}/0,1,2,x/3|false|TypeError|0,1,length,x/0,1,x/0,1,x/[1,2]/{"value":2,"writable":true,"enumerable":false,"configurable":false}/0,1,x/2|0,1,length,x/0,1,x/0,1,x/[1,2]/{"value":2,"writable":false,"enumerable":false,"configurable":false}/0,1,x/2|TypeError|true|{"value":1,"writable":false,"enumerable":false,"configurable":false}|0,length,foo/0,foo/0,foo/[2]/{"value":1,"writable":true,"enumerable":false,"configurable":false}/0,foo/1|100000,length,y|100001|20003|100001|20002|{"value":100001,"writable":true,"enumerable":false,"configurable":false}|length|0|true|false|true`
+const arrayLengthGolden = `0,1,2,length,x/0,1,2,x/0,1,2,x/[1,2,3]/{"value":3,"writable":true,"enumerable":false,"configurable":false}/0,1,2,x/3|false|TypeError|0,1,length,x/0,1,x/0,1,x/[1,2]/{"value":2,"writable":true,"enumerable":false,"configurable":false}/0,1,x/2|0,1,length,x/0,1,x/0,1,x/[1,2]/{"value":2,"writable":false,"enumerable":false,"configurable":false}/0,1,x/2|TypeError|true|{"value":1,"writable":false,"enumerable":false,"configurable":false}|0,length,foo/0,foo/0,foo/[2]/{"value":1,"writable":true,"enumerable":false,"configurable":false}/0,foo/1|100000,length,y|100001|20003|100001|20002|{"value":100001,"writable":true,"enumerable":false,"configurable":false}|length|0|true|false|true|100000,length,x|100000,length,q|true`
 
 func TestArrayLengthCharacterization(t *testing.T) {
 	testScript(arrayLengthGoldenScript, asciiString(arrayLengthGolden), t)
@@ -155,5 +157,10 @@ func TestArrayLengthNotInMap(t *testing.T) {
 	}
 	if _, ok := a.baseObject.values["length"]; ok {
 		t.Error("converted dense array inherited length from the sparse map")
+	}
+	for _, n := range a.propNames {
+		if n == "length" {
+			t.Error("converted dense array has length in propNames")
+		}
 	}
 }

@@ -376,7 +376,17 @@ func (a *arrayObject) expand(idx uint32) bool {
 				sa.setValues(a.values, a.objCount+1)
 				sa.val.self = sa
 				sa.lengthProp.writable = a.lengthProp.writable
-				sa._put("length", &sa.lengthProp)
+				// Dense arrays keep length virtual, so the copied propNames has
+				// no entry for it. A sparse array stores length in its map and
+				// it must precede every other string key, as at creation.
+				sa.ensureValues()
+				sa.values["length"] = &sa.lengthProp
+				names := make([]unistring.String, 0, len(a.propNames)+1)
+				names = append(names, "length")
+				names = append(names, a.propNames...)
+				sa.propNames = names
+				sa.lastSortedPropLen = 0
+				sa.idxPropCount = 0
 				return false
 			} else {
 				if bits.UintSize == 32 {
