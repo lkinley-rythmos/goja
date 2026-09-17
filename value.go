@@ -903,6 +903,8 @@ func (o *Object) AppendKeys(dst []string) []string {
 		return impl.appendEnumerableStringKeys(dst)
 	case *arrayObject:
 		return impl.appendEnumerableStringKeys(dst)
+	case *descriptorObject:
+		return impl.appendEnumerableStringKeys(dst)
 	}
 	iter := &enumerableIter{
 		o:       o,

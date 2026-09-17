@@ -32,45 +32,25 @@ func (r *Runtime) valuePropToDescriptorObject(desc Value) Value {
 	if desc == nil {
 		return _undefined
 	}
-	var writable, configurable, enumerable, accessor bool
-	var get, set *Object
-	var value Value
+	d := r.newDescriptorObject()
 	if v, ok := desc.(*valueProperty); ok {
-		writable = v.writable
-		configurable = v.configurable
-		enumerable = v.enumerable
-		accessor = v.accessor
-		value = v.value
-		get = v.getterFunc
-		set = v.setterFunc
-	} else {
-		writable = true
-		configurable = true
-		enumerable = true
-		value = desc
-	}
-
-	ret := r.NewObject()
-	obj := ret.self
-	if !accessor {
-		obj.setOwnStr("value", value, false)
-		obj.setOwnStr("writable", r.toBoolean(writable), false)
-	} else {
-		if get != nil {
-			obj.setOwnStr("get", get, false)
+		d.writable, d.enumerable, d.configurable, d.accessor = v.writable, v.enumerable, v.configurable, v.accessor
+		if v.accessor {
+			d.get, d.set = _undefined, _undefined
+			if v.getterFunc != nil {
+				d.get = v.getterFunc
+			}
+			if v.setterFunc != nil {
+				d.set = v.setterFunc
+			}
 		} else {
-			obj.setOwnStr("get", _undefined, false)
+			d.value = nilSafe(v.value)
 		}
-		if set != nil {
-			obj.setOwnStr("set", set, false)
-		} else {
-			obj.setOwnStr("set", _undefined, false)
-		}
+	} else {
+		d.writable, d.enumerable, d.configurable = true, true, true
+		d.value = desc
 	}
-	obj.setOwnStr("enumerable", r.toBoolean(enumerable), false)
-	obj.setOwnStr("configurable", r.toBoolean(configurable), false)
-
-	return ret
+	return d.val
 }
 
 func (r *Runtime) object_getOwnPropertyDescriptor(call FunctionCall) Value {
