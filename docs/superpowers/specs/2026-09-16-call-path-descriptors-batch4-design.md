@@ -1,7 +1,7 @@
 # Goja batch 4 — virtual descriptor objects, in-place call/apply/bind, micro allocations, pre-sized objects
 
 **Date:** 2026-09-16
-**Status:** approved design, not yet implemented
+**Status:** implemented on branch perf/call-path-batch4 (2026-09-16); per-change benchmarks in commit messages
 **Branch:** `perf/call-path-batch4` (from `master` at `50ffab1`)
 
 ## 1. Motivation and evidence
@@ -162,7 +162,9 @@ matching what a direct call already shows. The characterization suite pins
 the new trace shape (§7). Everything else — this-binding, argument counts,
 `arguments`, `new.target`, strictness, exceptions thrown by the target,
 `apply` with holes, array-likes, non-arrays — is asserted identical to
-master.
+master. The same applies to the TypeError thrown by apply for a non-object
+argument list: its message is unchanged but the intrinsic's frame no longer
+appears in its stack.
 
 ## 5. Change C — micro allocations
 
@@ -245,7 +247,7 @@ calls (behaviour only); array builtins with indices above 255 and above
 | `arr.find` / `map` / `forEach` per element | 0 |
 | `toCallable` on a JS function | 0 after the first |
 | `Object.defineProperty` all-true on a new key | map insert only |
-| `NewObjectWithCapacity(n)` + n `DefineDataProperty` (ASCII keys) | 3 (`Object`, map, names) |
+| `NewObjectWithCapacity(n)` + n `DefineDataProperty` (ASCII keys) | defines add no growth allocations: exactly 1 (the small map's first group, allocated by Go on first insert) for n ≤ 8 and 0 for n > 8 |
 
 **Suites.** `go test ./...`, `-race`, `GOARCH=386`, test262
 (`testdata/test262`) — descriptor objects and
