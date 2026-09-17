@@ -88,6 +88,118 @@ func (r *Runtime) createListFromArrayLike(a Value) []Value {
 	return res
 }
 
+// vmCallTarget reports whether v is a function whose vmCall may be entered
+// directly with a rewritten stack window, returning it if so. The list is
+// exactly the impl types whose Call and vmCall are the same operation:
+// anything else — generators, async functions, classes, proxies,
+// non-callables — returns nil and takes the ordinary native path, keeping
+// its current behaviour and error messages.
+func vmCallTarget(v Value) *Object {
+	obj, ok := v.(*Object)
+	if !ok {
+		return nil
+	}
+	switch f := obj.self.(type) {
+	case *funcObject, *methodFuncObject, *arrowFuncObject, *boundFuncObject:
+		return obj
+	case *nativeFuncObject:
+		if f.f != nil {
+			return obj
+		}
+	case *wrappedFuncObject:
+		if f.f != nil {
+			return obj
+		}
+	}
+	return nil
+}
+
+// funcProtoCallObject is the Function.prototype.call intrinsic. Invoked by
+// the VM with an eligible target it rewrites the stack window
+// [f][call][thisArg][a1 … a(n-1)] into [thisArg][f][a1 … a(n-1)] and
+// dispatches to f's vmCall, so f.call(t, a) costs what f(a) costs: no
+// nested run loop, no try frame, no extra context. Go callers (via
+// assertCallable) and ineligible targets take the native path.
+type funcProtoCallObject struct {
+	nativeFuncObject
+}
+
+func (f *funcProtoCallObject) vmCall(vm *vm, n int) {
+	target := vmCallTarget(vm.stack[vm.sp-n-2])
+	if target == nil {
+		f.nativeFuncObject.vmCall(vm, n)
+		return
+	}
+	base := vm.sp - n - 2
+	var thisArg Value = _undefined
+	if n > 0 {
+		thisArg = vm.stack[base+2]
+		copy(vm.stack[base+2:vm.sp-1], vm.stack[base+3:vm.sp])
+		vm.sp--
+		n--
+	}
+	vm.stack[base] = thisArg
+	vm.stack[base+1] = target
+	target.self.vmCall(vm, n)
+}
+
+// funcProtoApplyObject is the Function.prototype.apply intrinsic; see
+// funcProtoCallObject. [f][apply][thisArg][argArray][ignored …] becomes
+// [thisArg][f][elements …]. createListFromArrayLike runs before the
+// window is rewritten, so a TypeError for a non-object argArray leaves the
+// frame intact and carries today's message.
+type funcProtoApplyObject struct {
+	nativeFuncObject
+}
+
+func (f *funcProtoApplyObject) vmCall(vm *vm, n int) {
+	target := vmCallTarget(vm.stack[vm.sp-n-2])
+	if target == nil {
+		f.nativeFuncObject.vmCall(vm, n)
+		return
+	}
+	base := vm.sp - n - 2
+	var thisArg, argArray Value = _undefined, _undefined
+	if n > 0 {
+		thisArg = vm.stack[base+2]
+	}
+	if n > 1 {
+		argArray = vm.stack[base+3]
+	}
+	var args []Value
+	if argArray != _undefined && argArray != _null {
+		args = vm.r.createListFromArrayLike(argArray)
+	}
+	vm.stack[base] = thisArg
+	vm.stack[base+1] = target
+	vm.sp = base + 2
+	vm.stack.expand(vm.sp + len(args))
+	for _, a := range args {
+		if a == nil {
+			a = _undefined
+		}
+		vm.stack[vm.sp] = a
+		vm.sp++
+	}
+	target.self.vmCall(vm, len(args))
+}
+
+func (r *Runtime) newFuncProtoCall() *Object {
+	v := &Object{runtime: r}
+	f := &funcProtoCallObject{}
+	r.initNativeFuncObject(v, &f.nativeFuncObject, r.functionproto_call, "call", 1)
+	v.self = f
+	return v
+}
+
+func (r *Runtime) newFuncProtoApply() *Object {
+	v := &Object{runtime: r}
+	f := &funcProtoApplyObject{}
+	r.initNativeFuncObject(v, &f.nativeFuncObject, r.functionproto_apply, "apply", 2)
+	v.self = f
+	return v
+}
+
 func (r *Runtime) functionproto_apply(call FunctionCall) Value {
 	var args []Value
 
@@ -238,9 +350,9 @@ func createFunctionProtoTemplate() *objectTemplate {
 	t.putStr("length", func(r *Runtime) Value { return valueProp(_positiveZero, false, false, true) })
 	t.putStr("name", func(r *Runtime) Value { return valueProp(stringEmpty, false, false, true) })
 
-	t.putStr("apply", func(r *Runtime) Value { return r.methodProp(r.functionproto_apply, "apply", 2) })
+	t.putStr("apply", func(r *Runtime) Value { return valueProp(r.newFuncProtoApply(), true, false, true) })
 	t.putStr("bind", func(r *Runtime) Value { return r.methodProp(r.functionproto_bind, "bind", 1) })
-	t.putStr("call", func(r *Runtime) Value { return r.methodProp(r.functionproto_call, "call", 1) })
+	t.putStr("call", func(r *Runtime) Value { return valueProp(r.newFuncProtoCall(), true, false, true) })
 	t.putStr("toString", func(r *Runtime) Value { return r.methodProp(r.functionproto_toString, "toString", 0) })
 
 	t.putStr("caller", func(r *Runtime) Value { return r.newThrowerProperty(true) })

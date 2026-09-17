@@ -756,22 +756,24 @@ func (r *Runtime) newNativeFuncAndConstruct(v *Object, call func(call FunctionCa
 	return f
 }
 
+// initNativeFuncObject fills f — a nativeFuncObject, possibly embedded in
+// a wrapper type — as the implementation of the function object v.
+func (r *Runtime) initNativeFuncObject(v *Object, f *nativeFuncObject, call func(FunctionCall) Value, name unistring.String, length int) {
+	f.baseObject = baseObject{
+		class:      classFunction,
+		val:        v,
+		extensible: true,
+		prototype:  r.getFunctionPrototype(),
+	}
+	f.f = call
+	f.init(name, intToValue(int64(length)))
+}
+
 func (r *Runtime) newNativeFunc(call func(FunctionCall) Value, name unistring.String, length int) *Object {
 	v := &Object{runtime: r}
-
-	f := &nativeFuncObject{
-		baseFuncObject: baseFuncObject{
-			baseObject: baseObject{
-				class:      classFunction,
-				val:        v,
-				extensible: true,
-				prototype:  r.getFunctionPrototype(),
-			},
-		},
-		f: call,
-	}
+	f := &nativeFuncObject{}
+	r.initNativeFuncObject(v, f, call, name, length)
 	v.self = f
-	f.init(name, intToValue(int64(length)))
 	return v
 }
 
