@@ -100,7 +100,7 @@ func vmCallTarget(v Value) *Object {
 		return nil
 	}
 	switch f := obj.self.(type) {
-	case *funcObject, *methodFuncObject, *arrowFuncObject, *boundFuncObject:
+	case *funcObject, *methodFuncObject, *arrowFuncObject, *boundFuncObject, *funcProtoCallObject, *funcProtoApplyObject:
 		return obj
 	case *nativeFuncObject:
 		if f.f != nil {
@@ -182,6 +182,30 @@ func (f *funcProtoApplyObject) vmCall(vm *vm, n int) {
 		vm.sp++
 	}
 	target.self.vmCall(vm, len(args))
+}
+
+// vmCall rewrites [ignored this][bound][a0 … a(n-1)] into
+// [boundThis][target][boundArgs …][a0 … a(n-1)] and dispatches to the
+// wrapped function's vmCall. Construction (new bound()) is unaffected: it
+// goes through assertConstructor. An ineligible wrapped function (a class,
+// a generator, …) takes the native closure path as before.
+func (f *boundFuncObject) vmCall(vm *vm, n int) {
+	target := vmCallTarget(f.wrapped)
+	if target == nil {
+		f.nativeFuncObject.vmCall(vm, n)
+		return
+	}
+	base := vm.sp - n - 2
+	if k := len(f.boundArgs); k > 0 {
+		vm.stack.expand(vm.sp + k)
+		copy(vm.stack[base+2+k:base+2+k+n], vm.stack[base+2:base+2+n])
+		copy(vm.stack[base+2:base+2+k], f.boundArgs)
+		vm.sp += k
+		n += k
+	}
+	vm.stack[base] = f.boundThis
+	vm.stack[base+1] = target
+	target.self.vmCall(vm, n)
 }
 
 func (r *Runtime) newFuncProtoCall() *Object {
@@ -312,6 +336,12 @@ lenNotInt:
 	bf := &boundFuncObject{
 		nativeFuncObject: *ff,
 		wrapped:          obj,
+		boundThis:        _undefined,
+	}
+	if len(call.Arguments) > 0 {
+		bf.boundThis = call.Arguments[0]
+		// call.Arguments aliases the VM stack; copy, as boundCallable does.
+		bf.boundArgs = append([]Value(nil), call.Arguments[1:]...)
 	}
 	bf.prototype = obj.self.proto()
 	v.self = bf

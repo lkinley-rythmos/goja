@@ -212,3 +212,8 @@ func BenchmarkFuncProtoApply(b *testing.B) {
 func BenchmarkNativeCall(b *testing.B) {
 	benchmarkProgram(b, callBenchSetup, `(function(){ var s = 0; for (var i = 0; i < 1000; i++) if (n.call(o, 'k')) s++; return s })()`)
 }
+
+func BenchmarkBoundCall(b *testing.B) {
+	benchmarkProgram(b, callBenchSetup+` var bf = f.bind(null, 0); var has = Function.prototype.call.bind(n);`,
+		`(function(){ var s = 0; for (var i = 0; i < 1000; i++) { s = bf(i); if (has(o, 'k')) s++ } return s })()`)
+}

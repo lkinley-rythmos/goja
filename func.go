@@ -145,6 +145,10 @@ type wrappedFuncObject struct {
 type boundFuncObject struct {
 	nativeFuncObject
 	wrapped *Object
+	// boundThis and boundArgs duplicate what the native closure captured so
+	// that vmCall can rewrite the stack window without calling it.
+	boundThis Value
+	boundArgs []Value
 }
 
 type generatorState uint8
