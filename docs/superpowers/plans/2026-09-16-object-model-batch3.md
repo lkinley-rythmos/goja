@@ -128,7 +128,8 @@ func propMap(t *testing.T, r *Runtime, src string) map[unistring.String]Value {
 
 func TestLazyPropertyMap(t *testing.T) {
 	r := New()
-	for _, src := range []string{`({})`, `new Date(0)`, `/x/`, `[][Symbol.iterator]()`} {
+	// RegExp objects are excluded: regexpObject.init stores lastIndex eagerly.
+	for _, src := range []string{`({})`, `new Date(0)`, `[][Symbol.iterator]()`} {
 		if m := propMap(t, r, src); m != nil {
 			t.Errorf("%s: expected nil property map before any write, got len %d", src, len(m))
 		}

@@ -67,6 +67,12 @@ func (r *Runtime) createArrayIterator(iterObj *Object, kind iterationKind) Value
 	return o
 }
 
+// arrayObject keeps length virtual: it never appears in values or propNames.
+// Every path that can observe an own property special-cases it —
+// getOwnPropStr, setOwnStr, hasOwnPropertyStr, defineOwnPropertyStr,
+// deleteStr, stringKeys and arrayPropIter.next — and the dense<->sparse
+// conversions maintain the invariant. Add the branch to any new
+// own-property entry point.
 type arrayObject struct {
 	baseObject
 	values         []Value
@@ -525,6 +531,8 @@ func (a *arrayObject) deleteStr(name unistring.String, throw bool) bool {
 		return a._deleteIdxProp(idx, throw)
 	}
 	if name == "length" {
+		// Array length is permanently non-configurable, so checkDelete always
+		// rejects; nothing is ever removed here.
 		return a.checkDelete(name, &a.lengthProp, throw)
 	}
 	return a.baseObject.deleteStr(name, throw)

@@ -1333,3 +1333,37 @@ func TestRegexpEagerRegexp2ForGlobal(t *testing.T) {
 		out.join("|");
 	`, asciiString("1:1,3:22,6:333|a|1|a|2||0|0,1,2|3|a-b-c|a|b|"), t)
 }
+
+func TestRegexpEagerRegexp2Concurrent(t *testing.T) {
+	resetRegexpCache()
+	var wg sync.WaitGroup
+	errs := make(chan error, 8)
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r := New()
+			for i := 0; i < 50; i++ {
+				v, err := r.RunString(`
+					var re = /a(b)?c/g, s = "ac abc ac", n = 0;
+					while (re.exec(s)) n++;
+					var m = [...s.matchAll(/ac/g)].length;
+					var y = /abc/y; y.lastIndex = 3;
+					n + ":" + m + ":" + (y.exec(s) !== null) + ":" + s.replace(/a/g, "x") + ":" + s.split(/ /g).length`)
+				if err != nil {
+					errs <- err
+					return
+				}
+				if v.String() != "3:2:true:xc xbc xc:3" {
+					errs <- fmt.Errorf("unexpected result %s", v)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+}
