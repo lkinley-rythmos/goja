@@ -2721,6 +2721,16 @@ func toPropertyKey(key Value) Value {
 	return key.ToString()
 }
 
+// toStringValue coerces v to a String. A value that already is one is
+// returned as is: calling toString on it would re-box the same string
+// into a fresh interface value on every call.
+func toStringValue(v Value) String {
+	if s, ok := v.(String); ok {
+		return s
+	}
+	return v.toString()
+}
+
 func (r *Runtime) getVStr(v Value, p unistring.String) Value {
 	o := v.ToObject(r)
 	return o.self.getStr(p, v)

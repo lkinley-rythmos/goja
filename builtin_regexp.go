@@ -399,14 +399,14 @@ func (r *Runtime) newRegExp(patternVal, flagsVal Value, proto *Object) *regexpOb
 				if flagsVal == nil || flagsVal == _undefined {
 					return rx.clone()
 				} else {
-					return r._newRegExp(rx.source, flagsVal.toString().String(), proto)
+					return r._newRegExp(rx.source, toStringValue(flagsVal).String(), proto)
 				}
 			} else {
-				pattern = nilSafe(obj.self.getStr("source", nil)).toString()
+				pattern = toStringValue(nilSafe(obj.self.getStr("source", nil)))
 				if flagsVal == nil || flagsVal == _undefined {
-					flags = nilSafe(obj.self.getStr("flags", nil)).toString().String()
+					flags = toStringValue(nilSafe(obj.self.getStr("flags", nil))).String()
 				} else {
-					flags = flagsVal.toString().String()
+					flags = toStringValue(flagsVal).String()
 				}
 				goto exit
 			}
@@ -414,10 +414,10 @@ func (r *Runtime) newRegExp(patternVal, flagsVal Value, proto *Object) *regexpOb
 	}
 
 	if patternVal != nil && patternVal != _undefined {
-		pattern = patternVal.toString()
+		pattern = toStringValue(patternVal)
 	}
 	if flagsVal != nil && flagsVal != _undefined {
-		flags = flagsVal.toString().String()
+		flags = toStringValue(flagsVal).String()
 	}
 
 	if pattern == nil {
@@ -463,12 +463,12 @@ func (r *Runtime) regexpproto_compile(call FunctionCall) Value {
 			}
 		}
 		if patternVal != _undefined {
-			source = patternVal.toString()
+			source = toStringValue(patternVal)
 		} else {
 			source = stringEmpty
 		}
 		if flagsVal != _undefined {
-			flags = flagsVal.toString().String()
+			flags = toStringValue(flagsVal).String()
 		}
 		pattern, err = compileRegexpFromValueString(source, flags)
 		if err != nil {
@@ -486,7 +486,7 @@ func (r *Runtime) regexpproto_compile(call FunctionCall) Value {
 
 func (r *Runtime) regexpproto_exec(call FunctionCall) Value {
 	if this, ok := r.toObject(call.This).self.(*regexpObject); ok {
-		return this.exec(call.Argument(0).toString())
+		return this.exec(toStringValue(call.Argument(0)))
 	} else {
 		r.typeErrorResult(true, "Method RegExp.prototype.exec called on incompatible receiver %s", r.objectproto_toString(FunctionCall{This: call.This}))
 		return nil
@@ -495,7 +495,7 @@ func (r *Runtime) regexpproto_exec(call FunctionCall) Value {
 
 func (r *Runtime) regexpproto_test(call FunctionCall) Value {
 	if this, ok := r.toObject(call.This).self.(*regexpObject); ok {
-		if this.test(call.Argument(0).toString()) {
+		if this.test(toStringValue(call.Argument(0))) {
 			return valueTrue
 		} else {
 			return valueFalse
@@ -534,8 +534,8 @@ func (r *Runtime) regexpproto_toString(call FunctionCall) Value {
 		}
 		return sb.String()
 	}
-	pattern := nilSafe(obj.self.getStr("source", nil)).toString()
-	flags := nilSafe(obj.self.getStr("flags", nil)).toString()
+	pattern := toStringValue(nilSafe(obj.self.getStr("source", nil)))
+	flags := toStringValue(nilSafe(obj.self.getStr("flags", nil)))
 	var sb StringBuilder
 	sb.WriteRune('/')
 	sb.WriteString(pattern)
@@ -783,7 +783,7 @@ func (r *Runtime) getGlobalRegexpMatches(rxObj *Object, s String, fullUnicode bo
 			break
 		}
 		a = append(a, res)
-		matchStr := nilSafe(r.toObject(res).self.getIdx(valueInt(0), nil)).toString()
+		matchStr := toStringValue(nilSafe(r.toObject(res).self.getIdx(valueInt(0), nil)))
 		if matchStr.Length() == 0 {
 			thisIndex := toLength(rxObj.self.getStr("lastIndex", nil))
 			rxObj.self.setOwnStr("lastIndex", valueInt(advanceStringIndex64(s, thisIndex, fullUnicode)), true)
@@ -838,7 +838,7 @@ func (r *Runtime) checkStdRegexp(rxObj *Object) *regexpObject {
 
 func (r *Runtime) regexpproto_stdMatcher(call FunctionCall) Value {
 	thisObj := r.toObject(call.This)
-	s := call.Argument(0).toString()
+	s := toStringValue(call.Argument(0))
 	rx := r.checkStdRegexp(thisObj)
 	if rx == nil {
 		return r.regexpproto_stdMatcherGeneric(thisObj, s)
@@ -886,8 +886,8 @@ func (r *Runtime) regexpproto_stdSearchGeneric(rxObj *Object, arg String) Value 
 
 func (r *Runtime) regexpproto_stdMatcherAll(call FunctionCall) Value {
 	thisObj := r.toObject(call.This)
-	s := call.Argument(0).toString()
-	flags := nilSafe(thisObj.self.getStr("flags", nil)).toString()
+	s := toStringValue(call.Argument(0))
+	flags := toStringValue(nilSafe(thisObj.self.getStr("flags", nil)))
 	c := r.speciesConstructorObj(call.This.(*Object), r.getRegExp())
 	matcher := r.toConstructor(c)([]Value{call.This, flags}, nil)
 	matcher.self.setOwnStr("lastIndex", valueInt(toLength(thisObj.self.getStr("lastIndex", nil))), true)
@@ -955,7 +955,7 @@ func (ri *regExpStringIterObject) nextValue() (Value, bool) {
 		return match, false
 	}
 
-	matchStr := nilSafe(ri.val.runtime.toObject(match).self.getIdx(valueInt(0), nil)).toString()
+	matchStr := toStringValue(nilSafe(ri.val.runtime.toObject(match).self.getIdx(valueInt(0), nil)))
 	if matchStr.Length() == 0 {
 		thisIndex := toLength(ri.matcher.self.getStr("lastIndex", nil))
 		ri.matcher.self.setOwnStr("lastIndex", valueInt(advanceStringIndex64(ri.s, thisIndex, ri.fullUnicode)), true)
@@ -970,7 +970,7 @@ func (ri *regExpStringIterObject) next() Value {
 
 func (r *Runtime) regexpproto_stdSearch(call FunctionCall) Value {
 	thisObj := r.toObject(call.This)
-	s := call.Argument(0).toString()
+	s := toStringValue(call.Argument(0))
 	rx := r.checkStdRegexp(thisObj)
 	if rx == nil {
 		return r.regexpproto_stdSearchGeneric(thisObj, s)
@@ -1084,13 +1084,13 @@ func advanceStringIndex64(s String, pos int64, unicode bool) int64 {
 
 func (r *Runtime) regexpproto_stdSplitter(call FunctionCall) Value {
 	rxObj := r.toObject(call.This)
-	s := call.Argument(0).toString()
+	s := toStringValue(call.Argument(0))
 	limitValue := call.Argument(1)
 	var splitter *Object
 	search := r.checkStdRegexp(rxObj)
 	c := r.speciesConstructorObj(rxObj, r.getRegExp())
 	if search == nil || c != r.global.RegExp {
-		flags := nilSafe(rxObj.self.getStr("flags", nil)).toString()
+		flags := toStringValue(nilSafe(rxObj.self.getStr("flags", nil)))
 		flagsStr := flags.String()
 
 		// Add 'y' flag if missing
@@ -1199,7 +1199,7 @@ func (r *Runtime) regexpproto_stdReplacerGeneric(rxObj *Object, s, replaceStr St
 	for _, result := range results {
 		obj := r.toObject(result)
 		nCaptures := max(toLength(obj.self.getStr("length", nil))-1, 0)
-		matched := nilSafe(obj.self.getIdx(valueInt(0), nil)).toString()
+		matched := toStringValue(nilSafe(obj.self.getIdx(valueInt(0), nil)))
 		matchLength := matched.Length()
 		position := toIntStrict(max(min(nilSafe(obj.self.getStr("index", nil)).ToInteger(), int64(lengthS)), 0))
 		var captures []Value
@@ -1222,10 +1222,10 @@ func (r *Runtime) regexpproto_stdReplacerGeneric(rxObj *Object, s, replaceStr St
 			if namedCaptures := nilSafe(obj.self.getStr("groups", nil)); namedCaptures != _undefined {
 				captures = append(captures, namedCaptures)
 			}
-			replacement = rcall(FunctionCall{
+			replacement = toStringValue(rcall(FunctionCall{
 				This:      _undefined,
 				Arguments: captures,
-			}).toString()
+			}))
 			if position >= nextSourcePosition {
 				resultBuf.WriteString(s.Substring(nextSourcePosition, position))
 				resultBuf.WriteString(replacement)
@@ -1241,14 +1241,14 @@ func (r *Runtime) regexpproto_stdReplacerGeneric(rxObj *Object, s, replaceStr St
 				writeSubstitution(s, position, len(captures), func(idx int) String {
 					capture := captures[idx]
 					if capture != _undefined {
-						return capture.toString()
+						return toStringValue(capture)
 					}
 					return stringEmpty
 				}, func(ref String) String {
 					if namedCaptures != nil {
 						capture := nilSafe(namedCaptures.self.getStr(ref.string(), nil))
 						if capture != _undefined {
-							return capture.toString()
+							return toStringValue(capture)
 						}
 						return stringEmpty
 					}
@@ -1340,7 +1340,7 @@ func writeSubstitution(s String, position int, numCaptures int, getCapture func(
 
 func (r *Runtime) regexpproto_stdReplacer(call FunctionCall) Value {
 	rxObj := r.toObject(call.This)
-	s := call.Argument(0).toString()
+	s := toStringValue(call.Argument(0))
 	replaceStr, rcall := getReplaceValue(call.Argument(1))
 
 	rx := r.checkStdRegexp(rxObj)
