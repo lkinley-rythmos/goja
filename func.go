@@ -624,7 +624,11 @@ func (f *baseFuncObject) defineOwnPropertyStr(name unistring.String, descr Prope
 }
 
 func (f *baseFuncObject) deleteStr(name unistring.String, throw bool) bool {
-	if f.intrinsicProp(name) != nil {
+	if p := f.intrinsicProp(name); p != nil {
+		if !p.configurable {
+			// Rejected without materializing, so frozen functions stay map-free.
+			return f.checkDeleteProp(name, p, throw)
+		}
 		f.materializeIntrinsics()
 	}
 	return f.baseObject.deleteStr(name, throw)
@@ -655,10 +659,20 @@ func (f *baseFuncObject) stringKeys(all bool, accum []Value) []Value {
 	return f.appendStringKeys(all, accum, f.propNames[n:])
 }
 
-// funcIntrinsicsIter yields a virtual function's own string keys in
-// enumeration order: the sorted integer-like keys first, then length and
-// name (with the field pointers, so Object.freeze mutates real storage),
-// then the remaining keys.
+const (
+	funcIterIndexKeys = iota // pass through the sorted integer-like keys
+	funcIterLength
+	funcIterName
+	funcIterRest
+)
+
+// funcIntrinsicsIter yields a function's own string keys in enumeration
+// order: the sorted integer-like keys first, then length and name, then
+// the remaining keys. The intrinsics are read from live state on each
+// step: while virtual they are the fields (so Object.freeze mutates the
+// real storage); once materialized they come from the map, so an
+// intrinsic deleted or redefined during the iteration is treated exactly
+// as any other property is.
 type funcIntrinsicsIter struct {
 	f          *baseFuncObject
 	wrapped    iterNextFunc
@@ -667,10 +681,20 @@ type funcIntrinsicsIter struct {
 	hasPending bool
 }
 
+func (i *funcIntrinsicsIter) intrinsic(name unistring.String, p *valueProperty) (propIterItem, bool) {
+	var v Value = p
+	if !i.f.intrinsicsVirtual {
+		if v = i.f.values[name]; v == nil {
+			return propIterItem{}, false // deleted while the iteration was in flight
+		}
+	}
+	return propIterItem{name: asciiString(name), value: v}, true
+}
+
 func (i *funcIntrinsicsIter) next() (propIterItem, iterNextFunc) {
 	for {
 		switch i.phase {
-		case 0:
+		case funcIterIndexKeys:
 			var item propIterItem
 			item, i.wrapped = i.wrapped()
 			if i.wrapped != nil && strToArrayIdx(item.name.string()) != math.MaxUint32 {
@@ -679,13 +703,17 @@ func (i *funcIntrinsicsIter) next() (propIterItem, iterNextFunc) {
 			if i.wrapped != nil {
 				i.pending, i.hasPending = item, true
 			}
-			i.phase = 1
-		case 1:
-			i.phase = 2
-			return propIterItem{name: asciiString("length"), value: &i.f.lenProp}, i.next
-		case 2:
-			i.phase = 3
-			return propIterItem{name: asciiString("name"), value: &i.f.nameProp}, i.next
+			i.phase = funcIterLength
+		case funcIterLength:
+			i.phase = funcIterName
+			if it, ok := i.intrinsic("length", &i.f.lenProp); ok {
+				return it, i.next
+			}
+		case funcIterName:
+			i.phase = funcIterRest
+			if it, ok := i.intrinsic("name", &i.f.nameProp); ok {
+				return it, i.next
+			}
 		default:
 			if i.hasPending {
 				i.hasPending = false
