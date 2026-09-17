@@ -59,7 +59,7 @@ Run: `git rev-parse HEAD` — expected `e41cf0f…`. Write it in the task report
 
 **Interfaces:**
 - Consumes: `String` interface, `Value.toString() String`.
-- Produces: `func toStringValue(v Value) String`.
+- Produces: `func toStringValue(v Value) String`; test helpers `runGolden(t, name, script, want string)` and `measureProgramAllocs(t, vm, src) float64` (used by Tasks 2–5).
 
 - [ ] **Step 1: Write the characterization test and run it on the unmodified engine**
 
@@ -96,8 +96,23 @@ out.join('|');
 // coerceGolden was captured from the unmodified engine at e41cf0f.
 const coerceGolden = `0|12|6|-1|-1|-1|-1|-1|12|6|true|true|true|true|true|true|hello|world|hello|2|bye world hello|hello vld hello|x world x|6|6|["ll"]|wor|hello world hellowor1null|worhello world hello|34|o|||hello world hello|-1|hello world hello|hello world hello|HELLO WORLD HELLO||101|true|true|false|4|o|null|true|true|false|wor|g|a-b-c|aworc|aBc|5|5|-1|0:12:1|-1:tr:1|TypeError:Value is not object coercible|TypeError:Value is not object coercible|-1:[o:1|0:1,:2|0:1.:1|TypeError:Cannot convert a Symbol value to a string|TypeError:Cannot convert a Symbol value to a string|TypeError:Cannot convert a Symbol value to a string|TypeError:Cannot convert a Symbol value to a string|6|7|héllo w|rld|hello wörld|true|9|true|true|true|0|3|1|3|a|xwo|aworb|true|true`
 
+// runGolden runs script in a fresh runtime and compares the result's
+// string form with want. (testScript compares Values, and an asciiString
+// expectation would never equal a unicodeString result such as the
+// non-ASCII segments of the coercion golden.)
+func runGolden(t *testing.T, name, script, want string) {
+	t.Helper()
+	v, err := New().RunString(script)
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	if got := v.String(); got != want {
+		t.Fatalf("%s golden mismatch:\n got %q\nwant %q", name, got, want)
+	}
+}
+
 func TestStringCoercionCharacterization(t *testing.T) {
-	testScript(coerceGoldenScript, asciiString(coerceGolden), t)
+	runGolden(t, "coerce", coerceGoldenScript, coerceGolden)
 }
 ```
 
@@ -260,7 +275,7 @@ out.join('|');
 const literalGolden = `/{}//|a/{"a":1}/a/a|a,b,c/{"a":1,"b":2,"c":3}/a,b,c/a,b,c|0,1,b,a/{"0":"zero","1":"one","b":2,"a":1}/0,1,b,a/0,1,b,a|a/{"a":2}/a/a|g,c/{"g":1,"c":"comp"}/g,c/g,c|comp,x/{"comp":1,"x":2}/comp,x/comp,x|x,comp2,y/{"x":1,"comp2":2,"y":3}/x,comp2,y/x,comp2,y|m,q,z/{"q":2,"z":3}/m,q,z/m,q,z|a,b,c,d/{"a":1,"b":2,"c":3,"d":4}/a,b,c,d/a,b,c,d|a/{"a":2}/a/a|own/{"own":2}/own/own,inh|x/{"x":1}/x/x|k1,k2,k3,k4,k5,k6,k7,k8,k9,k10,k11,k12/{"k1":1,"k2":2,"k3":3,"k4":4,"k5":5,"k6":6,"k7":7,"k8":8,"k9":9,"k10":10,"k11":11,"k12":12}/k1,k2,k3,k4,k5,k6,k7,k8,k9,k10,k11,k12/k1,k2,k3,k4,k5,k6,k7,k8,k9,k10,k11,k12|a,e/{"a":{"b":{"c":[1,{"d":2}]}},"e":3}/a,e/a,e|b/{"b":{"c":[1,{"d":2}]}}/b/b|d/{"d":2}/d/d|1/1/true/false|y,x/{"y":2,"x":3}/y,x/y,x|a,b,m/{"value":1,"writable":true,"enumerable":true,"configurable":true}/function/true|a/{"a":2}/a/a/1|[0,1,4,9,16,25,36,49,64,81,100,121,144,169,196,225,256,289,324,361]|f/ar/comp|true|true|[object Object]`
 
 func TestObjectLiteralCharacterization(t *testing.T) {
-	testScript(literalGoldenScript, asciiString(literalGolden), t)
+	runGolden(t, "literal", literalGoldenScript, literalGolden) // runGolden: string_coerce_test.go (Task 1)
 }
 ```
 
@@ -510,7 +525,7 @@ out.join('|');
 const coallocGolden = `1000001/far/2/0,1,2,1000000/1000000|3/[1,2,3]/0,1,2|[1,null,3]/false/3|[5]|1/2/true/[object Generator]|3/[1,2]/false/1|1/1|4/3/1/function/f/arrow/m/1/true/[object Function]/true|1/2/custom/false/false|{"value":1,"writable":true,"enumerable":true,"configurable":true,"extra":1}/value,writable,enumerable,configurable,extra|1/2/true/[object Array Iterator]/true|7,8,a1,0:9|{"a":[1,{"b":2}]}|[1,null,3]|3|1/true|4,6|0,1,2|1,2,3|2,3,4|true|2|1/true/C|TypeError|true/true/true`
 
 func TestCoallocCharacterization(t *testing.T) {
-	testScript(coallocGoldenScript, asciiString(coallocGolden), t)
+	runGolden(t, "coalloc", coallocGoldenScript, coallocGolden) // runGolden: string_coerce_test.go (Task 1)
 }
 ```
 
