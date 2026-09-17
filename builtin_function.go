@@ -90,10 +90,12 @@ func (r *Runtime) createListFromArrayLike(a Value) []Value {
 
 // vmCallTarget reports whether v is a function whose vmCall may be entered
 // directly with a rewritten stack window, returning it if so. The list is
-// exactly the impl types whose Call and vmCall are the same operation:
-// anything else — generators, async functions, classes, proxies,
-// non-callables — returns nil and takes the ordinary native path, keeping
-// its current behaviour and error messages.
+// the impl types whose vmCall is observably equivalent to Call except for
+// the intrinsic's own stack frame, and which themselves fall back to the
+// native path for any inner target they cannot handle: anything else —
+// generators, async functions, classes, proxies, non-callables — returns
+// nil and takes the ordinary native path, keeping its current behaviour and
+// error messages.
 func vmCallTarget(v Value) *Object {
 	obj, ok := v.(*Object)
 	if !ok {
@@ -145,9 +147,10 @@ func (f *funcProtoCallObject) vmCall(vm *vm, n int) {
 
 // funcProtoApplyObject is the Function.prototype.apply intrinsic; see
 // funcProtoCallObject. [f][apply][thisArg][argArray][ignored …] becomes
-// [thisArg][f][elements …]. createListFromArrayLike runs before the
-// window is rewritten, so a TypeError for a non-object argArray leaves the
-// frame intact and carries today's message.
+// [thisArg][f][elements …]. createListFromArrayLike runs before the window
+// is rewritten, so a TypeError for a non-object argArray carries today's
+// message; as on every eligible-target path, the intrinsic's own frame is
+// absent from its stack.
 type funcProtoApplyObject struct {
 	nativeFuncObject
 }

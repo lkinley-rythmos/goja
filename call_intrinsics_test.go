@@ -122,6 +122,10 @@ func TestCallIntrinsicStackShape(t *testing.T) {
 			`function inner() { return new Error('x').stack } function outer() { return [1].map(inner)[0] } outer()`,
 			[]string{"Error: x", "\tat inner (<eval>:1:27(3))", "\tat map (native)", "\tat outer (<eval>:1:83(6))", "\tat <eval>:1:101(4)"},
 		},
+		{
+			`function f() {} function outer() { try { f.apply({}, 5) } catch (e) { return e.stack } } outer()`,
+			[]string{"TypeError: Value is not an object: 5", "\tat outer (<eval>:1:49(6))", "\tat <eval>:1:95(4)"},
+		},
 	} {
 		vm := New()
 		v, err := vm.RunString(tc.src)

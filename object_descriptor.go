@@ -12,7 +12,7 @@ import "github.com/dop251/goja/unistring"
 // there on. Nothing observable differs between the two states.
 type descriptorObject struct {
 	baseObject
-	value, get, set                    Value // get/set: *Object or _undefined
+	value, get, set                    Value // get/set: *Object or _undefined as constructed; any Value once assigned
 	accessor                           bool
 	writable, enumerable, configurable bool
 	materialized                       bool
@@ -34,7 +34,8 @@ func (r *Runtime) newDescriptorObject() *descriptorObject {
 	return d
 }
 
-// keys returns the virtual key set in enumeration order.
+// virtualKeys returns the virtual key set in enumeration order (named to
+// avoid shadowing objectImpl.keys).
 func (d *descriptorObject) virtualKeys() []unistring.String {
 	if d.accessor {
 		return descriptorAccessorKeys[:]

@@ -53,6 +53,9 @@ func TestNewObjectWithCapacity(t *testing.T) {
 // the empty object; a larger hint allocates its table in make and the
 // defines add nothing. NewObject() with the same defines always costs
 // more.
+// Measured on Go 1.25 (swiss maps): n=8 empty=4 filled=5 plain=8; n=16
+// empty=7 filled=7 plain=14; n=64 empty=7 filled=7 plain=20 — re-measure on
+// a toolchain bump.
 func TestNewObjectWithCapacityNoGrowth(t *testing.T) {
 	vm := New()
 	descr := PropertyDescriptor{Value: valueTrue, Writable: FLAG_TRUE, Enumerable: FLAG_TRUE, Configurable: FLAG_TRUE}

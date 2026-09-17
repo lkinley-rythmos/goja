@@ -124,8 +124,10 @@ callers and their exception semantics do not change.
 1. **`funcProtoCallObject`** (embeds `nativeFuncObject`; used only for the
    `Function.prototype.call` intrinsic). `vmCall(vm, n)`: target `f` =
    `stack[sp-n-2]`. If `f` is an `*Object` whose `self` is a
-   `*baseJsFuncObject`, `*arrowFuncObject`, `*nativeFuncObject` with
-   `f != nil`, or `*boundFuncObject` → rewrite `[f][call][t][a1 …]` to
+   `*funcObject`, `*methodFuncObject`, `*arrowFuncObject`,
+   `*nativeFuncObject`/`*wrappedFuncObject` with `f != nil`,
+   `*boundFuncObject`, or (per the Task 7 ruling) the call/apply
+   intrinsics themselves → rewrite `[f][call][t][a1 …]` to
    `[t][f][a1 …]` (`t = _undefined` when `n == 0`), `sp--` (when `n > 0`),
    then `f.self.vmCall(vm, max(n-1, 0))`. Any other target — non-object,
    non-callable, generator/async/class/method impl types — falls through
@@ -184,10 +186,9 @@ Four independent, mechanical fixes; signatures and behaviour unchanged.
    arrow, async, async-arrow and class impl types that return `f.Call`.
    `nativeFuncObject` already returns its stored `f.f`. Pointer equality
    of the returned func is not promised and not tested.
-4. **`intToValue` for indices** (`builtin_array.go`, plus the handful of
-   sites in `array.go`/`value.go` where an index is passed to JS):
-   replace direct `valueInt(k)` boxing with `intToValue(k)`. Identical
-   values; hits the batch-1 pointer-free cache for `[-1024, 65536)`.
+4. **`intToValue` for indices** (`builtin_array.go`): replace direct
+   `valueInt(k)` boxing with `intToValue(k)`. Identical values; hits the
+   batch-1 pointer-free cache for `[-1024, 65536)`.
 
 ## 6. Change E — `NewObjectWithCapacity`
 

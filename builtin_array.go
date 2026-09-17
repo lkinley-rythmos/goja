@@ -806,7 +806,7 @@ func (r *Runtime) arrayproto_map(call FunctionCall) Value {
 		if val := o.self.getIdx(idx, nil); val != nil {
 			fc.Arguments[0] = val
 			fc.Arguments[1] = intToValue(k)
-			createDataPropertyOrThrow(a, idx, callbackFn(fc))
+			createDataPropertyOrThrow(a, intToValue(k), callbackFn(fc))
 		}
 	}
 	return a
@@ -1545,7 +1545,7 @@ func (r *Runtime) array_from(call FunctionCall) Value {
 			} else {
 				item = nilSafe(item)
 			}
-			createDataPropertyOrThrow(arr, idx, item)
+			createDataPropertyOrThrow(arr, intToValue(k), item)
 		}
 		arr.self.setOwnStr("length", intToValue(l), true)
 	}
