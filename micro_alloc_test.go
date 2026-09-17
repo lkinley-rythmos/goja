@@ -86,3 +86,39 @@ func TestDefineNewAllTrueNoAlloc(t *testing.T) {
 		t.Fatalf("partial descriptor on a new key stored as %#v", o.values["y"])
 	}
 }
+
+func TestAssertCallableCached(t *testing.T) {
+	vm := New()
+	for _, src := range []string{
+		"(function(){ return 1 })",
+		"(() => 1)",
+		"(async function(){})",
+		"(async () => 1)",
+		"(class {})",
+		"({ m() { return 1 } }).m",
+	} {
+		v, err := vm.RunString(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fn := v.(*Object)
+		first, ok := fn.self.assertCallable()
+		if !ok || first == nil {
+			t.Fatalf("%s: not callable", src)
+		}
+		allocs := testing.AllocsPerRun(100, func() { fn.self.assertCallable() })
+		if allocs != 0 {
+			t.Fatalf("%s: assertCallable allocated %v times per call, want 0", src, allocs)
+		}
+	}
+	// The cached func is the live function: calling it twice works and
+	// AssertFunction sees the same behaviour.
+	v, _ := vm.RunString("(function(a) { return a * 2 })")
+	callable, _ := AssertFunction(v)
+	for i := 0; i < 2; i++ {
+		res, err := callable(Undefined(), valueInt(21))
+		if err != nil || res.ToInteger() != 42 {
+			t.Fatalf("call %d: %v, %v", i, res, err)
+		}
+	}
+}

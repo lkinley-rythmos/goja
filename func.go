@@ -77,6 +77,11 @@ type baseJsFuncObject struct {
 	prg    *Program
 	src    string
 	strict bool
+
+	// callFn caches the method value assertCallable returns. A method
+	// value escapes to the heap, so without the cache every toCallable or
+	// AssertFunction of a JS function allocated a closure per lookup.
+	callFn func(FunctionCall) Value
 }
 
 type funcObject struct {
@@ -292,7 +297,10 @@ func (f *classFuncObject) Call(FunctionCall) Value {
 }
 
 func (f *classFuncObject) assertCallable() (func(FunctionCall) Value, bool) {
-	return f.Call, true
+	if f.callFn == nil {
+		f.callFn = f.Call
+	}
+	return f.callFn, true
 }
 
 func (f *classFuncObject) vmCall(vm *vm, n int) {
@@ -480,7 +488,10 @@ func (f *baseFuncObject) typeOf() String {
 }
 
 func (f *baseJsFuncObject) assertCallable() (func(FunctionCall) Value, bool) {
-	return f.Call, true
+	if f.callFn == nil {
+		f.callFn = f.Call
+	}
+	return f.callFn, true
 }
 
 func (f *funcObject) assertConstructor() func(args []Value, newTarget *Object) *Object {
@@ -498,7 +509,10 @@ func (f *baseJsFuncObject) vmCall(vm *vm, n int) {
 }
 
 func (f *arrowFuncObject) assertCallable() (func(FunctionCall) Value, bool) {
-	return f.Call, true
+	if f.callFn == nil {
+		f.callFn = f.Call
+	}
+	return f.callFn, true
 }
 
 func (f *arrowFuncObject) vmCall(vm *vm, n int) {
@@ -842,7 +856,10 @@ func (f *asyncFuncObject) Call(call FunctionCall) Value {
 }
 
 func (f *asyncFuncObject) assertCallable() (func(FunctionCall) Value, bool) {
-	return f.Call, true
+	if f.callFn == nil {
+		f.callFn = f.Call
+	}
+	return f.callFn, true
 }
 
 func (f *asyncFuncObject) export(*objectExportCtx) interface{} {
@@ -854,7 +871,10 @@ func (f *asyncArrowFuncObject) Call(call FunctionCall) Value {
 }
 
 func (f *asyncArrowFuncObject) assertCallable() (func(FunctionCall) Value, bool) {
-	return f.Call, true
+	if f.callFn == nil {
+		f.callFn = f.Call
+	}
+	return f.callFn, true
 }
 
 func (f *asyncArrowFuncObject) export(*objectExportCtx) interface{} {
