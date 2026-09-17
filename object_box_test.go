@@ -211,3 +211,27 @@ func TestFunctionAndDescriptorBox(t *testing.T) {
 		t.Fatalf("unboxed function kinds: %v %v", v, err)
 	}
 }
+
+func benchmarkLiteral(b *testing.B, body string) {
+	vm := New()
+	if _, err := vm.RunString(`var o = {a: 1}; var str = 'hello world'; var arr2 = [1, 2]`); err != nil {
+		b.Fatal(err)
+	}
+	prg, err := Compile("b", body, false)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := vm.RunProgram(prg); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkObjectLiteral3(b *testing.B) { benchmarkLiteral(b, `({a: 1, b: 2, c: 3})`) }
+func BenchmarkArrayLiteral3(b *testing.B)  { benchmarkLiteral(b, `[1, 2, 3]`) }
+func BenchmarkClosure(b *testing.B)        { benchmarkLiteral(b, `(function(){})`) }
+func BenchmarkForOf2(b *testing.B)         { benchmarkLiteral(b, `for (var x of arr2) {}`) }
+func BenchmarkIndexOf(b *testing.B)        { benchmarkLiteral(b, `str.indexOf('l')`) }

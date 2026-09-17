@@ -1,7 +1,7 @@
 # Goja batch 5 — one allocation per object, pre-sized object literals, no re-boxed string coercions
 
 **Date:** 2026-09-17
-**Status:** approved design, not yet implemented
+**Status:** implemented on branch perf/allocation-shape-batch5 (2026-09-17); per-change benchmarks in commit messages
 **Branch:** `perf/allocation-shape-batch5` (from `master` at `3ebdf77`)
 
 ## 1. Motivation and evidence
@@ -237,7 +237,8 @@ measured on `3ebdf77` at plan time):
 |-----------|----------------|
 | `[]` / `[1, 2, 3]` literal | 3 → 2 (box + values slice) |
 | `{}` literal | 2 → 1 |
-| `{a: 1, b: 2, c: 3}` literal | measured at plan time → box + map header + group + names (exact count pinned) |
+| `{a: 1, b: 2, c: 3}` literal | 7 → 4 |
+| ten-key literal | 12 → 6 |
 | `function () {}` / arrow creation | 2 (+ stash) → 1 (+ stash) |
 | `Object.getOwnPropertyDescriptor` | 2 beyond a miss → 1 |
 | `for (x of arr)` iterator creation | 2 → 1 |
