@@ -2740,12 +2740,13 @@ func (d dupLast) exec(vm *vm) {
 	vm.pc++
 }
 
-type _newObject struct{}
+// newObject creates an ordinary object with room for the given number of
+// properties (the object literal's statically-keyed count); 0 keeps the
+// storage lazy.
+type newObject uint32
 
-var newObject _newObject
-
-func (_newObject) exec(vm *vm) {
-	vm.push(vm.r.NewObject())
+func (n newObject) exec(vm *vm) {
+	vm.push(vm.r.newObjectSized(int(n)))
 	vm.pc++
 }
 

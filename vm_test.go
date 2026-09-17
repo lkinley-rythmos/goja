@@ -26,7 +26,7 @@ func TestVM1(t *testing.T) {
 		src: file.NewFile("dummy", "", 1),
 		code: []instruction{
 			&bindGlobal{vars: []unistring.String{"v"}},
-			newObject,
+			newObject(0),
 			setGlobal("v"),
 			loadVal{asciiString("test")},
 			loadVal{valueInt(3)},

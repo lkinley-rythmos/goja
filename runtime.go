@@ -531,17 +531,24 @@ func (r *Runtime) NewObject() (v *Object) {
 	return r.newBaseObject(r.global.ObjectPrototype, classObject).val
 }
 
-// NewObjectWithCapacity creates an ordinary object (as NewObject) whose
-// property storage is pre-sized for n string-keyed properties, so that
-// defining up to n properties causes no map or key-list growth.
-// n <= 0 behaves exactly like NewObject.
-func (r *Runtime) NewObjectWithCapacity(n int) *Object {
+// newObjectSized creates an ordinary object whose property storage is
+// pre-sized for n string-keyed properties; n <= 0 leaves the storage lazy
+// exactly as NewObject does.
+func (r *Runtime) newObjectSized(n int) *Object {
 	o := r.newBaseObject(r.global.ObjectPrototype, classObject)
 	if n > 0 {
 		o.values = make(map[unistring.String]Value, n)
 		o.propNames = make([]unistring.String, 0, n)
 	}
 	return o.val
+}
+
+// NewObjectWithCapacity creates an ordinary object (as NewObject) whose
+// property storage is pre-sized for n string-keyed properties, so that
+// defining up to n properties causes no map or key-list growth.
+// n <= 0 behaves exactly like NewObject.
+func (r *Runtime) NewObjectWithCapacity(n int) *Object {
+	return r.newObjectSized(n)
 }
 
 // CreateObject creates an object with given prototype. Equivalent of Object.create(proto).

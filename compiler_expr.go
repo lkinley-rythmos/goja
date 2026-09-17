@@ -2837,9 +2837,30 @@ func (c *compiler) compileLogicalAnd(left, right ast.Expression, idx file.Idx) c
 	return r
 }
 
+// staticPropCount returns the number of properties of the literal whose
+// key is known at compile time. The object is created with room for that
+// many, so initialising it grows neither its map nor its key list.
+// Computed keys and spreads are unknown and not counted; __proto__ adds
+// no key but is counted anyway (one spare slot is harmless); a getter and
+// setter on the same key count twice for the same reason.
+func (e *compiledObjectLiteral) staticPropCount() uint32 {
+	var n uint32
+	for _, prop := range e.expr.Value {
+		switch prop := prop.(type) {
+		case *ast.PropertyKeyed:
+			if !prop.Computed {
+				n++
+			}
+		case *ast.PropertyShort:
+			n++
+		}
+	}
+	return n
+}
+
 func (e *compiledObjectLiteral) emitGetter(putOnStack bool) {
 	e.addSrcMap()
-	e.c.emit(newObject)
+	e.c.emit(newObject(e.staticPropCount()))
 	hasProto := false
 	for _, prop := range e.expr.Value {
 		switch prop := prop.(type) {
