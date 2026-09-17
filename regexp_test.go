@@ -1286,3 +1286,50 @@ func TestRegexpCacheSizeControl(t *testing.T) {
 		t.Fatalf("cache must accept entries after reset, len = %d", n)
 	}
 }
+
+func TestRegexpEagerRegexp2ForGlobal(t *testing.T) {
+	resetRegexpCache()
+	for _, flags := range []string{"g", "y", "gy", "gi", "gu"} {
+		p, err := compileRegexp("a+", flags)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.regexpWrapper == nil {
+			t.Fatalf("%q: expected the Go regexp engine", flags)
+		}
+		if p.regexp2Wrapper == nil {
+			t.Fatalf("%q: expected regexp2 to be built eagerly for a global/sticky pattern", flags)
+		}
+		q, err := compileRegexp("a+", flags)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if q.regexp2Wrapper.rx != p.regexp2Wrapper.rx {
+			t.Fatalf("%q: clones must share the eagerly built regexp2 engine", flags)
+		}
+	}
+	p, err := compileRegexp("a+", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.regexp2Wrapper != nil {
+		t.Fatal("a non-global, non-sticky pattern must not build regexp2 eagerly")
+	}
+	p, err = compileRegexp("(?<=a)b", "g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.regexpWrapper != nil || p.regexp2Wrapper == nil {
+		t.Fatal("a pattern Go's regexp rejects must still take the regexp2-only path")
+	}
+	// Behaviour is unchanged across the matching paths that use lastIndex.
+	testScript(`
+		var out = [];
+		out.push([..."a1b22c333".matchAll(/\d+/g)].map(function(m) { return m.index + ":" + m[0]; }).join(","));
+		var re = /a/gy; out.push(re.exec("aab")[0], re.lastIndex, re.exec("aab")[0], re.lastIndex, re.exec("aab"), re.lastIndex);
+		out.push([..."ab".matchAll(/(?:)/g)].map(function(m) { return m.index; }).join(","));
+		out.push([..."x\u{1F600}y".matchAll(/./gu)].length);
+		out.push("aXbXc".replace(/X/g, "-"), "a1b2".split(/\d/).join("|"));
+		out.join("|");
+	`, asciiString("1:1,3:22,6:333|a|1|a|2||0|0,1,2|3|a-b-c|a|b|"), t)
+}

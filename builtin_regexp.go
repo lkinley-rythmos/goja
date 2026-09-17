@@ -352,6 +352,15 @@ func compileRegexpUncached(patternStr, flags string) (p *regexpPattern, err erro
 			err = fmt.Errorf("Invalid regular expression (regexp2): %s (%v)", patternStr, err)
 			return
 		}
+	} else if global || sticky {
+		// Matching from lastIndex > 0 needs regexp2 (Go's regexp cannot start
+		// mid-string with correct anchors). Build it once here, on the
+		// template, instead of lazily on every clone in createRegexp2.
+		wrapper2, err = compileRegexp2(patternStr, multiline, dotAll, ignoreCase, unicode)
+		if err != nil {
+			err = fmt.Errorf("Invalid regular expression (regexp2): %s (%v)", patternStr, err)
+			return
+		}
 	}
 
 	p = &regexpPattern{
