@@ -887,16 +887,31 @@ func (o *Object) GetOwnDataValue(name string) (v Value, ok bool) {
 
 // Keys returns a list of Object's enumerable keys.
 // This method will panic with an *Exception if a JavaScript exception is thrown in the process. Use Runtime.Try to catch these.
-func (o *Object) Keys() (keys []string) {
+func (o *Object) Keys() []string {
+	return o.AppendKeys(nil)
+}
+
+// AppendKeys appends the object's own enumerable string keys, in the same
+// order Keys returns them, and returns the extended slice. Passing a slice
+// with spare capacity makes the call allocation-free for ordinary objects
+// and arrays; other objects (Proxy, Go-backed, templated) fall back to the
+// generic enumeration and allocate as Keys does.
+// This method will panic with an *Exception if a JavaScript exception is thrown in the process. Use Runtime.Try to catch these.
+func (o *Object) AppendKeys(dst []string) []string {
+	switch impl := o.self.(type) {
+	case *baseObject:
+		return impl.appendEnumerableStringKeys(dst)
+	case *arrayObject:
+		return impl.appendEnumerableStringKeys(dst)
+	}
 	iter := &enumerableIter{
 		o:       o,
 		wrapped: o.self.iterateStringKeys(),
 	}
 	for item, next := iter.next(); next != nil; item, next = next() {
-		keys = append(keys, item.name.String())
+		dst = append(dst, item.name.String())
 	}
-
-	return
+	return dst
 }
 
 // GetOwnPropertyNames returns a list of all own string properties of the Object, similar to Object.getOwnPropertyNames()

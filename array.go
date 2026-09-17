@@ -331,6 +331,22 @@ func (a *arrayObject) stringKeys(all bool, accum []Value) []Value {
 	return a.baseObject.stringKeys(all, accum)
 }
 
+func (a *arrayObject) appendEnumerableStringKeys(dst []string) []string {
+	for i, prop := range a.values {
+		if prop == nil {
+			continue
+		}
+		if p, ok := prop.(*valueProperty); ok && !p.enumerable {
+			continue
+		}
+		if dst == nil {
+			dst = make([]string, 0, len(a.values)+len(a.propNames))
+		}
+		dst = append(dst, strconv.Itoa(i))
+	}
+	return a.baseObject.appendEnumerableStringKeys(dst)
+}
+
 func (a *arrayObject) hasOwnPropertyStr(name unistring.String) bool {
 	if idx := strToArrayIdx(name); idx != math.MaxUint32 {
 		return idx < uint32(len(a.values)) && a.values[idx] != nil

@@ -3,6 +3,7 @@ package goja
 import (
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -770,5 +771,139 @@ func TestGetOwnDataValue(t *testing.T) {
 
 	if allocs := testing.AllocsPerRun(1000, func() { o.GetOwnDataValue("a") }); allocs != 0 {
 		t.Fatalf("GetOwnDataValue allocated %v times per call, want 0", allocs)
+	}
+}
+
+func BenchmarkObjectKeys(b *testing.B) {
+	r := New()
+	v, err := r.RunString(`({a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8, i: 9, j: 10})`)
+	if err != nil {
+		b.Fatal(err)
+	}
+	o := v.ToObject(r)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if len(o.Keys()) != 10 {
+			b.Fatal("wrong key count")
+		}
+	}
+}
+
+func BenchmarkAppendKeysReused(b *testing.B) {
+	r := New()
+	v, err := r.RunString(`({a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8, i: 9, j: 10})`)
+	if err != nil {
+		b.Fatal(err)
+	}
+	o := v.ToObject(r)
+	buf := make([]string, 0, 16)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf = o.AppendKeys(buf[:0])
+		if len(buf) != 10 {
+			b.Fatal("wrong key count")
+		}
+	}
+}
+
+// genericKeys is Keys as implemented before the fast path: the enumerable
+// iterator over iterateStringKeys. It is the oracle the fast path must match.
+func genericKeys(o *Object) (keys []string) {
+	iter := &enumerableIter{o: o, wrapped: o.self.iterateStringKeys()}
+	for item, next := iter.next(); next != nil; item, next = next() {
+		keys = append(keys, item.name.String())
+	}
+	return
+}
+
+func TestAppendKeysMatchesGeneric(t *testing.T) {
+	r := New()
+	r.Set("goStruct", struct {
+		A int
+		B string
+	}{1, "x"})
+	r.Set("goMap", map[string]interface{}{"m1": 1, "m2": 2})
+	sources := []string{
+		`({})`,
+		`({a: 1, b: 2, 5: "five", c: 3, 1: "one"})`,
+		`(function() { var o = {a: 1, b: 2}; Object.defineProperty(o, "h", {value: 3, enumerable: false}); delete o.a; o.z = 4; return o; })()`,
+		`[]`,
+		`[1, , 3]`,
+		`(function() { var a = [1, 2]; a.x = 1; Object.defineProperty(a, "1", {value: 9, enumerable: false}); a[5] = 5; return a; })()`,
+		`(function() { var s = []; s[100000] = 1; s.y = 2; return s; })()`,
+		`new Proxy({p: 1, q: 2}, { ownKeys(t) { return ["q", "p", "extra"]; }, getOwnPropertyDescriptor(t, k) { return k === "extra" ? {value: 0, enumerable: true, configurable: true} : Reflect.getOwnPropertyDescriptor(t, k); } })`,
+		`goStruct`,
+		`goMap`,
+		`(function() { var f = function() {}; f.u = 1; return f; })()`,
+		`globalThis`,
+		`(function() { var s = new String("ab"); s.x = 1; return s; })()`,
+		`({"é": 1, plain: 2})`,
+	}
+	for _, src := range sources {
+		v, err := r.RunString(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		o := v.ToObject(r)
+		want := genericKeys(o)
+		got := o.Keys()
+		if src == "goMap" {
+			// Go map iteration order is randomized; both paths take the same
+			// generic iterator, so only the key set is comparable.
+			sort.Strings(want)
+			sort.Strings(got)
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("%s: Keys = %v, generic = %v", src, got, want)
+		}
+		if (got == nil) != (want == nil) {
+			t.Errorf("%s: nil-ness differs: Keys=%v generic=%v", src, got == nil, want == nil)
+		}
+		buf := o.AppendKeys([]string{"pre"})
+		if src == "goMap" {
+			sort.Strings(buf[1:])
+		}
+		if len(buf) == 0 || buf[0] != "pre" || strings.Join(buf[1:], ",") != strings.Join(want, ",") {
+			t.Errorf("%s: AppendKeys = %v, want pre + %v", src, buf, want)
+		}
+	}
+	// Mutation between calls is observed.
+	v, err := r.RunString(`({a: 1})`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := v.ToObject(r)
+	first := o.Keys()
+	if err := o.Set("b", 2); err != nil {
+		t.Fatal(err)
+	}
+	if got := o.Keys(); strings.Join(got, ",") != "a,b" || strings.Join(first, ",") != "a" {
+		t.Errorf("mutation not observed: first=%v second=%v", first, got)
+	}
+}
+
+func TestAppendKeysAllocationFree(t *testing.T) {
+	r := New()
+	v, err := r.RunString(`({a: 1, b: 2, c: 3})`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := v.ToObject(r)
+	buf := make([]string, 0, 8)
+	if allocs := testing.AllocsPerRun(200, func() { buf = o.AppendKeys(buf[:0]) }); allocs != 0 {
+		t.Fatalf("AppendKeys into a reused buffer allocated %v times, want 0", allocs)
+	}
+	if allocs := testing.AllocsPerRun(200, func() { _ = o.Keys() }); allocs != 1 {
+		t.Fatalf("Keys on a plain object allocated %v times, want exactly 1", allocs)
+	}
+	av, err := r.RunString(`[1, 2, 3]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	arr := av.ToObject(r)
+	if allocs := testing.AllocsPerRun(200, func() { buf = arr.AppendKeys(buf[:0]) }); allocs != 0 {
+		t.Fatalf("AppendKeys on a small array allocated %v times, want 0", allocs)
 	}
 }

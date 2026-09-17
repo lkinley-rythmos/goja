@@ -1389,6 +1389,27 @@ func (o *baseObject) appendStringKeys(all bool, keys []Value, names []unistring.
 	return keys
 }
 
+// appendEnumerableStringKeys appends the object's own enumerable string
+// keys in spec order without iterator state or boxed names. It runs no
+// user code, so propNames cannot change underneath it.
+func (o *baseObject) appendEnumerableStringKeys(dst []string) []string {
+	o.ensurePropOrder()
+	for _, k := range o.propNames {
+		prop := o.values[k]
+		if prop == nil {
+			continue
+		}
+		if p, ok := prop.(*valueProperty); ok && !p.enumerable {
+			continue
+		}
+		if dst == nil {
+			dst = make([]string, 0, len(o.propNames))
+		}
+		dst = append(dst, k.String())
+	}
+	return dst
+}
+
 func (o *baseObject) symbols(all bool, accum []Value) []Value {
 	if o.symValues != nil {
 		iter := o.symValues.newIter()
