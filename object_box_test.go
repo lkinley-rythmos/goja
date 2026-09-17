@@ -112,3 +112,60 @@ func TestPlainObjectBox(t *testing.T) {
 		}
 	}
 }
+
+func TestArrayBox(t *testing.T) {
+	vm := New()
+	arr := vm.NewArray(1, 2)
+	checkWiring(t, "NewArray", arr, arr.self)
+	if allocs := testing.AllocsPerRun(100, func() { vm.NewArray() }); allocs != 1 {
+		t.Fatalf("NewArray() allocated %v times, want 1", allocs)
+	}
+	// Identity survives the dense -> sparse swap; the box's original impl
+	// is simply replaced in obj.self.
+	v, err := vm.RunString(`var sw = [1, 2, 3]; sw`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sw := v.(*Object)
+	if _, ok := sw.self.(*arrayObject); !ok {
+		t.Fatalf("fresh array impl is %T", sw.self)
+	}
+	if _, err := vm.RunString(`sw[1000000] = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := sw.self.(*sparseArrayObject); !ok {
+		t.Fatalf("after sparse conversion impl is %T", sw.self)
+	}
+	// Shrinking does not convert back (that needs >= 1024 items), but the
+	// Object identity and contents must be intact behind the swapped impl.
+	if _, err := vm.RunString(`sw.length = 3`); err != nil {
+		t.Fatal(err)
+	}
+	if got := vm.Get("sw"); got != Value(sw) {
+		t.Fatal("array identity changed across the representation swap")
+	}
+	if keys := sw.Keys(); len(keys) != 3 || keys[0] != "0" {
+		t.Fatalf("keys after the swap: %v", keys)
+	}
+	if v, ok := sw.GetOwnDataValue("2"); !ok || v.ToInteger() != 3 {
+		t.Fatalf("element after the swap: %v %v", v, ok)
+	}
+	if _, err := vm.RunString(`var arr2 = [1, 2]`); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		src  string
+		want float64
+	}{
+		{"[]", 1},
+		{"[1, 2, 3]", 2},
+		{"for (var x of arr2) {}", 4},
+		{"arr2[Symbol.iterator]()", 1},
+	} {
+		if got := measureProgramAllocs(t, vm, tc.src); got != tc.want {
+			t.Errorf("%s: %v allocations, want %v", tc.src, got, tc.want)
+		}
+	}
+	it, _ := vm.RunString(`arr2[Symbol.iterator]()`)
+	checkWiring(t, "array iterator", it.(*Object), it.(*Object).self)
+}

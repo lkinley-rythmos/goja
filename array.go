@@ -50,21 +50,24 @@ func (ai *arrayIterObject) next() Value {
 	return ai.val.runtime.createIterResultObject(v, done)
 }
 
-func (r *Runtime) createArrayIterator(iterObj *Object, kind iterationKind) Value {
-	o := &Object{runtime: r}
+type arrayIterObjectBox struct {
+	arrayIterObject
+	obj Object
+}
 
-	ai := &arrayIterObject{
-		obj:  iterObj,
-		kind: kind,
-	}
+func (r *Runtime) createArrayIterator(iterObj *Object, kind iterationKind) Value {
+	b := &arrayIterObjectBox{}
+	b.obj.runtime = r
+	ai := &b.arrayIterObject
+	ai.obj = iterObj
+	ai.kind = kind
 	ai.class = classObject
-	ai.val = o
+	ai.val = &b.obj
 	ai.extensible = true
-	o.self = ai
+	b.obj.self = ai
 	ai.prototype = r.getArrayIteratorPrototype()
 	ai.init()
-
-	return o
+	return &b.obj
 }
 
 // arrayObject keeps length virtual: it never appears in values or propNames.

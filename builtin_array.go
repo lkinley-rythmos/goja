@@ -6,14 +6,22 @@ import (
 	"sync"
 )
 
-func (r *Runtime) newArray(prototype *Object) (a *arrayObject) {
-	v := &Object{runtime: r}
+// arrayObjectBox co-allocates an array's impl with its Object (see
+// baseObjectBox). A dense array that converts to sparse gets a new impl in
+// obj.self; the boxed one becomes dead weight held by the Object.
+type arrayObjectBox struct {
+	arrayObject
+	obj Object
+}
 
-	a = &arrayObject{}
+func (r *Runtime) newArray(prototype *Object) (a *arrayObject) {
+	b := &arrayObjectBox{}
+	b.obj.runtime = r
+	a = &b.arrayObject
 	a.class = classArray
-	a.val = v
+	a.val = &b.obj
 	a.extensible = true
-	v.self = a
+	b.obj.self = a
 	a.prototype = prototype
 	a.init()
 	return

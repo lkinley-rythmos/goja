@@ -70,6 +70,8 @@ func measureProgramAllocs(t *testing.T, vm *Runtime, src string) float64 {
 // split coerces its receiver (1 box — the separator is devirtualised without a box);
 // RegExp.prototype.test coerces the argument (1). Counts measured on e41cf0f before:
 // 3 / 3 / 10 / 9; after: 1 / 1 / 9 / 8.
+// After the array box (Task 4) split's result array costs one allocation
+// instead of two, so split is 8.
 func TestStringCoercionNoRebox(t *testing.T) {
 	vm := New()
 	if _, err := vm.RunString(`var str = 'hello world'`); err != nil {
@@ -81,7 +83,7 @@ func TestStringCoercionNoRebox(t *testing.T) {
 	}{
 		{"str.indexOf('l')", 1},
 		{"str.indexOf('l', 1)", 1},
-		{"str.split('l')", 9},
+		{"str.split('l')", 8},
 		{"/l/.test(str)", 8},
 	} {
 		if got := measureProgramAllocs(t, vm, tc.src); got != tc.want {
