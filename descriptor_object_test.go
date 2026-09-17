@@ -92,9 +92,9 @@ func gopdCallable(t *testing.T, vm *Runtime) Callable {
 	return fn
 }
 
-// TestDescriptorObjectAllocs: a descriptor costs exactly two allocations
-// (the Object and the descriptorObject) beyond what a miss (undefined)
-// costs, which is the Callable wrapper's own overhead.
+// TestDescriptorObjectAllocs: a descriptor costs exactly one allocation
+// (the box holding the Object and the descriptorObject) beyond what a
+// miss (undefined) costs, which is the Callable wrapper's own overhead.
 func TestDescriptorObjectAllocs(t *testing.T) {
 	vm := New()
 	gopd := gopdCallable(t, vm)
@@ -115,8 +115,8 @@ func TestDescriptorObjectAllocs(t *testing.T) {
 	}
 	base := run(miss)
 	for _, key := range []Value{hit, acc} {
-		if got := run(key) - base; got != 2 {
-			t.Errorf("descriptor for %v: %v allocations beyond a miss, want 2", key, got)
+		if got := run(key) - base; got != 1 {
+			t.Errorf("descriptor for %v: %v allocations beyond a miss, want 1", key, got)
 		}
 	}
 }

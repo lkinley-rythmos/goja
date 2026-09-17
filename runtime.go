@@ -598,17 +598,28 @@ func (r *Runtime) NewGoError(err error) *Object {
 	return e
 }
 
+// funcObjectBox, methodFuncObjectBox and arrowFuncObjectBox co-allocate a
+// closure's impl with its Object (see baseObjectBox). Generator objects
+// created from a boxed function get their own impl; the function itself
+// never swaps.
+type funcObjectBox struct {
+	funcObject
+	obj Object
+}
+
 func (r *Runtime) newFunc(name unistring.String, length int, strict bool) (f *funcObject) {
-	f = &funcObject{}
-	r.initBaseJsFunction(&f.baseJsFuncObject, strict)
-	f.val.self = f
+	b := &funcObjectBox{}
+	b.obj.runtime = r
+	f = &b.funcObject
+	r.initBaseJsFunction(&f.baseJsFuncObject, &b.obj, strict)
+	b.obj.self = f
 	f.init(name, intToValue(int64(length)))
 	return
 }
 
 func (r *Runtime) newAsyncFunc(name unistring.String, length int, strict bool) (f *asyncFuncObject) {
 	f = &asyncFuncObject{}
-	r.initBaseJsFunction(&f.baseJsFuncObject, strict)
+	r.initBaseJsFunction(&f.baseJsFuncObject, &Object{runtime: r}, strict)
 	f.class = classFunction
 	f.prototype = r.getAsyncFunctionPrototype()
 	f.val.self = f
@@ -618,7 +629,7 @@ func (r *Runtime) newAsyncFunc(name unistring.String, length int, strict bool) (
 
 func (r *Runtime) newGeneratorFunc(name unistring.String, length int, strict bool) (f *generatorFuncObject) {
 	f = &generatorFuncObject{}
-	r.initBaseJsFunction(&f.baseJsFuncObject, strict)
+	r.initBaseJsFunction(&f.baseJsFuncObject, &Object{runtime: r}, strict)
 	f.class = classFunction
 	f.prototype = r.getGeneratorFunctionPrototype()
 	f.val.self = f
@@ -642,9 +653,9 @@ func (r *Runtime) newClassFunc(name unistring.String, length int, proto *Object,
 	return
 }
 
-func (r *Runtime) initBaseJsFunction(f *baseJsFuncObject, strict bool) {
-	v := &Object{runtime: r}
-
+// initBaseJsFunction wires f as the impl of v; callers that box the
+// function pass the box's Object, the others a fresh &Object{runtime: r}.
+func (r *Runtime) initBaseJsFunction(f *baseJsFuncObject, v *Object, strict bool) {
 	f.class = classFunction
 	f.val = v
 	f.extensible = true
@@ -652,17 +663,24 @@ func (r *Runtime) initBaseJsFunction(f *baseJsFuncObject, strict bool) {
 	f.prototype = r.getFunctionPrototype()
 }
 
+type methodFuncObjectBox struct {
+	methodFuncObject
+	obj Object
+}
+
 func (r *Runtime) newMethod(name unistring.String, length int, strict bool) (f *methodFuncObject) {
-	f = &methodFuncObject{}
-	r.initBaseJsFunction(&f.baseJsFuncObject, strict)
-	f.val.self = f
+	b := &methodFuncObjectBox{}
+	b.obj.runtime = r
+	f = &b.methodFuncObject
+	r.initBaseJsFunction(&f.baseJsFuncObject, &b.obj, strict)
+	b.obj.self = f
 	f.init(name, intToValue(int64(length)))
 	return
 }
 
 func (r *Runtime) newGeneratorMethod(name unistring.String, length int, strict bool) (f *generatorMethodFuncObject) {
 	f = &generatorMethodFuncObject{}
-	r.initBaseJsFunction(&f.baseJsFuncObject, strict)
+	r.initBaseJsFunction(&f.baseJsFuncObject, &Object{runtime: r}, strict)
 	f.prototype = r.getGeneratorFunctionPrototype()
 	f.val.self = f
 	f.init(name, intToValue(int64(length)))
@@ -672,28 +690,35 @@ func (r *Runtime) newGeneratorMethod(name unistring.String, length int, strict b
 
 func (r *Runtime) newAsyncMethod(name unistring.String, length int, strict bool) (f *asyncMethodFuncObject) {
 	f = &asyncMethodFuncObject{}
-	r.initBaseJsFunction(&f.baseJsFuncObject, strict)
+	r.initBaseJsFunction(&f.baseJsFuncObject, &Object{runtime: r}, strict)
 	f.val.self = f
 	f.init(name, intToValue(int64(length)))
 	return
 }
 
-func (r *Runtime) initArrowFunc(f *arrowFuncObject, strict bool) {
-	r.initBaseJsFunction(&f.baseJsFuncObject, strict)
+func (r *Runtime) initArrowFunc(f *arrowFuncObject, v *Object, strict bool) {
+	r.initBaseJsFunction(&f.baseJsFuncObject, v, strict)
 	f.newTarget = r.vm.newTarget
 }
 
+type arrowFuncObjectBox struct {
+	arrowFuncObject
+	obj Object
+}
+
 func (r *Runtime) newArrowFunc(name unistring.String, length int, strict bool) (f *arrowFuncObject) {
-	f = &arrowFuncObject{}
-	r.initArrowFunc(f, strict)
-	f.val.self = f
+	b := &arrowFuncObjectBox{}
+	b.obj.runtime = r
+	f = &b.arrowFuncObject
+	r.initArrowFunc(f, &b.obj, strict)
+	b.obj.self = f
 	f.init(name, intToValue(int64(length)))
 	return
 }
 
 func (r *Runtime) newAsyncArrowFunc(name unistring.String, length int, strict bool) (f *asyncArrowFuncObject) {
 	f = &asyncArrowFuncObject{}
-	r.initArrowFunc(&f.arrowFuncObject, strict)
+	r.initArrowFunc(&f.arrowFuncObject, &Object{runtime: r}, strict)
 	f.class = classObject
 	f.prototype = r.getAsyncFunctionPrototype()
 	f.val.self = f

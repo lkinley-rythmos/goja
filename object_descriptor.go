@@ -23,14 +23,20 @@ var (
 	descriptorAccessorKeys = [...]unistring.String{"get", "set", "enumerable", "configurable"}
 )
 
+type descriptorObjectBox struct {
+	descriptorObject
+	obj Object
+}
+
 func (r *Runtime) newDescriptorObject() *descriptorObject {
-	v := &Object{runtime: r}
-	d := &descriptorObject{}
+	b := &descriptorObjectBox{}
+	b.obj.runtime = r
+	d := &b.descriptorObject
 	d.class = classObject
-	d.val = v
+	d.val = &b.obj
 	d.extensible = true
 	d.prototype = r.global.ObjectPrototype
-	v.self = d
+	b.obj.self = d
 	return d
 }
 

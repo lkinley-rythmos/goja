@@ -86,6 +86,9 @@ func TestStringCoercionNoRebox(t *testing.T) {
 		{"str.split('l')", 8},
 		{"/l/.test(str)", 8},
 	} {
+		if raceDetectorEnabled && tc.src == "/l/.test(str)" {
+			continue // sync.Pool caching is disabled under the race detector; the regexp path allocates one more
+		}
 		if got := measureProgramAllocs(t, vm, tc.src); got != tc.want {
 			t.Errorf("%s: %v allocations, want %v", tc.src, got, tc.want)
 		}

@@ -169,3 +169,45 @@ func TestArrayBox(t *testing.T) {
 	it, _ := vm.RunString(`arr2[Symbol.iterator]()`)
 	checkWiring(t, "array iterator", it.(*Object), it.(*Object).self)
 }
+
+func TestFunctionAndDescriptorBox(t *testing.T) {
+	vm := New()
+	if _, err := vm.RunString(`var o = {a: 1}; var fn = function(){}; var ar = () => 1; var mo = { m() {} }`); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"fn", "ar"} {
+		obj := vm.Get(name).(*Object)
+		checkWiring(t, name, obj, obj.self)
+	}
+	m := vm.Get("mo").(*Object).Get("m").(*Object)
+	checkWiring(t, "method", m, m.self)
+	gopd, _ := AssertFunction(vm.Get("Object").ToObject(vm).Get("getOwnPropertyDescriptor"))
+	dv, err := gopd(Undefined(), vm.Get("o"), vm.ToValue("a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkWiring(t, "descriptor", dv.(*Object), dv.(*Object).self)
+	for _, tc := range []struct {
+		src  string
+		want float64
+	}{
+		{"(function(){})", 1},
+		{"(() => 1)", 1},
+		// one-key literal (4: box, map header, group, names) + method box (1) + the method's own remaining allocation (1); 7 before the method box
+		{"({ m() {} })", 6},
+		{"Object.getOwnPropertyDescriptor(o, 'a')", 1},
+	} {
+		if got := measureProgramAllocs(t, vm, tc.src); got != tc.want {
+			t.Errorf("%s: %v allocations, want %v", tc.src, got, tc.want)
+		}
+	}
+	// Async, generator and class constructors are not boxed and must keep
+	// working through the changed init signatures.
+	v, err := vm.RunString(`
+		var af = async function(){}; var gf = function*(){ yield 1 }; class K { m() { return 1 } }
+		[typeof af, gf().next().value, new K().m(), typeof K.prototype.m].join('/')
+	`)
+	if err != nil || v.String() != "function/1/1/function" {
+		t.Fatalf("unboxed function kinds: %v %v", v, err)
+	}
+}

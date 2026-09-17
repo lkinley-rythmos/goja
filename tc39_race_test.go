@@ -11,6 +11,11 @@ const (
 	tc39MaxTestGroupSize = 8000 // to prevent race detector complaining about too many goroutines
 )
 
+// raceDetectorEnabled reports whether this binary was built with -race.
+// sync.Pool caching is disabled under the race detector, which shifts
+// exact allocation counts on pool-dependent paths.
+const raceDetectorEnabled = true
+
 func (ctx *tc39TestCtx) runTest(name string, f func(t *testing.T)) {
 	ctx.testQueue = append(ctx.testQueue, tc39Test{name: name, f: f})
 	if len(ctx.testQueue) >= tc39MaxTestGroupSize {
