@@ -123,8 +123,8 @@ so the chain is `prototype` → intrinsics → map.
 - `getOwnPropStr("length"/"name")` → `&f.lenProp` / `&f.nameProp`; `getStr` goes through `getStrWithOwnProp` so accessor state is honoured; `hasOwnPropertyStr` → `true`.
 - `defineOwnPropertyStr`: run `f._defineOwnProperty(name, &prop, descr, throw)` against the field. `_defineOwnProperty` mutates an existing `*valueProperty` in place and returns the same pointer for every descriptor except the all-`true` data form. Same pointer returned → stay virtual (this is the SetFunctionName case used for `{ m() {} }`, class methods and `obj.x = function(){}` in vm.go: zero allocation). Different value or failure → materialize (below), then store the result — what `baseObject.defineOwnPropertyStr` would have done.
 - `setOwnStr("length"/"name")`: if the field is an accessor or has been made writable by an in-place redefine, materialize and delegate to `baseObject.setOwnStr`; otherwise `typeErrorResult(throw, "Cannot assign to read only property '%s'", name)`, `false`, still virtual. `setForeignStr` resolves through `getOwnPropStr` as `funcObject`'s does.
-- `deleteStr`: both configurable; materialize, then `baseObject.deleteStr` (one code path for deletion semantics; `delete f.name` is rare).
-- `stringKeys(all)`: integer-like keys sort before every other string key, so after `ensurePropOrder()` emit `propNames[:idxPropCount]`, then `length` and `name` — each only when `all` or its live `enumerable` flag is set (an in-place redefine can flip it) — then `propNames[idxPropCount:]`; `baseObject.stringKeys` is refactored onto an `appendStringKeys(all, keys, names)` range helper. `iterateStringKeys`: pass index-like items through, then yield the two intrinsics with the **field pointers**, then the rest — `Object.freeze` mutates the real storage and `enumerableIter` reads the live flags.
+- `deleteStr`: a non-configurable intrinsic (after `Object.freeze`) is rejected via `checkDeleteProp` without materializing; otherwise materialize, then `baseObject.deleteStr`.
+- `stringKeys(all)`: integer-like keys sort before every other string key, so after `ensurePropOrder()` emit `propNames[:idxPropCount]`, then `length` and `name` — each only when `all` or its live `enumerable` flag is set (an in-place redefine can flip it) — then `propNames[idxPropCount:]`; `baseObject.stringKeys` is refactored onto an `appendStringKeys(all, keys, names)` range helper. `iterateStringKeys`: pass index-like items through, then yield the two intrinsics with the **field pointers**, then the rest — `Object.freeze` mutates the real storage and `enumerableIter` reads the live flags. The intrinsics are read from live state on each step — the fields while virtual, the map once materialized — so an intrinsic deleted or redefined during an in-flight `for-in` is treated exactly as any other property (ECMA-262 forbids visiting a deleted property).
 
 **Materialize** (once, irreversible): `ensureValues()`;
 `values["length"] = &f.lenProp`, `values["name"] = &f.nameProp`; insert
@@ -149,7 +149,9 @@ patterns. A `compileRegexp2` failure here (today a panic inside
 `createRegexp2`) becomes a returned error → `SyntaxError`. Non-global
 patterns always match from `start == 0` and are untouched. Cost: one extra
 compile per `(pattern, flags)` per process, both engines resident for
-those templates, bounded by the cache cap.
+those templates, bounded by the cache cap. The two engine-construction
+branches (the Go-regexp-rejected case and the global/sticky case) are
+merged into one condition, `wrapper == nil || global || sticky`.
 
 ## 7. Change E — `Keys` fast path and `AppendKeys`
 
@@ -209,6 +211,7 @@ GAP harness is the acceptance gate; merge to `master` after qualification.
 3. Function types overriding property methods elsewhere — grep found only `funcObject`; the plan repeats the grep.
 4. Eager regexp2 doubles first-compile cost for global patterns; bounded by the cache.
 5. Golden captured before the change is the equivalence proof; three defects (sparse-conversion order, virtual emission order, live flags) were caught only when the golden or test262 was extended — extend both when touching virtual properties.
+6. The whole-branch differential probe against master (1111 lines over array/function/object shapes × enumeration APIs) is the acceptance signal for virtual-property work; keep it byte-identical.
 
 ## 10. Sequencing
 
