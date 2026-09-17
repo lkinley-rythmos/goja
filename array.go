@@ -79,8 +79,9 @@ type arrayObject struct {
 func (a *arrayObject) init() {
 	a.baseObject.init()
 	a.lengthProp.writable = true
-
-	a._put("length", &a.lengthProp)
+	// length is virtual: getOwnPropStr, setOwnStr, defineOwnPropertyStr,
+	// hasOwnPropertyStr, deleteStr and the key enumerators special-case it,
+	// so it is never stored in values/propNames.
 }
 
 func (a *arrayObject) _setLengthInt(l uint32, throw bool) bool {
@@ -282,9 +283,10 @@ func (a *arrayObject) setForeignStr(name unistring.String, val, receiver Value, 
 }
 
 type arrayPropIter struct {
-	a     *arrayObject
-	limit int
-	idx   int
+	a          *arrayObject
+	limit      int
+	idx        int
+	lengthDone bool
 }
 
 func (i *arrayPropIter) next() (propIterItem, iterNextFunc) {
@@ -295,6 +297,10 @@ func (i *arrayPropIter) next() (propIterItem, iterNextFunc) {
 		if prop != nil {
 			return propIterItem{name: name, value: prop}, i.next
 		}
+	}
+	if !i.lengthDone {
+		i.lengthDone = true
+		return propIterItem{name: asciiString("length"), value: &i.a.lengthProp}, i.next
 	}
 
 	return i.a.baseObject.iterateStringKeys()()
@@ -319,15 +325,20 @@ func (a *arrayObject) stringKeys(all bool, accum []Value) []Value {
 			accum = append(accum, asciiString(name))
 		}
 	}
+	if all {
+		accum = append(accum, asciiString("length"))
+	}
 	return a.baseObject.stringKeys(all, accum)
 }
 
 func (a *arrayObject) hasOwnPropertyStr(name unistring.String) bool {
 	if idx := strToArrayIdx(name); idx != math.MaxUint32 {
 		return idx < uint32(len(a.values)) && a.values[idx] != nil
-	} else {
-		return a.baseObject.hasOwnPropertyStr(name)
 	}
+	if name == "length" {
+		return true
+	}
+	return a.baseObject.hasOwnPropertyStr(name)
 }
 
 func (a *arrayObject) hasOwnPropertyIdx(idx valueInt) bool {
@@ -486,6 +497,9 @@ func (a *arrayObject) _deleteIdxProp(idx uint32, throw bool) bool {
 func (a *arrayObject) deleteStr(name unistring.String, throw bool) bool {
 	if idx := strToArrayIdx(name); idx != math.MaxUint32 {
 		return a._deleteIdxProp(idx, throw)
+	}
+	if name == "length" {
+		return a.checkDelete(name, &a.lengthProp, throw)
 	}
 	return a.baseObject.deleteStr(name, throw)
 }

@@ -329,7 +329,10 @@ func (a *sparseArrayObject) expand(idx uint32) bool {
 			ar.setValuesFromSparse(a.items, int(idx))
 			ar.val.self = ar
 			ar.lengthProp.writable = a.lengthProp.writable
-			a._put("length", &ar.lengthProp)
+			// The dense object shares this map by value-copy; drop the sparse
+			// object's length entry so the dense object's virtual length is
+			// the only one.
+			ar._delete("length")
 			return false
 		}
 	}
