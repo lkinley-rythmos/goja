@@ -205,11 +205,19 @@ class K3 { static name() { return "N"; } } out.push(typeof K3.name, names(K3));
 function d7() {} d7[5] = 1; d7.u = 2; out.push(names(d7));
 function d8() {} Object.defineProperty(d8, "length", { get() { return 42; } }); out.push(d8.length, names(d8));
 function d9() {} out.push(Object.keys(d9).length, JSON.stringify(d9), d9.hasOwnProperty("length"), d9.hasOwnProperty("name"), d9.hasOwnProperty("x"));
+function e1(a, b) {} Object.defineProperty(e1, "length", { enumerable: true }); out.push(Object.keys(e1).join(","), JSON.stringify(e1), names(e1));
+function e2() {} Object.defineProperty(e2, "name", { enumerable: true }); out.push(Object.keys(e2).join(","), Object.entries(e2).join(";"));
+function w1(a, b) {} Object.defineProperty(w1, "length", { writable: true }); w1.length = 99; out.push(w1.length, names(w1));
+function w2() {} Object.defineProperty(w2, "name", { writable: true }); w2.name = "zz"; out.push(w2.name);
+out.push((function() { "use strict"; function w3(a) {} Object.defineProperty(w3, "length", { writable: true }); w3.length = 99; return w3.length; })());
+function w4() {} Object.defineProperty(w4, "length", { value: 7, writable: true, configurable: true }); w4.length = 99; out.push(w4.length, names(w4));
+function i1() {} i1.p0 = 0; i1.p1 = 1; i1.p2 = 2; i1.p3 = 3; var seen = []; for (var k in i1) { seen.push(k); if (seen.length === 1) delete i1.name; } out.push(seen.join(","), names(i1));
+function i2() {} i2.p0 = 0; i2.p1 = 1; i2.p2 = 2; i2.p3 = 3; var seen2 = []; for (var k2 in i2) { seen2.push(k2); if (seen2.length === 1) Object.defineProperty(i2, "name", { value: "x", writable: true, enumerable: true, configurable: true }); } out.push(seen2.join(","), names(i2));
 out.join("|");
 `
 
 // Captured from the unmodified engine at 43617bb. Must pass before and after Task 3.
-const funcIntrinsicsGolden = `prototype,length,name:decl:2:{"value":"decl","writable":false,"enumerable":false,"configurable":true}:{"value":2,"writable":false,"enumerable":false,"configurable":true}|prototype,length,name:expr:1:{"value":"expr","writable":false,"enumerable":false,"configurable":true}:{"value":1,"writable":false,"enumerable":false,"configurable":true}|length,name:arrow:3:{"value":"arrow","writable":false,"enumerable":false,"configurable":true}:{"value":3,"writable":false,"enumerable":false,"configurable":true}|length,name:m:1:{"value":"m","writable":false,"enumerable":false,"configurable":true}:{"value":1,"writable":false,"enumerable":false,"configurable":true}|length,name,prototype,s:K2:0:{"value":"K2","writable":false,"enumerable":false,"configurable":true}:{"value":0,"writable":false,"enumerable":false,"configurable":true}|length,name:s:2:{"value":"s","writable":false,"enumerable":false,"configurable":true}:{"value":2,"writable":false,"enumerable":false,"configurable":true}|length,name:m:0:{"value":"m","writable":false,"enumerable":false,"configurable":true}:{"value":0,"writable":false,"enumerable":false,"configurable":true}|length,name:bound decl:1:{"value":"bound decl","writable":false,"enumerable":false,"configurable":true}:{"value":1,"writable":false,"enumerable":false,"configurable":true}|length,name,prototype:gen:1:{"value":"gen","writable":false,"enumerable":false,"configurable":true}:{"value":1,"writable":false,"enumerable":false,"configurable":true}|length,name:asy:2:{"value":"asy","writable":false,"enumerable":false,"configurable":true}:{"value":2,"writable":false,"enumerable":false,"configurable":true}|length,name:push:1:{"value":"push","writable":false,"enumerable":false,"configurable":true}:{"value":1,"writable":false,"enumerable":false,"configurable":true}|length,name:get g:0:{"value":"get g","writable":false,"enumerable":false,"configurable":true}:{"value":0,"writable":false,"enumerable":false,"configurable":true}|length,name,prototype,u|length,name,u,prototype|true|prototype,length||false|prototype,length,name|renamed|{"value":"renamed","writable":false,"enumerable":false,"configurable":true}|prototype,length,name,u|name,u|w|d4|TypeError|true|{"value":"d6","writable":false,"enumerable":false,"configurable":false}|{"value":0,"writable":false,"enumerable":false,"configurable":false}|function|length,name,prototype|prototype,5,length,name,u|42|prototype,length,name|0||true|true|false`
+const funcIntrinsicsGolden = `prototype,length,name:decl:2:{"value":"decl","writable":false,"enumerable":false,"configurable":true}:{"value":2,"writable":false,"enumerable":false,"configurable":true}|prototype,length,name:expr:1:{"value":"expr","writable":false,"enumerable":false,"configurable":true}:{"value":1,"writable":false,"enumerable":false,"configurable":true}|length,name:arrow:3:{"value":"arrow","writable":false,"enumerable":false,"configurable":true}:{"value":3,"writable":false,"enumerable":false,"configurable":true}|length,name:m:1:{"value":"m","writable":false,"enumerable":false,"configurable":true}:{"value":1,"writable":false,"enumerable":false,"configurable":true}|length,name,prototype,s:K2:0:{"value":"K2","writable":false,"enumerable":false,"configurable":true}:{"value":0,"writable":false,"enumerable":false,"configurable":true}|length,name:s:2:{"value":"s","writable":false,"enumerable":false,"configurable":true}:{"value":2,"writable":false,"enumerable":false,"configurable":true}|length,name:m:0:{"value":"m","writable":false,"enumerable":false,"configurable":true}:{"value":0,"writable":false,"enumerable":false,"configurable":true}|length,name:bound decl:1:{"value":"bound decl","writable":false,"enumerable":false,"configurable":true}:{"value":1,"writable":false,"enumerable":false,"configurable":true}|length,name,prototype:gen:1:{"value":"gen","writable":false,"enumerable":false,"configurable":true}:{"value":1,"writable":false,"enumerable":false,"configurable":true}|length,name:asy:2:{"value":"asy","writable":false,"enumerable":false,"configurable":true}:{"value":2,"writable":false,"enumerable":false,"configurable":true}|length,name:push:1:{"value":"push","writable":false,"enumerable":false,"configurable":true}:{"value":1,"writable":false,"enumerable":false,"configurable":true}|length,name:get g:0:{"value":"get g","writable":false,"enumerable":false,"configurable":true}:{"value":0,"writable":false,"enumerable":false,"configurable":true}|length,name,prototype,u|length,name,u,prototype|true|prototype,length||false|prototype,length,name|renamed|{"value":"renamed","writable":false,"enumerable":false,"configurable":true}|prototype,length,name,u|name,u|w|d4|TypeError|true|{"value":"d6","writable":false,"enumerable":false,"configurable":false}|{"value":0,"writable":false,"enumerable":false,"configurable":false}|function|length,name,prototype|prototype,5,length,name,u|42|prototype,length,name|0||true|true|false|length||prototype,length,name|name|name,e2|99|prototype,length,name|zz|99|99|prototype,length,name|p0,p1,p2,p3|length,p0,p1,p2,p3,prototype|p0,p1,p2,p3|length,name,p0,p1,p2,p3,prototype`
 
 func TestFuncIntrinsicsCharacterization(t *testing.T) {
 	testScript(funcIntrinsicsGoldenScript, asciiString(funcIntrinsicsGolden), t)
@@ -290,5 +298,29 @@ func TestFuncIntrinsicsVirtual(t *testing.T) {
 	}
 	if got := strings.Join(order, ","); got != "5,length,name,u" {
 		t.Errorf("virtual iterator order = %q, want 5,length,name,u", got)
+	}
+
+	// funcImpl returns the embedded *baseFuncObject directly, so these calls
+	// dispatch to baseFuncObject.iterateStringKeys, not funcObject's override
+	// that injects "prototype" (that only happens through the objectImpl
+	// interface, e.g. Object.getOwnPropertyNames). No "prototype" is expected
+	// here for that reason.
+	iterOrderCases := []struct {
+		src  string
+		want string
+	}{
+		{`(function() { function f() {} return f; })()`, "length,name"},
+		{`(function() { function f() {} f[7] = 1; return f; })()`, "7,length,name"},
+		{`(function() { function f() {} f[3] = 1; f[1] = 2; return f; })()`, "1,3,length,name"},
+	}
+	for _, c := range iterOrderCases {
+		f := funcImpl(t, r, c.src)
+		var order []string
+		for item, next := f.iterateStringKeys()(); next != nil; item, next = next() {
+			order = append(order, item.name.String())
+		}
+		if got := strings.Join(order, ","); got != c.want {
+			t.Errorf("%s: virtual iterator order = %q, want %q", c.src, got, c.want)
+		}
 	}
 }

@@ -539,9 +539,16 @@ func (f *baseFuncObject) materializeIntrinsics() {
 	f.ensureValues()
 	f.values["length"] = &f.lenProp
 	f.values["name"] = &f.nameProp
-	names := copyNamesIfNeeded(f.propNames, 2)
-	names = append(names, "", "")
-	copy(names[2:], names[:len(names)-2])
+	names := f.propNames
+	if namesMarkedForCopy(names) || cap(names) < len(names)+2 {
+		// An iterator may be walking the current array: never shift it in place.
+		newNames := make([]unistring.String, len(names)+2, growCap(len(names)+2, len(names), cap(names)))
+		copy(newNames[2:], names)
+		names = newNames
+	} else {
+		names = append(names, "", "")
+		copy(names[2:], names[:len(names)-2])
+	}
 	names[0] = "length"
 	names[1] = "name"
 	f.propNames = names
@@ -584,7 +591,7 @@ func (f *baseFuncObject) hasOwnPropertyStr(name unistring.String) bool {
 
 func (f *baseFuncObject) setOwnStr(name unistring.String, val Value, throw bool) bool {
 	if p := f.intrinsicProp(name); p != nil {
-		if p.accessor {
+		if p.accessor || p.writable {
 			f.materializeIntrinsics()
 			return f.baseObject.setOwnStr(name, val, throw)
 		}
@@ -633,15 +640,17 @@ func (f *baseFuncObject) stringKeys(all bool, accum []Value) []Value {
 	f.ensurePropOrder()
 	n := f.idxPropCount
 	accum = f.appendStringKeys(all, accum, f.propNames[:n])
-	// length/name are non-enumerable by default, but an in-place redefine
-	// (e.g. Object.defineProperty(f, "length", {enumerable: true})) can flip
-	// that without materializing; honor it the same way appendStringKeys
-	// honors enumerability for real map entries.
-	if all || f.lenProp.enumerable {
-		accum = append(accum, asciiString("length"))
-	}
-	if all || f.nameProp.enumerable {
-		accum = append(accum, asciiString("name"))
+	// A virtual intrinsic's flags are live: a define can flip enumerable,
+	// writable or configurable in place. Every consumer reads the field,
+	// never the init defaults. (iterateStringKeys yields the field pointers,
+	// so enumerableIter reads the same flags.)
+	for _, p := range [...]struct {
+		name string
+		prop *valueProperty
+	}{{"length", &f.lenProp}, {"name", &f.nameProp}} {
+		if all || p.prop.enumerable {
+			accum = append(accum, asciiString(p.name))
+		}
 	}
 	return f.appendStringKeys(all, accum, f.propNames[n:])
 }
