@@ -68,26 +68,30 @@ func measureProgramAllocs(t *testing.T, vm *Runtime, src string) float64 {
 // TestStringCoercionNoRebox: coercing a value that already is a String
 // must not allocate. indexOf coerces this and the argument (2 boxes);
 // split coerces its receiver (1 box — the separator is devirtualised without a box);
-// RegExp.prototype.test coerces the argument (1). Counts measured on e41cf0f before:
-// 3 / 3 / 10 / 9; after: 1 / 1 / 9 / 8.
-// After the array box (Task 4) split's result array costs one allocation
-// instead of two, so split is 8.
+// RegExp.prototype.test coerces the argument (1). Counts measured on e41cf0f
+// before: 3 / 3 / 10 / 9; after: 1 / 1 / 8 / 8 (split is 8 since Task 4's
+// array box).
 func TestStringCoercionNoRebox(t *testing.T) {
 	vm := New()
 	if _, err := vm.RunString(`var str = 'hello world'`); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		src  string
-		want float64
+		src      string
+		want     float64
+		raceSkip bool
 	}{
-		{"str.indexOf('l')", 1},
-		{"str.indexOf('l', 1)", 1},
-		{"str.split('l')", 8},
-		{"/l/.test(str)", 8},
+		{"str.indexOf('l')", 1, false},
+		{"str.indexOf('l', 1)", 1, false},
+		{"str.split('l')", 8, false},
+		// regexp caches backtracker state in a sync.Pool; under the race
+		// detector sync.Pool.Put randomly drops one item in four (see
+		// GOROOT sync/pool.go), so the allocation count here is not stable.
+		{"/l/.test(str)", 8, true},
 	} {
-		if raceDetectorEnabled && tc.src == "/l/.test(str)" {
-			continue // sync.Pool caching is disabled under the race detector; the regexp path allocates one more
+		if raceDetectorEnabled && tc.raceSkip {
+			t.Logf("skipping %s under the race detector: regexp's sync.Pool drops entries at random there, so the count is not stable", tc.src)
+			continue
 		}
 		if got := measureProgramAllocs(t, vm, tc.src); got != tc.want {
 			t.Errorf("%s: %v allocations, want %v", tc.src, got, tc.want)

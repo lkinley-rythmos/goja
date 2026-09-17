@@ -400,6 +400,11 @@ func (a *arrayObject) expand(idx uint32) bool {
 				}
 				sa.setValues(a.values, a.objCount+1)
 				sa.val.self = sa
+				// The dense impl shares its box with the Object and stays
+				// reachable; drop its backing slice so the conversion does not
+				// pin the old storage for the array's lifetime.
+				a.values = nil
+				a.objCount = 0
 				sa.lengthProp.writable = a.lengthProp.writable
 				// Dense arrays keep length virtual, so the copied propNames has
 				// no entry for it. A sparse array stores length in its map and

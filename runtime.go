@@ -491,15 +491,22 @@ func (r *Runtime) newSyntaxError(msg string) Value {
 	return r.builtin_new(r.getSyntaxError(), []Value{newStringValue(msg)})
 }
 
-func newBaseObjectObj(obj, proto *Object, class string) *baseObject {
-	o := &baseObject{
-		class:      class,
-		val:        obj,
-		extensible: true,
-		prototype:  proto,
-	}
+// initBaseObject sets the fields shared by every ordinary object's impl and
+// wires it to its Object, whether the impl and the Object were allocated
+// separately (newBaseObjectObj) or co-allocated in a baseObjectBox
+// (newBaseObject).
+func initBaseObject(o *baseObject, obj, proto *Object, class string) {
+	o.class = class
+	o.val = obj
+	o.extensible = true
+	o.prototype = proto
 	obj.self = o
 	o.init()
+}
+
+func newBaseObjectObj(obj, proto *Object, class string) *baseObject {
+	o := &baseObject{}
+	initBaseObject(o, obj, proto, class)
 	return o
 }
 
@@ -515,10 +522,10 @@ func newGuardedObj(proto *Object, class string) *guardedObject {
 
 // baseObjectBox co-allocates an ordinary object's impl with its Object so
 // that creating one costs a single allocation. The impl comes first, so
-// &box.baseObject == &box; either pointer keeps the whole box alive. When
-// an object later swaps its impl (templated materialisation, guarded to
-// base) the box's impl becomes dead weight held by the Object — rare and
-// bounded.
+// &box.baseObject == &box; either pointer keeps the whole box alive. No
+// in-tree site swaps the impl of a boxed ordinary object; a future swap
+// must nil out the dead impl's storage, as arrayObject.expand does for the
+// dense->sparse conversion.
 type baseObjectBox struct {
 	baseObject
 	obj Object
@@ -527,14 +534,8 @@ type baseObjectBox struct {
 func (r *Runtime) newBaseObject(proto *Object, class string) *baseObject {
 	b := &baseObjectBox{}
 	b.obj.runtime = r
-	o := &b.baseObject
-	o.class = class
-	o.val = &b.obj
-	o.extensible = true
-	o.prototype = proto
-	b.obj.self = o
-	o.init()
-	return o
+	initBaseObject(&b.baseObject, &b.obj, proto, class)
+	return &b.baseObject
 }
 
 func (r *Runtime) newGuardedObject(proto *Object, class string) (o *guardedObject) {

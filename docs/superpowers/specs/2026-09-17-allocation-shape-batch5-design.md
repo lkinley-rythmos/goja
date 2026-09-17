@@ -28,7 +28,7 @@ by any one builtin:
 CPU: `mallocgc` 12%, `maps.(*table).grow` 2.7%, and ~13% in string hashing
 and map access for property lookups (not addressed here — see §8).
 
-Every goja object is two heap objects: the public `*Object` (16 B: `self`,
+Every goja object is two heap objects: the public `*Object` (24 B: `self`,
 `runtime`) and its `objectImpl`. Fusing them for the hot constructors
 removes one malloc and one GC object per array, plain object, closure,
 descriptor and iterator. Object literals grow their map and key list from
@@ -121,9 +121,11 @@ existing initialisation unchanged.
 
 ### Effect per object
 
-Allocations 2 → 1; one fewer GC object; bytes ≈ −0…−16 depending on the
-size class (one allocation header saved, 16 B `Object` added). `{}` today:
-`Object` (16 B) + `baseObject` (~136 B) → one ~152 B box.
+Allocations 2 → 1; one fewer GC object. Bytes: `Object` is 24 B; through
+Go's size classes a plain object shrinks by 8 B (24 + 112 → 128) while
+arrays, functions, descriptors and array iterators grow by 8 B each (e.g.
+24 + 192 → 224). `{}` today: `Object` (24 B) + `baseObject` (~104 B) → one
+128 B box.
 
 Not changed: `objectImpl`, `Object`'s fields, any public API,
 `newBaseObjectObj`, every non-hot constructor.
@@ -134,11 +136,12 @@ Not changed: `objectImpl`, `Object`'s fields, any public API,
 
 `compiledObjectLiteral.emitGetter` (`compiler_expr.go`) counts the
 properties that each add one own string key before it emits anything:
-`*ast.PropertyKeyed` of kind value/method/get/set with a non-computed key
-that is not `__proto__`, plus `*ast.PropertyShort`. Not counted: computed
-keys (unknown until runtime; may collide or be symbols), `__proto__: …`
-(sets the prototype), `...spread` (unknown count). A getter+setter pair
-on one key counts twice — a harmless over-estimate of one slot. It emits
+`*ast.PropertyKeyed` of kind value/method/get/set with a non-computed key,
+plus `*ast.PropertyShort`. `__proto__: …` (sets the prototype) IS counted
+(an over-estimate of one slot, harmless); not counted: computed keys
+(unknown until runtime; may collide or be symbols) and `...spread`
+(unknown count). A getter+setter pair on one key counts twice — a
+harmless over-estimate of one slot. It emits
 `newObject(n)`; the opcode type becomes `type newObject uint32` (today a
 struct singleton `_newObject`), and every `emit(newObject)` site becomes
 `emit(newObject(n))`.
@@ -249,8 +252,10 @@ measured on `3ebdf77` at plan time):
 layout, so the 386 leg matters), test262.
 
 **Compatibility.** No public API change; no observable behaviour change
-intended. Memory: +16 B per boxed impl, −1 allocation header; a
-representation swap leaves a dead impl inside the box (rare, bounded).
+intended. Memory: −8 B per plain object, +8 B per boxed array/function/
+descriptor/iterator (size-class rounding), one fewer allocation and GC
+object each; a representation swap leaves a dead impl inside the box
+(rare, bounded).
 
 ## 7. Risks
 

@@ -1,6 +1,9 @@
 package goja
 
-import "testing"
+import (
+	"runtime"
+	"testing"
+)
 
 // coallocGoldenScript pins behaviour that depends on an object's impl and
 // its *Object staying consistent across representation changes: dense
@@ -166,8 +169,45 @@ func TestArrayBox(t *testing.T) {
 			t.Errorf("%s: %v allocations, want %v", tc.src, got, tc.want)
 		}
 	}
-	it, _ := vm.RunString(`arr2[Symbol.iterator]()`)
+	it, err := vm.RunString(`arr2[Symbol.iterator]()`)
+	if err != nil {
+		t.Fatal(err)
+	}
 	checkWiring(t, "array iterator", it.(*Object), it.(*Object).self)
+	if exported := sw.Export(); len(exported.([]interface{})) != 3 {
+		t.Fatalf("Export after the swap: %#v", exported)
+	}
+}
+
+// TestSparseConversionReleasesDenseStorage: after a dense array converts
+// to sparse, the dense backing slice must not stay reachable through the
+// box that holds the Object and the old impl.
+func TestSparseConversionReleasesDenseStorage(t *testing.T) {
+	vm := New()
+	if _, err := vm.RunString(`var big = new Array(200000).fill(1)`); err != nil {
+		t.Fatal(err)
+	}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	if _, err := vm.RunString(`big[50000000] = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := vm.Get("big").(*Object).self.(*sparseArrayObject); !ok {
+		t.Fatal("array did not convert to sparse")
+	}
+	runtime.GC()
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	// The sparse representation of 200k items is ~1.25 MB; the dead dense
+	// slice would add another 1.6 MB (200k * 8 bytes) if it were retained.
+	if delta := int64(after.HeapAlloc) - int64(before.HeapAlloc); delta > 2<<20 {
+		t.Fatalf("heap grew by %d bytes after sparse conversion; the dense slice is being retained", delta)
+	}
+	if v := vm.Get("big").(*Object).Get("1"); v.ToInteger() != 1 {
+		t.Fatalf("element after conversion: %v", v)
+	}
 }
 
 func TestFunctionAndDescriptorBox(t *testing.T) {
@@ -181,7 +221,10 @@ func TestFunctionAndDescriptorBox(t *testing.T) {
 	}
 	m := vm.Get("mo").(*Object).Get("m").(*Object)
 	checkWiring(t, "method", m, m.self)
-	gopd, _ := AssertFunction(vm.Get("Object").ToObject(vm).Get("getOwnPropertyDescriptor"))
+	gopd, ok := AssertFunction(vm.Get("Object").ToObject(vm).Get("getOwnPropertyDescriptor"))
+	if !ok {
+		t.Fatal("Object.getOwnPropertyDescriptor is not a function")
+	}
 	dv, err := gopd(Undefined(), vm.Get("o"), vm.ToValue("a"))
 	if err != nil {
 		t.Fatal(err)
