@@ -1,7 +1,7 @@
 # Goja batch 3 — lazy property maps, eager regexp2, allocation-free Keys
 
 **Date:** 2026-09-16
-**Status:** draft, awaiting review
+**Status:** implemented on branch perf/object-model-batch3 (2026-09-16); per-change benchmarks in commit messages
 **Branch:** `perf/object-model-batch3` (from `master` at `2a30572`)
 
 ## 1. Motivation and evidence
@@ -48,7 +48,7 @@ engine-side cheaper descriptor objects for JS `getOwnPropertyDescriptor`
 
 ```go
 // ensureValues allocates the property map on first write. Objects that
-// never receive an own property — iterators, Dates, RegExps, empty arrays,
+// never receive an own property — iterators, Dates, empty arrays,
 // most functions — never pay for one.
 func (o *baseObject) ensureValues() {
 	if o.values == nil {
@@ -66,6 +66,8 @@ complete list from a repository-wide grep of `.values[…] =`:
 | object.go | `setOwnStr` — the new-property branch and the plain-slot overwrite |
 | object.go | `defineOwnPropertyStr` — after `_defineOwnProperty` succeeds |
 | object_template.go | `getOwnPropStr` (template materialization), `defineOwnPropertyStr`, `deleteStr` (the nil "white hole" marker), `materialiseProps` |
+
+RegExp objects are not a beneficiary: `regexpObject.init` stores `lastIndex` eagerly.
 
 `_delete`, `deleteStr`, `hasOwnPropertyStr`, `getOwnPropStr`, `stringKeys`,
 `iterateStringKeys` and every read-only builtin are untouched. No code
@@ -90,7 +92,7 @@ New `length` branches, reproducing what the map entry provided:
 
 Conversions:
 
-- dense → sparse (`array.go`, in `expand`): copies `a.baseObject` by value (map now without `length`) then `sa._put("length", &sa.lengthProp)` as today — unchanged.
+- dense → sparse (`array.go`, in `expand`): copies `a.baseObject` by value (map and `propNames` now without `length`), then must insert `length` at the FRONT: `sa.ensureValues(); sa.values["length"] = &sa.lengthProp` and `sa.propNames = ["length"] + copy of a.propNames`, resetting `lastSortedPropLen`/`idxPropCount`. (`sa._put` would append it after pre-existing string keys and change `getOwnPropertyNames` order.)
 - sparse → dense (`array_sparse.go`, in `expand`): replace `a._put("length", &ar.lengthProp)` with `ar._delete("length")` — the two objects share the map by value-copy and the sparse one carries a `length` entry that the dense object must not inherit.
 
 Invariant, stated in code: a dense `arrayObject` never has `"length"` in
@@ -120,13 +122,13 @@ so the chain is `prototype` → intrinsics → map.
 
 - `getOwnPropStr("length"/"name")` → `&f.lenProp` / `&f.nameProp`; `getStr` goes through `getStrWithOwnProp` so accessor state is honoured; `hasOwnPropertyStr` → `true`.
 - `defineOwnPropertyStr`: run `f._defineOwnProperty(name, &prop, descr, throw)` against the field. `_defineOwnProperty` mutates an existing `*valueProperty` in place and returns the same pointer for every descriptor except the all-`true` data form. Same pointer returned → stay virtual (this is the SetFunctionName case used for `{ m() {} }`, class methods and `obj.x = function(){}` in vm.go: zero allocation). Different value or failure → materialize (below), then store the result — what `baseObject.defineOwnPropertyStr` would have done.
-- `setOwnStr("length"/"name")`: non-writable → `typeErrorResult(throw, "Cannot assign to read only property '%s'", name)`, `false`; still virtual. `setForeignStr` resolves through `getOwnPropStr` as `funcObject`'s does.
+- `setOwnStr("length"/"name")`: if the field is an accessor or has been made writable by an in-place redefine, materialize and delegate to `baseObject.setOwnStr`; otherwise `typeErrorResult(throw, "Cannot assign to read only property '%s'", name)`, `false`, still virtual. `setForeignStr` resolves through `getOwnPropStr` as `funcObject`'s does.
 - `deleteStr`: both configurable; materialize, then `baseObject.deleteStr` (one code path for deletion semantics; `delete f.name` is rare).
-- `stringKeys(all)`: emit `length`, `name` first when `all` (both non-enumerable), then the map. `iterateStringKeys`: yield the two items with the **field pointers** first, then delegate — `Object.freeze` mutates the real storage.
+- `stringKeys(all)`: integer-like keys sort before every other string key, so after `ensurePropOrder()` emit `propNames[:idxPropCount]`, then `length` and `name` — each only when `all` or its live `enumerable` flag is set (an in-place redefine can flip it) — then `propNames[idxPropCount:]`; `baseObject.stringKeys` is refactored onto an `appendStringKeys(all, keys, names)` range helper. `iterateStringKeys`: pass index-like items through, then yield the two intrinsics with the **field pointers**, then the rest — `Object.freeze` mutates the real storage and `enumerableIter` reads the live flags.
 
 **Materialize** (once, irreversible): `ensureValues()`;
 `values["length"] = &f.lenProp`, `values["name"] = &f.nameProp`; insert
-`"length"`, `"name"` at positions 0 and 1 of `propNames`; clear the flag.
+`"length"`, `"name"` at positions 0 and 1 of `propNames` — allocating a fresh array when `propNames` is marked for copy-on-write or lacks headroom, as `_delete` does, so an in-flight iteration is never corrupted —; clear the flag.
 Today `init` places them at the front before anything else, including
 `prototype` (materialized later by `funcObject`), so `propNames` order is
 `[length, name, prototype?, …user]` in every state. After materialization
@@ -185,8 +187,8 @@ implementer proves this first) and still pass after. Together with test262
 `length`/`name` extensively) that is the equivalence proof.
 
 - *A:* an object that never gets a property has `values == nil`; `keys`, `hasOwnProperty`, `delete`, `for-in`, `JSON.stringify`, `getOwnPropertyNames`, `freeze`/`isFrozen`, `preventExtensions` on such an object behave as today; templated objects still materialize template props and honour the white-hole marker.
-- *B:* golden script over dense arrays — `getOwnPropertyNames`, `keys`, `for-in`, `JSON.stringify`, `freeze` then `isFrozen`/`push` throws, `delete arr.length` (false; strict TypeError), `defineProperty(arr,"length",{value})`/`{writable:false}`, `getOwnPropertyDescriptor(arr,"length")`, `Object.assign`, spread; both conversions (grow past the sparse threshold and back) then the same assertions; internal assertion that no dense array has `"length"` in `propNames`.
-- *C:* golden script over declaration, expression, arrow, method, class, static method, bound, native, generator, async functions — `getOwnPropertyNames` before/after a user property, `prototype` touched first vs last; `delete f.name`; `defineProperty(f,"name",{value})` stays virtual (internal assertion) and the all-`true` form materializes at the front; `f.name = "x"` sloppy/strict; `freeze` + `isFrozen` + descriptor flags; `class A { static name(){} }`; `bind` result `name`/`length`; descriptors identical before/after materialization.
+- *B:* golden script over dense arrays — `getOwnPropertyNames`, `keys`, `for-in`, `JSON.stringify`, `freeze` then `isFrozen`/`push` throws, `delete arr.length` (false; strict TypeError), `defineProperty(arr,"length",{value})`/`{writable:false}`, `getOwnPropertyDescriptor(arr,"length")`, `Object.assign`, spread; both conversions (grow past the sparse threshold and back) then the same assertions; internal assertion that no dense array has `"length"` in `propNames`; an array with string properties before it converts to sparse (`length` must stay first).
+- *C:* golden script over declaration, expression, arrow, method, class, static method, bound, native, generator, async functions — `getOwnPropertyNames` before/after a user property, `prototype` touched first vs last; `delete f.name`; `defineProperty(f,"name",{value})` stays virtual (internal assertion) and the all-`true` form materializes at the front; `f.name = "x"` sloppy/strict; `freeze` + `isFrozen` + descriptor flags; `class A { static name(){} }`; `bind` result `name`/`length`; descriptors identical before/after materialization; enumerable and writable flips on virtual intrinsics (sloppy, strict, value form); materialization during `for-in` (delete and all-true redefine).
 - *D:* a `g` pattern has both engines on template and clone; `matchAll`/`exec` loops identical for `g`, `y`, `gy`, unicode, empty-match; a non-global pattern has no regexp2 engine; a Go-regexp-rejected pattern still takes the regexp2-only path.
 - *E:* `Keys`/`AppendKeys` equal the generic iterator for plain objects (incl. integer-like keys), arrays with holes and non-enumerable elements, a Proxy with `ownKeys` trap, a Go-reflect object, an empty object (`nil`); `AppendKeys` into a reused buffer → 0 allocs.
 - test262 on every commit; `-race` on new tests; `GOARCH=386` on the object-model tests.
@@ -206,6 +208,7 @@ GAP harness is the acceptance gate; merge to `master` after qualification.
 2. Enumeration-order or descriptor drift in arrays/functions — mitigated by before/after characterization tests and test262.
 3. Function types overriding property methods elsewhere — grep found only `funcObject`; the plan repeats the grep.
 4. Eager regexp2 doubles first-compile cost for global patterns; bounded by the cache.
+5. Golden captured before the change is the equivalence proof; three defects (sparse-conversion order, virtual emission order, live flags) were caught only when the golden or test262 was extended — extend both when touching virtual properties.
 
 ## 10. Sequencing
 
