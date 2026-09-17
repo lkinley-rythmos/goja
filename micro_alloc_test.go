@@ -122,3 +122,88 @@ func TestAssertCallableCached(t *testing.T) {
 		}
 	}
 }
+
+func BenchmarkArrayFindJSCallback(b *testing.B) {
+	vm := New()
+	if _, err := vm.RunString(`var arr = []; for (var i = 0; i < 10000; i++) arr.push(i); var pred = function(x) { return x === -1 }`); err != nil {
+		b.Fatal(err)
+	}
+	prg, _ := Compile("b", "arr.find(pred)", false)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := vm.RunProgram(prg); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// TestArrayBuiltinIndexBoxing checks that array builtins do not allocate
+// per element when handing the index to a callback: allocations must not
+// grow with the array length. Both a native callback (no VM re-entry) and
+// a JS callback are used; 300 vs 3000 elements straddles the 256-entry
+// convT64 cache so the per-element boxing shows up as ~2700 extra allocs.
+func TestArrayBuiltinIndexBoxing(t *testing.T) {
+	vm := New()
+	mk := func(n int) *Object {
+		vals := make([]interface{}, n)
+		for i := range vals {
+			vals[i] = i
+		}
+		return vm.NewArray(vals...)
+	}
+	small, large := mk(300), mk(3000)
+	nativeFalse := vm.ToValue(func(call FunctionCall) Value { return valueFalse })
+	nativeTrue := vm.ToValue(func(call FunctionCall) Value { return valueTrue })
+	nativeAcc := vm.ToValue(func(call FunctionCall) Value { return call.Argument(0) })
+	jsFalseV, _ := vm.RunString("(function(v, i) { return false })")
+	jsTrueV, _ := vm.RunString("(function(v, i) { return true })")
+	jsAccV, _ := vm.RunString("(function(acc, v, i) { return acc })")
+	jsFalse, jsTrue, jsAcc := jsFalseV.(*Object), jsTrueV.(*Object), jsAccV.(*Object)
+	// every stops at the first false and some at the first true, so each
+	// gets the callback that makes it visit every element.
+	proto := vm.Get("Array").ToObject(vm).Get("prototype").ToObject(vm)
+	for _, tc := range []struct {
+		method string
+		cb     Value
+	}{
+		{"forEach", nativeFalse}, {"filter", nativeFalse}, {"some", nativeFalse}, {"every", nativeTrue},
+		{"find", nativeFalse}, {"findIndex", nativeFalse}, {"findLast", nativeFalse}, {"findLastIndex", nativeFalse},
+		{"reduce", nativeAcc}, {"reduceRight", nativeAcc},
+		{"forEach", jsFalse}, {"filter", jsFalse}, {"some", jsFalse}, {"every", jsTrue},
+		{"find", jsFalse}, {"findIndex", jsFalse}, {"findLast", jsFalse}, {"findLastIndex", jsFalse},
+		{"reduce", jsAcc}, {"reduceRight", jsAcc},
+	} {
+		fn, ok := AssertFunction(proto.Get(tc.method))
+		if !ok {
+			t.Fatalf("%s: not a function", tc.method)
+		}
+		run := func(arr *Object) float64 {
+			return testing.AllocsPerRun(10, func() {
+				if _, err := fn(arr, tc.cb, valueInt(0)); err != nil {
+					panic(err)
+				}
+			})
+		}
+		if a, b := run(small), run(large); a != b {
+			t.Errorf("%s (%T callback): allocations grow with length: %v for 300 elements, %v for 3000", tc.method, tc.cb.(*Object).self, a, b)
+		}
+	}
+	// map's result array grows its backing slice as it fills (a handful of
+	// allocations that scale with log(n)), so it is checked separately: the
+	// per-element boxing would add at least 2444 allocations between the
+	// two sizes; slice growth adds fewer than 16.
+	mapFn, _ := AssertFunction(proto.Get("map"))
+	runMap := func(arr *Object, cb Value) float64 {
+		return testing.AllocsPerRun(10, func() {
+			if _, err := mapFn(arr, cb); err != nil {
+				panic(err)
+			}
+		})
+	}
+	for _, cb := range []Value{nativeFalse, jsFalse} {
+		if a, b := runMap(small, cb), runMap(large, cb); b-a >= 16 {
+			t.Errorf("map (%T callback): %v allocations for 300 elements, %v for 3000", cb.(*Object).self, a, b)
+		}
+	}
+}

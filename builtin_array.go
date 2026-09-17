@@ -366,7 +366,7 @@ func (r *Runtime) arrayproto_slice(call FunctionCall) Value {
 	for start < end {
 		p := o.self.getIdx(valueInt(start), nil)
 		if p != nil {
-			createDataPropertyOrThrow(a, valueInt(n), p)
+			createDataPropertyOrThrow(a, intToValue(n), p)
 		}
 		start++
 		n++
@@ -487,7 +487,7 @@ func (r *Runtime) arrayproto_splice(call FunctionCall) Value {
 		for k := int64(0); k < actualDeleteCount; k++ {
 			from := valueInt(k + actualStart)
 			if o.self.hasPropertyIdx(from) {
-				createDataPropertyOrThrow(a, valueInt(k), nilSafe(o.self.getIdx(from, nil)))
+				createDataPropertyOrThrow(a, intToValue(k), nilSafe(o.self.getIdx(from, nil)))
 			}
 		}
 
@@ -620,7 +620,7 @@ func (r *Runtime) arrayproto_indexOf(call FunctionCall) Value {
 		if o.self.hasPropertyIdx(idx) {
 			if val := o.self.getIdx(idx, nil); val != nil {
 				if searchElement.StrictEquals(val) {
-					return idx
+					return intToValue(n)
 				}
 			}
 		}
@@ -707,7 +707,7 @@ func (r *Runtime) arrayproto_lastIndexOf(call FunctionCall) Value {
 		if o.self.hasPropertyIdx(idx) {
 			if val := o.self.getIdx(idx, nil); val != nil {
 				if searchElement.StrictEquals(val) {
-					return idx
+					return intToValue(k)
 				}
 			}
 		}
@@ -728,7 +728,7 @@ func (r *Runtime) arrayproto_every(call FunctionCall) Value {
 		idx := valueInt(k)
 		if val := o.self.getIdx(idx, nil); val != nil {
 			fc.Arguments[0] = val
-			fc.Arguments[1] = idx
+			fc.Arguments[1] = intToValue(k)
 			if !callbackFn(fc).ToBoolean() {
 				return valueFalse
 			}
@@ -749,7 +749,7 @@ func (r *Runtime) arrayproto_some(call FunctionCall) Value {
 		idx := valueInt(k)
 		if val := o.self.getIdx(idx, nil); val != nil {
 			fc.Arguments[0] = val
-			fc.Arguments[1] = idx
+			fc.Arguments[1] = intToValue(k)
 			if callbackFn(fc).ToBoolean() {
 				return valueTrue
 			}
@@ -770,7 +770,7 @@ func (r *Runtime) arrayproto_forEach(call FunctionCall) Value {
 		idx := valueInt(k)
 		if val := o.self.getIdx(idx, nil); val != nil {
 			fc.Arguments[0] = val
-			fc.Arguments[1] = idx
+			fc.Arguments[1] = intToValue(k)
 			callbackFn(fc)
 		}
 	}
@@ -793,7 +793,7 @@ func (r *Runtime) arrayproto_map(call FunctionCall) Value {
 				idx := valueInt(k)
 				if val := o.self.getIdx(idx, nil); val != nil {
 					fc.Arguments[0] = val
-					fc.Arguments[1] = idx
+					fc.Arguments[1] = intToValue(k)
 					values[k] = callbackFn(fc)
 				}
 			}
@@ -805,7 +805,7 @@ func (r *Runtime) arrayproto_map(call FunctionCall) Value {
 		idx := valueInt(k)
 		if val := o.self.getIdx(idx, nil); val != nil {
 			fc.Arguments[0] = val
-			fc.Arguments[1] = idx
+			fc.Arguments[1] = intToValue(k)
 			createDataPropertyOrThrow(a, idx, callbackFn(fc))
 		}
 	}
@@ -829,7 +829,7 @@ func (r *Runtime) arrayproto_filter(call FunctionCall) Value {
 					idx := valueInt(k)
 					if val := o.self.getIdx(idx, nil); val != nil {
 						fc.Arguments[0] = val
-						fc.Arguments[1] = idx
+						fc.Arguments[1] = intToValue(k)
 						if callbackFn(fc).ToBoolean() {
 							values = append(values, val)
 						}
@@ -845,7 +845,7 @@ func (r *Runtime) arrayproto_filter(call FunctionCall) Value {
 			idx := valueInt(k)
 			if val := o.self.getIdx(idx, nil); val != nil {
 				fc.Arguments[0] = val
-				fc.Arguments[1] = idx
+				fc.Arguments[1] = intToValue(k)
 				if callbackFn(fc).ToBoolean() {
 					createDataPropertyOrThrow(a, intToValue(to), val)
 					to++
@@ -892,7 +892,7 @@ func (r *Runtime) arrayproto_reduce(call FunctionCall) Value {
 			idx := valueInt(k)
 			if val := o.self.getIdx(idx, nil); val != nil {
 				fc.Arguments[1] = val
-				fc.Arguments[2] = idx
+				fc.Arguments[2] = intToValue(k)
 				fc.Arguments[0] = callbackFn(fc)
 			}
 		}
@@ -936,7 +936,7 @@ func (r *Runtime) arrayproto_reduceRight(call FunctionCall) Value {
 			idx := valueInt(k)
 			if val := o.self.getIdx(idx, nil); val != nil {
 				fc.Arguments[1] = val
-				fc.Arguments[2] = idx
+				fc.Arguments[2] = intToValue(k)
 				fc.Arguments[0] = callbackFn(fc)
 			}
 		}
@@ -1121,7 +1121,7 @@ func (r *Runtime) arrayproto_find(call FunctionCall) Value {
 	for k := int64(0); k < l; k++ {
 		idx := valueInt(k)
 		kValue := o.self.getIdx(idx, nil)
-		fc.Arguments[0], fc.Arguments[1] = kValue, idx
+		fc.Arguments[0], fc.Arguments[1] = kValue, intToValue(k)
 		if predicate(fc).ToBoolean() {
 			return kValue
 		}
@@ -1141,9 +1141,9 @@ func (r *Runtime) arrayproto_findIndex(call FunctionCall) Value {
 	for k := int64(0); k < l; k++ {
 		idx := valueInt(k)
 		kValue := o.self.getIdx(idx, nil)
-		fc.Arguments[0], fc.Arguments[1] = kValue, idx
+		fc.Arguments[0], fc.Arguments[1] = kValue, intToValue(k)
 		if predicate(fc).ToBoolean() {
-			return idx
+			return intToValue(k)
 		}
 	}
 
@@ -1161,7 +1161,7 @@ func (r *Runtime) arrayproto_findLast(call FunctionCall) Value {
 	for k := int64(l - 1); k >= 0; k-- {
 		idx := valueInt(k)
 		kValue := o.self.getIdx(idx, nil)
-		fc.Arguments[0], fc.Arguments[1] = kValue, idx
+		fc.Arguments[0], fc.Arguments[1] = kValue, intToValue(k)
 		if predicate(fc).ToBoolean() {
 			return kValue
 		}
@@ -1181,9 +1181,9 @@ func (r *Runtime) arrayproto_findLastIndex(call FunctionCall) Value {
 	for k := int64(l - 1); k >= 0; k-- {
 		idx := valueInt(k)
 		kValue := o.self.getIdx(idx, nil)
-		fc.Arguments[0], fc.Arguments[1] = kValue, idx
+		fc.Arguments[0], fc.Arguments[1] = kValue, intToValue(k)
 		if predicate(fc).ToBoolean() {
-			return idx
+			return intToValue(k)
 		}
 	}
 
@@ -1288,7 +1288,7 @@ func (r *Runtime) arrayproto_with(call FunctionCall) Value {
 			} else {
 				fromValue = o.self.getIdx(pk, nil)
 			}
-			createDataPropertyOrThrow(a, pk, fromValue)
+			createDataPropertyOrThrow(a, intToValue(k), fromValue)
 		}
 		return a
 	}
@@ -1309,10 +1309,9 @@ func (r *Runtime) arrayproto_toReversed(call FunctionCall) Value {
 	} else {
 		a := r.newArrayLength(length)
 		for k := int64(0); k < length; k++ {
-			pk := valueInt(k)
 			from := valueInt(length - k - 1)
 			fromValue := o.self.getIdx(from, nil)
-			createDataPropertyOrThrow(a, pk, fromValue)
+			createDataPropertyOrThrow(a, intToValue(k), fromValue)
 		}
 		return a
 	}
@@ -1396,22 +1395,21 @@ func (r *Runtime) arrayproto_toSpliced(call FunctionCall) Value {
 		for i < actualStart {
 			pi := valueInt(i)
 			iValue := nilSafe(o.self.getIdx(pi, nil))
-			createDataPropertyOrThrow(a, pi, iValue)
+			createDataPropertyOrThrow(a, intToValue(i), iValue)
 			i++
 		}
 
 		if itemCount > 0 {
 			for _, item := range call.Arguments[2:] {
-				createDataPropertyOrThrow(a, valueInt(i), nilSafe(item))
+				createDataPropertyOrThrow(a, intToValue(i), nilSafe(item))
 				i++
 			}
 		}
 
 		for i < newLength {
-			pi := valueInt(i)
 			from := valueInt(rl)
 			fromValue := nilSafe(o.self.getIdx(from, nil))
-			createDataPropertyOrThrow(a, pi, fromValue)
+			createDataPropertyOrThrow(a, intToValue(i), fromValue)
 			i++
 			rl++
 		}
@@ -1543,7 +1541,7 @@ func (r *Runtime) array_from(call FunctionCall) Value {
 			idx := valueInt(k)
 			item := arrayLike.self.getIdx(idx, nil)
 			if mapFn != nil {
-				item = mapFn(FunctionCall{This: t, Arguments: []Value{item, idx}})
+				item = mapFn(FunctionCall{This: t, Arguments: []Value{item, intToValue(k)}})
 			} else {
 				item = nilSafe(item)
 			}
