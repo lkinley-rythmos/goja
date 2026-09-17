@@ -2695,7 +2695,14 @@ func createDataPropertyOrThrow(o *Object, p Value, v Value) {
 	}, true)
 }
 
+// toPropertyKey coerces key to a property key (a String or a *Symbol).
+// A value that already is one is returned as is: calling ToString on it
+// would re-box the same string into a fresh interface value on every call.
 func toPropertyKey(key Value) Value {
+	switch key.(type) {
+	case String, *Symbol:
+		return key
+	}
 	return key.ToString()
 }
 

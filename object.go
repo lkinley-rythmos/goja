@@ -679,6 +679,12 @@ func (o *baseObject) _defineOwnProperty(name unistring.String, existingValue Val
 			o.val.runtime.typeErrorResult(throw, "Cannot define property %s, object is not extensible", name)
 			return nil, false
 		}
+		if descr.Writable == FLAG_TRUE && descr.Enumerable == FLAG_TRUE && descr.Configurable == FLAG_TRUE && descr.Value != nil {
+			// A new all-true data property is stored as the bare value (the
+			// same shortcut below applies to existing properties); allocate
+			// no valueProperty just to discard it.
+			return descr.Value, true
+		}
 		existing = &valueProperty{}
 	} else {
 		if existing, ok = existingValue.(*valueProperty); !ok {
