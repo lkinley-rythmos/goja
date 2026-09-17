@@ -110,6 +110,7 @@ func (o *templatedObject) getOwnPropStr(p unistring.String) Value {
 	}
 	if f := o.tmpl.props[p]; f != nil {
 		v := f(o.val.runtime)
+		o.ensureValues()
 		o.values[p] = v
 		return v
 	}
@@ -228,6 +229,7 @@ func (o *templatedObject) hasOwnPropertySym(s *Symbol) bool {
 func (o *templatedObject) defineOwnPropertyStr(name unistring.String, descr PropertyDescriptor, throw bool) bool {
 	existingVal := o.getOwnPropStr(name)
 	if v, ok := o._defineOwnProperty(name, existingVal, descr, throw); ok {
+		o.ensureValues()
 		o.values[name] = v
 		if existingVal == nil {
 			o.materialisePropNames()
@@ -252,6 +254,7 @@ func (o *templatedObject) deleteStr(name unistring.String, throw bool) bool {
 		o.materialisePropNames()
 		o._delete(name)
 		if _, exists := o.tmpl.props[name]; exists {
+			o.ensureValues()
 			o.values[name] = nil // white hole
 		}
 	}
@@ -264,6 +267,7 @@ func (o *templatedObject) deleteSym(s *Symbol, throw bool) bool {
 }
 
 func (o *templatedObject) materialiseProps() {
+	o.ensureValues()
 	for name, f := range o.tmpl.props {
 		if _, exists := o.values[name]; !exists {
 			o.values[name] = f(o.val.runtime)
