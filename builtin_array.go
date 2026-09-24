@@ -15,6 +15,7 @@ type arrayObjectBox struct {
 }
 
 func (r *Runtime) newArray(prototype *Object) (a *arrayObject) {
+	r.countAlloc(allocSizeArray)
 	b := &arrayObjectBox{}
 	b.obj.runtime = r
 	a = &b.arrayObject
@@ -74,6 +75,7 @@ func relToIdx(rel, l int64) int64 {
 }
 
 func (r *Runtime) newArrayValues(values []Value) *Object {
+	r.countAlloc(int64(cap(values)) * allocSizeValue)
 	return setArrayValues(r.newArrayObject(), values).val
 }
 

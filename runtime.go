@@ -211,6 +211,8 @@ type Runtime struct {
 	// Stack for tracking objects currently being converted to string
 	// to detect and handle circular references
 	toStringStack []*Object
+
+	alloc allocCounter
 }
 
 type StackFrame struct {
@@ -532,6 +534,7 @@ type baseObjectBox struct {
 }
 
 func (r *Runtime) newBaseObject(proto *Object, class string) *baseObject {
+	r.countAlloc(allocSizeBaseObject)
 	b := &baseObjectBox{}
 	b.obj.runtime = r
 	initBaseObject(&b.baseObject, &b.obj, proto, class)
@@ -557,6 +560,7 @@ func (r *Runtime) NewObject() (v *Object) {
 func (r *Runtime) newObjectSized(n int) *Object {
 	o := r.newBaseObject(r.global.ObjectPrototype, classObject)
 	if n > 0 {
+		r.countAlloc(int64(n) * allocSizePropSlot)
 		o.values = make(map[unistring.String]Value, n)
 		o.propNames = make([]unistring.String, 0, n)
 	}

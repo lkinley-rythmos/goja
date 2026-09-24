@@ -1281,6 +1281,7 @@ func (_add) exec(vm *vm) {
 		if !isRightString {
 			rightString = right.toString()
 		}
+		vm.r.countAlloc(int64(leftString.Length() + rightString.Length()))
 		ret = leftString.Concat(rightString)
 	} else {
 		switch left := left.(type) {

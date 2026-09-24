@@ -59,6 +59,7 @@ func (r *Runtime) builtinJSON_decodeToken(d *json.Decoder, tok json.Token) (Valu
 	case nil:
 		return _null, nil
 	case string:
+		r.countAlloc(int64(len(tok)))
 		return newStringValue(tok), nil
 	case float64:
 		return floatToValue(tok), nil
