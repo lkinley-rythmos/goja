@@ -4892,7 +4892,11 @@ func (n _new) exec(vm *vm) {
 	sp := vm.sp - int(n)
 	obj := vm.stack[sp-1]
 	ctor := vm.r.toConstructor(obj)
+	depth := vm.nativeDepth
 	vm.stack[sp-1] = ctor(vm.stack[sp:vm.sp], nil)
+	// As in nativeFuncObject.vmCall: a Go constructor may have recovered a
+	// goja panic itself.
+	vm.nativeDepth = depth
 	vm.sp = sp
 	vm.pc++
 }

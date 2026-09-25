@@ -803,9 +803,11 @@ func (f *nativeFuncObject) assertCallable() (func(FunctionCall) Value, bool) {
 		if f.goCall == nil {
 			vm := f.val.runtime.vm
 			f.goCall = func(call FunctionCall) Value {
+				depth := vm.nativeDepth
 				vm.enterNative()
 				ret := f.f(call)
-				vm.leaveNative()
+				// Restored rather than decremented: see vmCall.
+				vm.nativeDepth = depth
 				return ret
 			}
 		}
@@ -819,10 +821,16 @@ func (f *nativeFuncObject) vmCall(vm *vm, n int) {
 		vm.pushCtx()
 		vm.prg = nil
 		vm.sb = vm.sp - n // so that [sb-1] points to the callee
+		depth := vm.nativeDepth
 		ret := f.f(FunctionCall{
 			Arguments: vm.stack[vm.sp-n : vm.sp],
 			This:      vm.stack[vm.sp-n-2],
 		})
+		// A Go function that recovered a panic from goja itself (a thrown
+		// error, a RangeError past maxNativeDepth) and returned normally
+		// leaves the levels that panic unwound counted; returning to the vm
+		// puts the depth back where it was.
+		vm.nativeDepth = depth
 		if ret == nil {
 			ret = _undefined
 		}
@@ -840,7 +848,12 @@ func (f *nativeFuncObject) assertConstructor() func(args []Value, newTarget *Obj
 }
 
 func (f *boundFuncObject) hasInstance(v Value) bool {
-	return instanceOfOperator(v, f.wrapped)
+	// instanceof on a chain of bound functions recurses in Go.
+	vm := f.val.runtime.vm
+	vm.enterNative()
+	res := instanceOfOperator(v, f.wrapped)
+	vm.leaveNative()
+	return res
 }
 
 func (f *baseJsFuncObject) prepareForVmCall(call FunctionCall) {

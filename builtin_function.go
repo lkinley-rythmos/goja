@@ -85,9 +85,9 @@ func (r *Runtime) createListFromArrayLike(a Value) []Value {
 	for k := int64(0); k < l; k++ {
 		if k%interruptCheckInterval == 0 {
 			r.checkInterrupt()
-			// The list this loop appends to is not counted otherwise.
-			r.countAlloc(interruptCheckInterval * allocSizeValue)
 		}
+		// The list is not counted otherwise.
+		r.countAlloc(allocSizeValue)
 		res = append(res, nilSafe(o.self.getIdx(valueInt(k), nil)))
 	}
 	return res

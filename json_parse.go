@@ -47,7 +47,7 @@ type jsonParser[T jsonCodeUnit] struct {
 // jsonSyntaxError is the panic value of a failed parse, recovered by
 // builtinJSON_parse.
 type jsonSyntaxError struct {
-	msg string
+	msg String
 }
 
 func (r *Runtime) builtinJSON_parseSource(s String) Value {
@@ -64,7 +64,7 @@ func (p *jsonParser[T]) parse() (v Value) {
 	defer func() {
 		if x := recover(); x != nil {
 			if e, ok := x.(jsonSyntaxError); ok {
-				panic(p.r.newError(p.r.getSyntaxError(), e.msg))
+				panic(p.r.builtin_new(p.r.getSyntaxError(), []Value{e.msg}))
 			}
 			panic(x)
 		}
@@ -80,16 +80,23 @@ func (p *jsonParser[T]) parse() (v Value) {
 // unexpected reports the code unit at the current position, as V8 does.
 func (p *jsonParser[T]) unexpected() {
 	if p.pos >= len(p.src) {
-		panic(jsonSyntaxError{"Unexpected end of JSON input"})
+		panic(jsonSyntaxError{asciiString("Unexpected end of JSON input")})
 	}
 	pos := strconv.Itoa(p.pos)
 	switch c := p.src[p.pos]; {
 	case c == '"':
-		panic(jsonSyntaxError{"Unexpected string in JSON at position " + pos})
+		panic(jsonSyntaxError{asciiString("Unexpected string in JSON at position " + pos)})
 	case c == '-' || c >= '0' && c <= '9':
-		panic(jsonSyntaxError{"Unexpected number in JSON at position " + pos})
+		panic(jsonSyntaxError{asciiString("Unexpected number in JSON at position " + pos)})
 	default:
-		panic(jsonSyntaxError{"Unexpected token " + string(rune(c)) + " in JSON at position " + pos})
+		// The code unit itself, as V8 shows it, even a lone surrogate.
+		var unit String
+		if c < 0x80 {
+			unit = asciiString([]byte{byte(c)})
+		} else {
+			unit = unicodeString([]uint16{unistring.BOM, uint16(c)})
+		}
+		panic(jsonSyntaxError{asciiString("Unexpected token ").Concat(unit).Concat(asciiString(" in JSON at position " + pos))})
 	}
 }
 

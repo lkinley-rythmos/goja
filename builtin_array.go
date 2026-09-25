@@ -1499,9 +1499,9 @@ func (r *Runtime) arrayproto_toSorted(call FunctionCall) Value {
 		for i := int64(0); i < length; i++ {
 			if i%interruptCheckInterval == 0 {
 				r.checkInterrupt()
-				// The list this loop appends to is not counted otherwise.
-				r.countAlloc(interruptCheckInterval * allocSizeValue)
 			}
+			// The list is not counted otherwise.
+			r.countAlloc(allocSizeValue)
 			idx := valueInt(i)
 			a = append(a, nilSafe(o.self.getIdx(idx, nil)))
 		}
@@ -1699,9 +1699,9 @@ func (r *Runtime) array_from(call FunctionCall) Value {
 				for k := int64(0); k < l; k++ {
 					if k%interruptCheckInterval == 0 {
 						r.checkInterrupt()
-						// The list this loop appends to is not counted otherwise.
-						r.countAlloc(interruptCheckInterval * allocSizeValue)
 					}
+					// The list is not counted otherwise.
+					r.countAlloc(allocSizeValue)
 					values = append(values, nilSafe(arrayLike.self.getIdx(valueInt(k), nil)))
 				}
 				setArrayValues(a, values)
