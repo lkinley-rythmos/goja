@@ -53,6 +53,11 @@ type CompilerError struct {
 
 type CompilerSyntaxError struct {
 	CompilerError
+
+	// stackOverflow is set when the source nests deeper than the parser or
+	// the compiler allows; eval() and Function() throw a RangeError for it,
+	// as V8 does.
+	stackOverflow bool
 }
 
 type CompilerReferenceError struct {
@@ -90,6 +95,28 @@ type compiler struct {
 	codeScratchpad []instruction
 
 	stringCache map[unistring.String]Value
+
+	// depth counts the nested expressions and statements being compiled;
+	// see maxNativeDepth.
+	depth int
+}
+
+// enterNesting counts one level of compiler recursion. The parser bounds the
+// nesting it builds by recursion, but chains it builds in a loop (a.b.c...,
+// 1+1+1..., f()()()...) are left-deep trees that the compiler, and the code
+// emitted from them, walk recursively.
+func (c *compiler) enterNesting(node ast.Node) {
+	c.depth++
+	if c.depth > maxNativeDepth {
+		panic(&CompilerSyntaxError{
+			CompilerError: CompilerError{
+				File:    c.p.src,
+				Offset:  int(node.Idx0()) - 1,
+				Message: errMsgStackOverflow,
+			},
+			stackOverflow: true,
+		})
+	}
 }
 
 type binding struct {

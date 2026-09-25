@@ -81,8 +81,11 @@ func (r *Runtime) createListFromArrayLike(a Value) []Value {
 		return arr.values
 	}
 	l := toLength(o.self.getStr("length", nil))
-	res := make([]Value, 0, l)
+	res := make([]Value, 0, lengthCapHint(l))
 	for k := int64(0); k < l; k++ {
+		if k%interruptCheckInterval == 0 {
+			r.checkInterrupt()
+		}
 		res = append(res, nilSafe(o.self.getIdx(valueInt(k), nil)))
 	}
 	return res
@@ -283,12 +286,17 @@ func (r *Runtime) boundConstruct(f *Object, target func([]Value, *Object) *Objec
 		args = make([]Value, len(boundArgs)-1)
 		copy(args, boundArgs[1:])
 	}
+	vm := r.vm
 	return func(fargs []Value, newTarget *Object) *Object {
 		a := append(args, fargs...)
 		if newTarget == f {
 			newTarget = nil
 		}
-		return target(a, newTarget)
+		// A chain of bound constructors recurses in Go.
+		vm.enterNative()
+		ret := target(a, newTarget)
+		vm.leaveNative()
+		return ret
 	}
 }
 
@@ -332,6 +340,9 @@ lenNotInt:
 	nameStr := stringBound_
 	if s, ok := name.(String); ok {
 		nameStr = nameStr.Concat(s)
+		// Binding a bound function again copies its name with another
+		// "bound " prefix, so a chain of n binds allocates O(n^2) bytes.
+		r.countAlloc(int64(nameStr.Length()))
 	}
 
 	v := &Object{runtime: r}

@@ -36,6 +36,8 @@ func (self *_parser) parseStatementList() (list []ast.Statement) {
 }
 
 func (self *_parser) parseStatement() ast.Statement {
+	self.enterNesting()
+	defer self.leaveNesting()
 
 	if self.token == token.EOF {
 		self.errorUnexpectedToken(self.token)

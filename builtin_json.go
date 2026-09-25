@@ -11,6 +11,7 @@ import (
 	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
+	"unsafe"
 
 	"github.com/dop251/goja/unistring"
 )
@@ -47,106 +48,129 @@ func (r *Runtime) builtinJSON_parse(call FunctionCall) Value {
 	return value
 }
 
-func (r *Runtime) builtinJSON_decodeToken(d *json.Decoder, tok json.Token) (Value, error) {
-	switch tok := tok.(type) {
-	case json.Delim:
-		switch tok {
-		case '{':
-			return r.builtinJSON_decodeObject(d)
-		case '[':
-			return r.builtinJSON_decodeArray(d)
-		}
-	case nil:
-		return _null, nil
-	case string:
-		r.countAlloc(int64(len(tok)))
-		return newStringValue(tok), nil
-	case float64:
-		return floatToValue(tok), nil
-	case bool:
-		if tok {
-			return valueTrue, nil
-		}
-		return valueFalse, nil
-	}
-	return nil, fmt.Errorf("Unexpected token (%T): %v", tok, tok)
+// jsonParseFrame is an array or object that JSON.parse has opened and not
+// yet closed.
+type jsonParseFrame struct {
+	object    *Object
+	array     []Value
+	key       string
+	isArray   bool
+	expectKey bool
 }
 
+var allocSizeJSONParseFrame = int64(unsafe.Sizeof(jsonParseFrame{}))
+
+// builtinJSON_decodeValue decodes one JSON value. It keeps the containers it
+// is inside of on an explicit stack instead of recursing, so the nesting depth
+// of the input does not consume the Go stack; as in V8, which parses JSON
+// iteratively, the depth is limited only by memory, which the frames are
+// charged to.
 func (r *Runtime) builtinJSON_decodeValue(d *json.Decoder) (Value, error) {
-	tok, err := d.Token()
-	if err != nil {
-		return nil, err
-	}
-	return r.builtinJSON_decodeToken(d, tok)
-}
-
-func (r *Runtime) builtinJSON_decodeObject(d *json.Decoder) (*Object, error) {
-	object := r.NewObject()
-	for {
-		key, end, err := r.builtinJSON_decodeObjectKey(d)
-		if err != nil {
-			return nil, err
+	var stackBuf [8]jsonParseFrame
+	stack := stackBuf[:0]
+	for n := 0; ; n++ {
+		if n%interruptCheckInterval == 0 {
+			r.checkInterrupt()
 		}
-		if end {
-			break
-		}
-		value, err := r.builtinJSON_decodeValue(d)
-		if err != nil {
-			return nil, err
-		}
-
-		object.self._putProp(unistring.NewFromString(key), value, true, true, true)
-	}
-	return object, nil
-}
-
-func (r *Runtime) builtinJSON_decodeObjectKey(d *json.Decoder) (string, bool, error) {
-	tok, err := d.Token()
-	if err != nil {
-		return "", false, err
-	}
-	switch tok := tok.(type) {
-	case json.Delim:
-		if tok == '}' {
-			return "", true, nil
-		}
-	case string:
-		return tok, false, nil
-	}
-
-	return "", false, fmt.Errorf("Unexpected token (%T): %v", tok, tok)
-}
-
-func (r *Runtime) builtinJSON_decodeArray(d *json.Decoder) (*Object, error) {
-	var arrayValue []Value
-	for {
 		tok, err := d.Token()
 		if err != nil {
 			return nil, err
 		}
-		if delim, ok := tok.(json.Delim); ok {
-			if delim == ']' {
-				break
+		var value Value
+		if l := len(stack); l > 0 && stack[l-1].expectKey {
+			top := &stack[l-1]
+			switch tok := tok.(type) {
+			case string:
+				top.key = tok
+				top.expectKey = false
+				continue
+			case json.Delim:
+				if tok == '}' {
+					value = top.object
+					stack[l-1] = jsonParseFrame{}
+					stack = stack[:l-1]
+					goto store
+				}
+			}
+			return nil, fmt.Errorf("Unexpected token (%T): %v", tok, tok)
+		}
+		switch tok := tok.(type) {
+		case json.Delim:
+			switch tok {
+			case '{':
+				r.countAlloc(allocSizeJSONParseFrame)
+				stack = append(stack, jsonParseFrame{object: r.NewObject(), expectKey: true})
+				continue
+			case '[':
+				r.countAlloc(allocSizeJSONParseFrame)
+				stack = append(stack, jsonParseFrame{isArray: true})
+				continue
+			case ']':
+				if l := len(stack); l > 0 && stack[l-1].isArray {
+					value = r.newArrayValues(stack[l-1].array)
+					stack[l-1] = jsonParseFrame{}
+					stack = stack[:l-1]
+					goto store
+				}
+			}
+		case nil:
+			value = _null
+		case string:
+			r.countAlloc(int64(len(tok)))
+			value = newStringValue(tok)
+		case float64:
+			value = floatToValue(tok)
+		case bool:
+			if tok {
+				value = valueTrue
+			} else {
+				value = valueFalse
 			}
 		}
-		value, err := r.builtinJSON_decodeToken(d, tok)
-		if err != nil {
-			return nil, err
+		if value == nil {
+			return nil, fmt.Errorf("Unexpected token (%T): %v", tok, tok)
 		}
-		arrayValue = append(arrayValue, value)
+	store:
+		l := len(stack)
+		if l == 0 {
+			return value, nil
+		}
+		top := &stack[l-1]
+		if top.isArray {
+			top.array = append(top.array, value)
+		} else {
+			top.object.self._putProp(unistring.NewFromString(top.key), value, true, true, true)
+			top.expectKey = true
+		}
 	}
-	return r.newArrayValues(arrayValue), nil
+}
+
+type jsonReviver struct {
+	r       *Runtime
+	reviver func(FunctionCall) Value
+	n       int
 }
 
 func (r *Runtime) builtinJSON_reviveWalk(reviver func(FunctionCall) Value, holder *Object, name Value) Value {
+	w := jsonReviver{r: r, reviver: reviver}
+	return w.walk(holder, name)
+}
+
+func (w *jsonReviver) walk(holder *Object, name Value) Value {
+	r := w.r
+	if w.n%interruptCheckInterval == 0 {
+		r.checkInterrupt()
+	}
+	w.n++
 	value := nilSafe(holder.get(name, nil))
 
 	if object, ok := value.(*Object); ok {
+		r.enterNative()
 		if isArray(object) {
 			length := toLength(object.self.getStr("length", nil))
 			for index := int64(0); index < length; index++ {
 				name := asciiString(strconv.FormatInt(index, 10))
-				value := r.builtinJSON_reviveWalk(reviver, object, name)
+				value := w.walk(object, name)
 				if value == _undefined {
 					object.delete(name, false)
 				} else {
@@ -155,7 +179,7 @@ func (r *Runtime) builtinJSON_reviveWalk(reviver func(FunctionCall) Value, holde
 			}
 		} else {
 			for _, name := range object.self.stringKeys(false, nil) {
-				value := r.builtinJSON_reviveWalk(reviver, object, name)
+				value := w.walk(object, name)
 				if value == _undefined {
 					object.self.deleteStr(name.string(), false)
 				} else {
@@ -163,8 +187,9 @@ func (r *Runtime) builtinJSON_reviveWalk(reviver func(FunctionCall) Value, holde
 				}
 			}
 		}
+		r.leaveNative()
 	}
-	return reviver(FunctionCall{
+	return w.reviver(FunctionCall{
 		This:      holder,
 		Arguments: []Value{name, value},
 	})
@@ -172,7 +197,9 @@ func (r *Runtime) builtinJSON_reviveWalk(reviver func(FunctionCall) Value, holde
 
 type _builtinJSON_stringifyContext struct {
 	r                *Runtime
-	stack            []*Object
+	stack            objectStack
+	n                int   // values visited, for interrupt checks
+	charged          int64 // output bytes charged to the allocation counter
 	propertyList     []Value
 	replacerFunction func(FunctionCall) Value
 	gap, indent      string
@@ -280,6 +307,10 @@ func (ctx *_builtinJSON_stringifyContext) do(v Value) bool {
 }
 
 func (ctx *_builtinJSON_stringifyContext) str(key Value, holder *Object) bool {
+	if ctx.n%interruptCheckInterval == 0 {
+		ctx.checkpoint()
+	}
+	ctx.n++
 	value := nilSafe(holder.get(key, nil))
 
 	switch value.(type) {
@@ -369,26 +400,35 @@ func (ctx *_builtinJSON_stringifyContext) str(key Value, holder *Object) bool {
 			ctx.buf.WriteString(value1.self.getStr("rawJSON", nil).String())
 			return true
 		}
-		for _, object := range ctx.stack {
-			if value1.SameAs(object) {
-				ctx.r.typeErrorResult(true, "Converting circular structure to JSON")
-			}
-		}
-		ctx.stack = append(ctx.stack, value1)
-		defer func() { ctx.stack = ctx.stack[:len(ctx.stack)-1] }()
-		if _, ok := value1.self.assertCallable(); !ok {
-			if isArray(value1) {
-				ctx.ja(value1)
-			} else {
-				ctx.jo(value1)
-			}
-		} else {
+		if _, ok := value1.self.assertCallable(); ok {
 			return false
 		}
+		if !ctx.stack.push(value1) {
+			ctx.r.typeErrorResult(true, "Converting circular structure to JSON")
+		}
+		ctx.r.enterNative()
+		if isArray(value1) {
+			ctx.ja(value1)
+		} else {
+			ctx.jo(value1)
+		}
+		ctx.r.leaveNative()
+		ctx.stack.pop()
 	default:
 		return false
 	}
 	return true
+}
+
+// checkpoint observes a pending Runtime.Interrupt and charges the output
+// written since the last checkpoint to the allocation counter.
+func (ctx *_builtinJSON_stringifyContext) checkpoint() {
+	r := ctx.r
+	if l := int64(ctx.buf.Len()); l > ctx.charged {
+		r.countAlloc(l - ctx.charged)
+		ctx.charged = l
+	}
+	r.checkInterrupt()
 }
 
 func (ctx *_builtinJSON_stringifyContext) ja(array *Object) {

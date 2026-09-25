@@ -694,6 +694,8 @@ func (self *_parser) parseBracketMember(left ast.Expression) ast.Expression {
 }
 
 func (self *_parser) parseNewExpression() ast.Expression {
+	self.enterNesting()
+	defer self.leaveNesting()
 	idx := self.expect(token.NEW)
 	if self.token == token.PERIOD {
 		self.next()
@@ -853,6 +855,8 @@ func (self *_parser) parseUpdateExpression() ast.Expression {
 }
 
 func (self *_parser) parseUnaryExpression() ast.Expression {
+	self.enterNesting()
+	defer self.leaveNesting()
 
 	switch self.token {
 	case token.PLUS, token.MINUS, token.NOT, token.BITWISE_NOT:
@@ -1234,6 +1238,8 @@ func (self *_parser) parseSingleArgArrowFunction(start file.Idx, async bool) ast
 }
 
 func (self *_parser) parseAssignmentExpression() ast.Expression {
+	self.enterNesting()
+	defer self.leaveNesting()
 	start := self.idx
 	parenthesis := false
 	async := false

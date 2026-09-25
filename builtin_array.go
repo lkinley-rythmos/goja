@@ -175,25 +175,24 @@ func (r *Runtime) arrayproto_pop(call FunctionCall) Value {
 // pushToStringStack checks for circular references and pushes an object onto the toString stack.
 // Returns true if the object is already in the stack (circular reference detected), false otherwise.
 // If false is returned, the caller must ensure the object is popped from the stack when done.
+// Each object on the stack is a level of Go recursion (join calls toString on its elements, which
+// may call join), so it is counted towards maxNativeDepth.
 func (r *Runtime) pushToStringStack(o *Object) bool {
-	// Check for circular reference in the toString stack
-	for _, obj := range r.toStringStack {
-		if o == obj {
-			// Circular reference detected
-			return true
-		}
+	// Count first: past the bound this throws, and nothing may be left on
+	// the stack when it does (the caller only defers the pop on success).
+	r.enterNative()
+	if !r.toStringStack.push(o) {
+		// Circular reference detected
+		r.leaveNative()
+		return true
 	}
-
-	// Push this object onto the stack
-	r.toStringStack = append(r.toStringStack, o)
 	return false
 }
 
 // popFromStringStack removes an object from the toString stack.
 func (r *Runtime) popFromStringStack() {
-	// Set the last element to nil to allow GC to collect it
-	r.toStringStack[len(r.toStringStack)-1] = nil
-	r.toStringStack = r.toStringStack[:len(r.toStringStack)-1]
+	r.leaveNative()
+	r.toStringStack.pop()
 }
 
 func (r *Runtime) arrayproto_join(call FunctionCall) Value {
@@ -225,6 +224,9 @@ func (r *Runtime) arrayproto_join(call FunctionCall) Value {
 	}
 
 	for i := 1; i < l; i++ {
+		if i%interruptCheckInterval == 0 {
+			r.checkInterrupt()
+		}
 		buf.WriteString(sep)
 		element := o.self.getIdx(valueInt(int64(i)), nil)
 		if element != nil && element != _undefined && element != _null {
@@ -297,6 +299,9 @@ func (r *Runtime) arrayproto_toLocaleString(call FunctionCall) Value {
 		for i := int64(0); i < length; i++ {
 			if i > 0 {
 				buf.WriteRune(',')
+				if i%interruptCheckInterval == 0 {
+					r.checkInterrupt()
+				}
 			}
 			item := array.self.getIdx(valueInt(i), nil)
 			r.writeItemLocaleString(item, &buf)
@@ -322,6 +327,9 @@ func (r *Runtime) arrayproto_concat_append(a *Object, item Value) {
 			panic(r.NewTypeError("Invalid array length"))
 		}
 		for i := int64(0); i < length; i++ {
+			if i%interruptCheckInterval == 0 {
+				r.checkInterrupt()
+			}
 			v := obj.self.getIdx(valueInt(i), nil)
 			if v != nil {
 				createDataPropertyOrThrow(a, intToValue(aLength), v)
@@ -374,6 +382,9 @@ func (r *Runtime) arrayproto_slice(call FunctionCall) Value {
 
 	n := int64(0)
 	for start < end {
+		if start%interruptCheckInterval == 0 {
+			r.checkInterrupt()
+		}
 		p := o.self.getIdx(valueInt(start), nil)
 		if p != nil {
 			createDataPropertyOrThrow(a, intToValue(n), p)
@@ -414,8 +425,11 @@ func (r *Runtime) arrayproto_sort(call FunctionCall) Value {
 		sort.Stable(&ctx)
 	} else {
 		length := toLength(o.self.getStr("length", nil))
-		a := make([]Value, 0, length)
+		a := make([]Value, 0, lengthCapHint(length))
 		for i := int64(0); i < length; i++ {
+			if i%interruptCheckInterval == 0 {
+				r.checkInterrupt()
+			}
 			idx := valueInt(i)
 			if o.self.hasPropertyIdx(idx) {
 				a = append(a, nilSafe(o.self.getIdx(idx, nil)))
@@ -429,9 +443,15 @@ func (r *Runtime) arrayproto_sort(call FunctionCall) Value {
 
 		sort.Stable(&ctx)
 		for i := 0; i < len(a); i++ {
+			if i%interruptCheckInterval == 0 {
+				r.checkInterrupt()
+			}
 			o.self.setOwnIdx(valueInt(i), a[i], true)
 		}
 		for i := int64(len(a)); i < length; i++ {
+			if i%interruptCheckInterval == 0 {
+				r.checkInterrupt()
+			}
 			o.self.deleteIdx(valueInt(i), true)
 		}
 	}
@@ -463,6 +483,9 @@ func (r *Runtime) arrayproto_splice(call FunctionCall) Value {
 			setArrayValues(dst, values)
 		} else {
 			for k := int64(0); k < actualDeleteCount; k++ {
+				if k%interruptCheckInterval == 0 {
+					r.checkInterrupt()
+				}
 				createDataPropertyOrThrow(a, intToValue(k), src.values[k+actualStart])
 			}
 			a.self.setOwnStr("length", intToValue(actualDeleteCount), true)
@@ -473,6 +496,9 @@ func (r *Runtime) arrayproto_splice(call FunctionCall) Value {
 			copy(values[actualStart+itemCount:], values[actualStart+actualDeleteCount:])
 			tail := values[newLength:]
 			for k := range tail {
+				if k%interruptCheckInterval == 0 {
+					r.checkInterrupt()
+				}
 				tail[k] = nil
 			}
 			values = values[:newLength]
@@ -495,6 +521,9 @@ func (r *Runtime) arrayproto_splice(call FunctionCall) Value {
 		src.objCount = len(values)
 	} else {
 		for k := int64(0); k < actualDeleteCount; k++ {
+			if k%interruptCheckInterval == 0 {
+				r.checkInterrupt()
+			}
 			from := valueInt(k + actualStart)
 			if o.self.hasPropertyIdx(from) {
 				createDataPropertyOrThrow(a, intToValue(k), nilSafe(o.self.getIdx(from, nil)))
@@ -503,6 +532,9 @@ func (r *Runtime) arrayproto_splice(call FunctionCall) Value {
 
 		if itemCount < actualDeleteCount {
 			for k := actualStart; k < length-actualDeleteCount; k++ {
+				if k%interruptCheckInterval == 0 {
+					r.checkInterrupt()
+				}
 				from := valueInt(k + actualDeleteCount)
 				to := valueInt(k + itemCount)
 				if o.self.hasPropertyIdx(from) {
@@ -513,10 +545,16 @@ func (r *Runtime) arrayproto_splice(call FunctionCall) Value {
 			}
 
 			for k := length; k > length-actualDeleteCount+itemCount; k-- {
+				if k%interruptCheckInterval == 0 {
+					r.checkInterrupt()
+				}
 				o.self.deleteIdx(valueInt(k-1), true)
 			}
 		} else if itemCount > actualDeleteCount {
 			for k := length - actualDeleteCount; k > actualStart; k-- {
+				if k%interruptCheckInterval == 0 {
+					r.checkInterrupt()
+				}
 				from := valueInt(k + actualDeleteCount - 1)
 				to := valueInt(k + itemCount - 1)
 				if o.self.hasPropertyIdx(from) {
@@ -562,6 +600,9 @@ func (r *Runtime) arrayproto_unshift(call FunctionCall) Value {
 			arr.objCount = int(arr.length)
 		} else {
 			for k := length - 1; k >= 0; k-- {
+				if k%interruptCheckInterval == 0 {
+					r.checkInterrupt()
+				}
 				from := valueInt(k)
 				to := valueInt(k + argCount)
 				if o.self.hasPropertyIdx(from) {
@@ -618,6 +659,9 @@ func (r *Runtime) arrayproto_indexOf(call FunctionCall) Value {
 
 	if arr := r.checkStdArrayObj(o); arr != nil {
 		for i, val := range arr.values[n:] {
+			if i%interruptCheckInterval == 0 {
+				r.checkInterrupt()
+			}
 			if searchElement.StrictEquals(val) {
 				return intToValue(n + int64(i))
 			}
@@ -626,6 +670,9 @@ func (r *Runtime) arrayproto_indexOf(call FunctionCall) Value {
 	}
 
 	for ; n < length; n++ {
+		if n%interruptCheckInterval == 0 {
+			r.checkInterrupt()
+		}
 		idx := valueInt(n)
 		if o.self.hasPropertyIdx(idx) {
 			if val := o.self.getIdx(idx, nil); val != nil {
@@ -670,6 +717,9 @@ func (r *Runtime) arrayproto_includes(call FunctionCall) Value {
 	}
 
 	for ; n < length; n++ {
+		if n%interruptCheckInterval == 0 {
+			r.checkInterrupt()
+		}
 		idx := valueInt(n)
 		val := nilSafe(o.self.getIdx(idx, nil))
 		if searchElement.SameAs(val) {
@@ -705,6 +755,9 @@ func (r *Runtime) arrayproto_lastIndexOf(call FunctionCall) Value {
 	if arr := r.checkStdArrayObj(o); arr != nil {
 		vals := arr.values
 		for k := fromIndex; k >= 0; k-- {
+			if k%interruptCheckInterval == 0 {
+				r.checkInterrupt()
+			}
 			if v := vals[k]; v != nil && searchElement.StrictEquals(v) {
 				return intToValue(k)
 			}
@@ -713,6 +766,9 @@ func (r *Runtime) arrayproto_lastIndexOf(call FunctionCall) Value {
 	}
 
 	for k := fromIndex; k >= 0; k-- {
+		if k%interruptCheckInterval == 0 {
+			r.checkInterrupt()
+		}
 		idx := valueInt(k)
 		if o.self.hasPropertyIdx(idx) {
 			if val := o.self.getIdx(idx, nil); val != nil {
@@ -735,6 +791,9 @@ func (r *Runtime) arrayproto_every(call FunctionCall) Value {
 		Arguments: []Value{nil, nil, o},
 	}
 	for k := int64(0); k < length; k++ {
+		if k%interruptCheckInterval == 0 {
+			r.checkInterrupt()
+		}
 		idx := valueInt(k)
 		if val := o.self.getIdx(idx, nil); val != nil {
 			fc.Arguments[0] = val
@@ -756,6 +815,9 @@ func (r *Runtime) arrayproto_some(call FunctionCall) Value {
 		Arguments: []Value{nil, nil, o},
 	}
 	for k := int64(0); k < length; k++ {
+		if k%interruptCheckInterval == 0 {
+			r.checkInterrupt()
+		}
 		idx := valueInt(k)
 		if val := o.self.getIdx(idx, nil); val != nil {
 			fc.Arguments[0] = val
@@ -777,6 +839,9 @@ func (r *Runtime) arrayproto_forEach(call FunctionCall) Value {
 		Arguments: []Value{nil, nil, o},
 	}
 	for k := int64(0); k < length; k++ {
+		if k%interruptCheckInterval == 0 {
+			r.checkInterrupt()
+		}
 		idx := valueInt(k)
 		if val := o.self.getIdx(idx, nil); val != nil {
 			fc.Arguments[0] = val
@@ -800,6 +865,9 @@ func (r *Runtime) arrayproto_map(call FunctionCall) Value {
 		if arr, ok := a.self.(*arrayObject); ok {
 			values := make([]Value, length)
 			for k := int64(0); k < length; k++ {
+				if k%interruptCheckInterval == 0 {
+					r.checkInterrupt()
+				}
 				idx := valueInt(k)
 				if val := o.self.getIdx(idx, nil); val != nil {
 					fc.Arguments[0] = val
@@ -812,6 +880,9 @@ func (r *Runtime) arrayproto_map(call FunctionCall) Value {
 		}
 	}
 	for k := int64(0); k < length; k++ {
+		if k%interruptCheckInterval == 0 {
+			r.checkInterrupt()
+		}
 		idx := valueInt(k)
 		if val := o.self.getIdx(idx, nil); val != nil {
 			fc.Arguments[0] = val
@@ -836,6 +907,9 @@ func (r *Runtime) arrayproto_filter(call FunctionCall) Value {
 			if arr := r.checkStdArrayObj(a); arr != nil {
 				var values []Value
 				for k := int64(0); k < length; k++ {
+					if k%interruptCheckInterval == 0 {
+						r.checkInterrupt()
+					}
 					idx := valueInt(k)
 					if val := o.self.getIdx(idx, nil); val != nil {
 						fc.Arguments[0] = val
@@ -852,6 +926,9 @@ func (r *Runtime) arrayproto_filter(call FunctionCall) Value {
 
 		to := int64(0)
 		for k := int64(0); k < length; k++ {
+			if k%interruptCheckInterval == 0 {
+				r.checkInterrupt()
+			}
 			idx := valueInt(k)
 			if val := o.self.getIdx(idx, nil); val != nil {
 				fc.Arguments[0] = val
@@ -885,6 +962,9 @@ func (r *Runtime) arrayproto_reduce(call FunctionCall) Value {
 			fc.Arguments[0] = call.Argument(1)
 		} else {
 			for ; k < length; k++ {
+				if k%interruptCheckInterval == 0 {
+					r.checkInterrupt()
+				}
 				idx := valueInt(k)
 				if val := o.self.getIdx(idx, nil); val != nil {
 					fc.Arguments[0] = val
@@ -899,6 +979,9 @@ func (r *Runtime) arrayproto_reduce(call FunctionCall) Value {
 		}
 
 		for ; k < length; k++ {
+			if k%interruptCheckInterval == 0 {
+				r.checkInterrupt()
+			}
 			idx := valueInt(k)
 			if val := o.self.getIdx(idx, nil); val != nil {
 				fc.Arguments[1] = val
@@ -929,6 +1012,9 @@ func (r *Runtime) arrayproto_reduceRight(call FunctionCall) Value {
 			fc.Arguments[0] = call.Argument(1)
 		} else {
 			for ; k >= 0; k-- {
+				if k%interruptCheckInterval == 0 {
+					r.checkInterrupt()
+				}
 				idx := valueInt(k)
 				if val := o.self.getIdx(idx, nil); val != nil {
 					fc.Arguments[0] = val
@@ -943,6 +1029,9 @@ func (r *Runtime) arrayproto_reduceRight(call FunctionCall) Value {
 		}
 
 		for ; k >= 0; k-- {
+			if k%interruptCheckInterval == 0 {
+				r.checkInterrupt()
+			}
 			idx := valueInt(k)
 			if val := o.self.getIdx(idx, nil); val != nil {
 				fc.Arguments[1] = val
@@ -985,6 +1074,9 @@ func (r *Runtime) arrayproto_reverse_generic(o *Object, start int64) {
 	l := toLength(o.self.getStr("length", nil))
 	middle := l / 2
 	for lower := start; lower != middle; lower++ {
+		if lower%interruptCheckInterval == 0 {
+			r.checkInterrupt()
+		}
 		arrayproto_reverse_generic_step(o, lower, l-lower-1)
 	}
 }
@@ -995,6 +1087,9 @@ func (r *Runtime) arrayproto_reverse(call FunctionCall) Value {
 		l := len(a.values)
 		middle := l / 2
 		for lower := 0; lower != middle; lower++ {
+			if lower%interruptCheckInterval == 0 {
+				r.checkInterrupt()
+			}
 			upper := l - lower - 1
 			a.values[lower], a.values[upper] = a.values[upper], a.values[lower]
 		}
@@ -1028,6 +1123,9 @@ func (r *Runtime) arrayproto_shift(call FunctionCall) Value {
 	}
 	first := o.self.getIdx(valueInt(0), nil)
 	for i := int64(1); i < length; i++ {
+		if i%interruptCheckInterval == 0 {
+			r.checkInterrupt()
+		}
 		idxFrom := valueInt(i)
 		idxTo := valueInt(i - 1)
 		if o.self.hasPropertyIdx(idxFrom) {
@@ -1079,6 +1177,9 @@ func (r *Runtime) arrayproto_copyWithin(call FunctionCall) Value {
 		dir = 1
 	}
 	for count > 0 {
+		if count%interruptCheckInterval == 0 {
+			r.checkInterrupt()
+		}
 		if o.self.hasPropertyIdx(valueInt(from)) {
 			o.self.setOwnIdx(valueInt(to), nilSafe(o.self.getIdx(valueInt(from), nil)), true)
 		} else {
@@ -1110,10 +1211,16 @@ func (r *Runtime) arrayproto_fill(call FunctionCall) Value {
 	value := call.Argument(0)
 	if arr := r.checkStdArrayObj(o); arr != nil {
 		for ; k < final; k++ {
+			if k%interruptCheckInterval == 0 {
+				r.checkInterrupt()
+			}
 			arr.values[k] = value
 		}
 	} else {
 		for ; k < final; k++ {
+			if k%interruptCheckInterval == 0 {
+				r.checkInterrupt()
+			}
 			o.self.setOwnIdx(valueInt(k), value, true)
 		}
 	}
@@ -1129,6 +1236,9 @@ func (r *Runtime) arrayproto_find(call FunctionCall) Value {
 		Arguments: []Value{nil, nil, o},
 	}
 	for k := int64(0); k < l; k++ {
+		if k%interruptCheckInterval == 0 {
+			r.checkInterrupt()
+		}
 		idx := valueInt(k)
 		kValue := o.self.getIdx(idx, nil)
 		fc.Arguments[0], fc.Arguments[1] = kValue, intToValue(k)
@@ -1149,6 +1259,9 @@ func (r *Runtime) arrayproto_findIndex(call FunctionCall) Value {
 		Arguments: []Value{nil, nil, o},
 	}
 	for k := int64(0); k < l; k++ {
+		if k%interruptCheckInterval == 0 {
+			r.checkInterrupt()
+		}
 		idx := valueInt(k)
 		kValue := o.self.getIdx(idx, nil)
 		fc.Arguments[0], fc.Arguments[1] = kValue, intToValue(k)
@@ -1169,6 +1282,9 @@ func (r *Runtime) arrayproto_findLast(call FunctionCall) Value {
 		Arguments: []Value{nil, nil, o},
 	}
 	for k := int64(l - 1); k >= 0; k-- {
+		if k%interruptCheckInterval == 0 {
+			r.checkInterrupt()
+		}
 		idx := valueInt(k)
 		kValue := o.self.getIdx(idx, nil)
 		fc.Arguments[0], fc.Arguments[1] = kValue, intToValue(k)
@@ -1189,6 +1305,9 @@ func (r *Runtime) arrayproto_findLastIndex(call FunctionCall) Value {
 		Arguments: []Value{nil, nil, o},
 	}
 	for k := int64(l - 1); k >= 0; k-- {
+		if k%interruptCheckInterval == 0 {
+			r.checkInterrupt()
+		}
 		idx := valueInt(k)
 		kValue := o.self.getIdx(idx, nil)
 		fc.Arguments[0], fc.Arguments[1] = kValue, intToValue(k)
@@ -1215,6 +1334,9 @@ func (r *Runtime) arrayproto_flat(call FunctionCall) Value {
 func (r *Runtime) flattenIntoArray(target, source *Object, sourceLen, start, depth int64, mapperFunction func(FunctionCall) Value, thisArg Value) int64 {
 	targetIndex, sourceIndex := start, int64(0)
 	for sourceIndex < sourceLen {
+		if sourceIndex%interruptCheckInterval == 0 {
+			r.checkInterrupt()
+		}
 		p := intToValue(sourceIndex)
 		if source.hasProperty(p.toString()) {
 			element := nilSafe(source.get(p, source))
@@ -1232,7 +1354,9 @@ func (r *Runtime) flattenIntoArray(target, source *Object, sourceLen, start, dep
 			}
 			if elementArray != nil {
 				elementLen := toLength(elementArray.self.getStr("length", nil))
+				r.enterNative()
 				targetIndex = r.flattenIntoArray(target, elementArray, elementLen, targetIndex, depth-1, nil, nil)
+				r.leaveNative()
 			} else {
 				if targetIndex >= maxInt-1 {
 					panic(r.NewTypeError("Invalid array length"))
@@ -1278,6 +1402,9 @@ func (r *Runtime) arrayproto_with(call FunctionCall) Value {
 	if src := r.checkStdArrayObj(o); src != nil {
 		a := make([]Value, 0, length)
 		for k := int64(0); k < length; k++ {
+			if k%interruptCheckInterval == 0 {
+				r.checkInterrupt()
+			}
 			pk := valueInt(k)
 			var fromValue Value
 			if k == actualIndex {
@@ -1291,6 +1418,9 @@ func (r *Runtime) arrayproto_with(call FunctionCall) Value {
 	} else {
 		a := r.newArrayLength(length)
 		for k := int64(0); k < length; k++ {
+			if k%interruptCheckInterval == 0 {
+				r.checkInterrupt()
+			}
 			pk := valueInt(k)
 			var fromValue Value
 			if k == actualIndex {
@@ -1311,6 +1441,9 @@ func (r *Runtime) arrayproto_toReversed(call FunctionCall) Value {
 	if src := r.checkStdArrayObj(o); src != nil {
 		a := make([]Value, 0, length)
 		for k := int64(0); k < length; k++ {
+			if k%interruptCheckInterval == 0 {
+				r.checkInterrupt()
+			}
 			from := valueInt(length - k - 1)
 			fromValue := src.values[from]
 			a = append(a, fromValue)
@@ -1319,6 +1452,9 @@ func (r *Runtime) arrayproto_toReversed(call FunctionCall) Value {
 	} else {
 		a := r.newArrayLength(length)
 		for k := int64(0); k < length; k++ {
+			if k%interruptCheckInterval == 0 {
+				r.checkInterrupt()
+			}
 			from := valueInt(length - k - 1)
 			fromValue := o.self.getIdx(from, nil)
 			createDataPropertyOrThrow(a, intToValue(k), fromValue)
@@ -1350,8 +1486,11 @@ func (r *Runtime) arrayproto_toSorted(call FunctionCall) Value {
 		a = make([]Value, length)
 		copy(a, src.values)
 	} else {
-		a = make([]Value, 0, length)
+		a = make([]Value, 0, lengthCapHint(length))
 		for i := int64(0); i < length; i++ {
+			if i%interruptCheckInterval == 0 {
+				r.checkInterrupt()
+			}
 			idx := valueInt(i)
 			a = append(a, nilSafe(o.self.getIdx(idx, nil)))
 		}
@@ -1403,6 +1542,9 @@ func (r *Runtime) arrayproto_toSpliced(call FunctionCall) Value {
 		rl := actualStart + actualSkipCount
 
 		for i < actualStart {
+			if i%interruptCheckInterval == 0 {
+				r.checkInterrupt()
+			}
 			pi := valueInt(i)
 			iValue := nilSafe(o.self.getIdx(pi, nil))
 			createDataPropertyOrThrow(a, intToValue(i), iValue)
@@ -1417,6 +1559,9 @@ func (r *Runtime) arrayproto_toSpliced(call FunctionCall) Value {
 		}
 
 		for i < newLength {
+			if i%interruptCheckInterval == 0 {
+				r.checkInterrupt()
+			}
 			from := valueInt(rl)
 			fromValue := nilSafe(o.self.getIdx(from, nil))
 			createDataPropertyOrThrow(a, intToValue(i), fromValue)
@@ -1539,15 +1684,21 @@ func (r *Runtime) array_from(call FunctionCall) Value {
 		}
 		if mapFn == nil {
 			if a := r.checkStdArrayObjWithProto(arr); a != nil {
-				values := make([]Value, l)
+				values := make([]Value, 0, lengthCapHint(l))
 				for k := int64(0); k < l; k++ {
-					values[k] = nilSafe(arrayLike.self.getIdx(valueInt(k), nil))
+					if k%interruptCheckInterval == 0 {
+						r.checkInterrupt()
+					}
+					values = append(values, nilSafe(arrayLike.self.getIdx(valueInt(k), nil)))
 				}
 				setArrayValues(a, values)
 				return arr
 			}
 		}
 		for k := int64(0); k < l; k++ {
+			if k%interruptCheckInterval == 0 {
+				r.checkInterrupt()
+			}
 			idx := valueInt(k)
 			item := arrayLike.self.getIdx(idx, nil)
 			if mapFn != nil {

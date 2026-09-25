@@ -831,6 +831,12 @@ func (o *Object) baseObject(*Runtime) *Object {
 //
 // This method will panic with an *Exception if a JavaScript exception is thrown in the process. Use Runtime.Try to catch these.
 func (o *Object) Export() interface{} {
+	vm := o.runtime.vm
+	depth := vm.nativeDepth
+	defer func() {
+		// export may panic; this may run outside any vm.try.
+		vm.nativeDepth = depth
+	}()
 	return o.self.export(&objectExportCtx{})
 }
 
@@ -1223,7 +1229,12 @@ func (s *Symbol) hash(*maphash.Hash) uint64 {
 
 func exportValue(v Value, ctx *objectExportCtx) interface{} {
 	if obj, ok := v.(*Object); ok {
-		return obj.self.export(ctx)
+		// Exporting nested objects recurses in Go.
+		vm := obj.runtime.vm
+		vm.enterNative()
+		ret := obj.self.export(ctx)
+		vm.leaveNative()
+		return ret
 	}
 	return v.Export()
 }

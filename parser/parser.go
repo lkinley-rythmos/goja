@@ -107,6 +107,38 @@ type _parser struct {
 	opts options
 
 	file *file.File
+
+	// depth counts the nested expressions and statements being parsed; see
+	// maxNestingDepth.
+	depth int
+}
+
+// maxNestingDepth bounds how deeply expressions and statements may nest. The
+// parser is recursive descent, so every level of nesting in the source is
+// several Go calls; without a bound, a script such as "(".repeat(1e6) (or
+// its eval()) overflows the Go stack, which aborts the whole process. V8
+// throws "RangeError: Maximum call stack size exceeded" for such input, at
+// about 1,400 nested array literals or 1,700 nested parentheses in Node 18.
+// A level is one assignment expression, unary expression, statement or new
+// expression, so a pair of parentheses costs two.
+const maxNestingDepth = 10000
+
+// StackOverflowMessage is the message of the parse error reported when the
+// source nests deeper than the parser allows.
+const StackOverflowMessage = "Maximum call stack size exceeded"
+
+type nestingTooDeep struct{}
+
+func (self *_parser) enterNesting() {
+	self.depth++
+	if self.depth > maxNestingDepth {
+		self.error(self.idx, StackOverflowMessage)
+		panic(nestingTooDeep{})
+	}
+}
+
+func (self *_parser) leaveNesting() {
+	self.depth--
 }
 
 func _newParser(filename, src string, base int, opts ...Option) *_parser {
@@ -208,11 +240,21 @@ func (self *_parser) slice(idx0, idx1 file.Idx) string {
 	return ""
 }
 
-func (self *_parser) parse() (*ast.Program, error) {
+func (self *_parser) parse() (program *ast.Program, err error) {
 	self.openScope()
 	defer self.closeScope()
+	defer func() {
+		if x := recover(); x != nil {
+			if _, ok := x.(nestingTooDeep); !ok {
+				panic(x)
+			}
+			// Report only the nesting error: the parse was abandoned, so
+			// whatever else was collected is incidental.
+			program, err = nil, self.errors[len(self.errors)-1:].Err()
+		}
+	}()
 	self.next()
-	program := self.parseProgram()
+	program = self.parseProgram()
 	if false {
 		self.errors.Sort()
 	}

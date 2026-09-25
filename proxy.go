@@ -300,6 +300,9 @@ func (p *proxyObject) checkHandler() proxyHandler {
 }
 
 func (p *proxyObject) proto() *Object {
+	r := p.val.runtime
+	r.enterNative()
+	defer r.leaveNative()
 	target := p.target
 	if v, ok := p.checkHandler().getPrototypeOf(target); ok {
 		var handlerProto *Object
@@ -316,6 +319,9 @@ func (p *proxyObject) proto() *Object {
 }
 
 func (p *proxyObject) setProto(proto *Object, throw bool) bool {
+	r := p.val.runtime
+	r.enterNative()
+	defer r.leaveNative()
 	target := p.target
 	if v, ok := p.checkHandler().setPrototypeOf(target, proto); ok {
 		if v {
@@ -333,6 +339,9 @@ func (p *proxyObject) setProto(proto *Object, throw bool) bool {
 }
 
 func (p *proxyObject) isExtensible() bool {
+	r := p.val.runtime
+	r.enterNative()
+	defer r.leaveNative()
 	target := p.target
 	if booleanTrapResult, ok := p.checkHandler().isExtensible(p.target); ok {
 		if te := target.self.isExtensible(); booleanTrapResult != te {
@@ -345,6 +354,9 @@ func (p *proxyObject) isExtensible() bool {
 }
 
 func (p *proxyObject) preventExtensions(throw bool) bool {
+	r := p.val.runtime
+	r.enterNative()
+	defer r.leaveNative()
 	target := p.target
 	if booleanTrapResult, ok := p.checkHandler().preventExtensions(target); ok {
 		if !booleanTrapResult {
@@ -409,6 +421,9 @@ func (p *proxyObject) proxyDefineOwnPropertyPostCheck(prop Value, target *Object
 }
 
 func (p *proxyObject) defineOwnPropertyStr(name unistring.String, descr PropertyDescriptor, throw bool) bool {
+	r := p.val.runtime
+	r.enterNative()
+	defer r.leaveNative()
 	target := p.target
 	if booleanTrapResult, ok := p.checkHandler().definePropertyStr(target, name, descr); ok {
 		if !p.proxyDefineOwnPropertyPreCheck(booleanTrapResult, throw) {
@@ -421,6 +436,9 @@ func (p *proxyObject) defineOwnPropertyStr(name unistring.String, descr Property
 }
 
 func (p *proxyObject) defineOwnPropertyIdx(idx valueInt, descr PropertyDescriptor, throw bool) bool {
+	r := p.val.runtime
+	r.enterNative()
+	defer r.leaveNative()
 	target := p.target
 	if booleanTrapResult, ok := p.checkHandler().definePropertyIdx(target, idx, descr); ok {
 		if !p.proxyDefineOwnPropertyPreCheck(booleanTrapResult, throw) {
@@ -434,6 +452,9 @@ func (p *proxyObject) defineOwnPropertyIdx(idx valueInt, descr PropertyDescripto
 }
 
 func (p *proxyObject) defineOwnPropertySym(s *Symbol, descr PropertyDescriptor, throw bool) bool {
+	r := p.val.runtime
+	r.enterNative()
+	defer r.leaveNative()
 	target := p.target
 	if booleanTrapResult, ok := p.checkHandler().definePropertySym(target, s, descr); ok {
 		if !p.proxyDefineOwnPropertyPreCheck(booleanTrapResult, throw) {
@@ -459,6 +480,9 @@ func (p *proxyObject) proxyHasChecks(targetProp Value, target *Object, name fmt.
 }
 
 func (p *proxyObject) hasPropertyStr(name unistring.String) bool {
+	r := p.val.runtime
+	r.enterNative()
+	defer r.leaveNative()
 	target := p.target
 	if b, ok := p.checkHandler().hasStr(target, name); ok {
 		if !b {
@@ -471,6 +495,9 @@ func (p *proxyObject) hasPropertyStr(name unistring.String) bool {
 }
 
 func (p *proxyObject) hasPropertyIdx(idx valueInt) bool {
+	r := p.val.runtime
+	r.enterNative()
+	defer r.leaveNative()
 	target := p.target
 	if b, ok := p.checkHandler().hasIdx(target, idx); ok {
 		if !b {
@@ -483,6 +510,9 @@ func (p *proxyObject) hasPropertyIdx(idx valueInt) bool {
 }
 
 func (p *proxyObject) hasPropertySym(s *Symbol) bool {
+	r := p.val.runtime
+	r.enterNative()
+	defer r.leaveNative()
 	target := p.target
 	if b, ok := p.checkHandler().hasSym(target, s); ok {
 		if !b {
@@ -558,6 +588,9 @@ func (p *proxyObject) proxyGetOwnPropertyDescriptor(targetProp Value, target *Ob
 }
 
 func (p *proxyObject) getOwnPropStr(name unistring.String) Value {
+	r := p.val.runtime
+	r.enterNative()
+	defer r.leaveNative()
 	target := p.target
 	if v, ok := p.checkHandler().getOwnPropertyDescriptorStr(target, name); ok {
 		return p.proxyGetOwnPropertyDescriptor(target.self.getOwnPropStr(name), target, v, name)
@@ -567,6 +600,9 @@ func (p *proxyObject) getOwnPropStr(name unistring.String) Value {
 }
 
 func (p *proxyObject) getOwnPropIdx(idx valueInt) Value {
+	r := p.val.runtime
+	r.enterNative()
+	defer r.leaveNative()
 	target := p.target
 	if v, ok := p.checkHandler().getOwnPropertyDescriptorIdx(target, idx); ok {
 		return p.proxyGetOwnPropertyDescriptor(target.self.getOwnPropIdx(idx), target, v, idx)
@@ -576,6 +612,9 @@ func (p *proxyObject) getOwnPropIdx(idx valueInt) Value {
 }
 
 func (p *proxyObject) getOwnPropSym(s *Symbol) Value {
+	r := p.val.runtime
+	r.enterNative()
+	defer r.leaveNative()
 	target := p.target
 	if v, ok := p.checkHandler().getOwnPropertyDescriptorSym(target, s); ok {
 		return p.proxyGetOwnPropertyDescriptor(target.self.getOwnPropSym(s), target, v, s)
@@ -599,6 +638,9 @@ func (p *proxyObject) proxyGetChecks(targetProp, trapResult Value, name fmt.Stri
 }
 
 func (p *proxyObject) getStr(name unistring.String, receiver Value) Value {
+	r := p.val.runtime
+	r.enterNative()
+	defer r.leaveNative()
 	target := p.target
 	if receiver == nil {
 		receiver = p.val
@@ -611,6 +653,9 @@ func (p *proxyObject) getStr(name unistring.String, receiver Value) Value {
 }
 
 func (p *proxyObject) getIdx(idx valueInt, receiver Value) Value {
+	r := p.val.runtime
+	r.enterNative()
+	defer r.leaveNative()
 	target := p.target
 	if receiver == nil {
 		receiver = p.val
@@ -623,6 +668,9 @@ func (p *proxyObject) getIdx(idx valueInt, receiver Value) Value {
 }
 
 func (p *proxyObject) getSym(s *Symbol, receiver Value) Value {
+	r := p.val.runtime
+	r.enterNative()
+	defer r.leaveNative()
 	target := p.target
 	if receiver == nil {
 		receiver = p.val
@@ -655,6 +703,9 @@ func (p *proxyObject) proxySetPostCheck(targetProp, value Value, name fmt.String
 }
 
 func (p *proxyObject) proxySetStr(name unistring.String, value, receiver Value, throw bool) bool {
+	r := p.val.runtime
+	r.enterNative()
+	defer r.leaveNative()
 	target := p.target
 	if v, ok := p.checkHandler().setStr(target, name, value, receiver); ok {
 		if p.proxySetPreCheck(v, throw, name) {
@@ -667,6 +718,9 @@ func (p *proxyObject) proxySetStr(name unistring.String, value, receiver Value, 
 }
 
 func (p *proxyObject) proxySetIdx(idx valueInt, value, receiver Value, throw bool) bool {
+	r := p.val.runtime
+	r.enterNative()
+	defer r.leaveNative()
 	target := p.target
 	if v, ok := p.checkHandler().setIdx(target, idx, value, receiver); ok {
 		if p.proxySetPreCheck(v, throw, idx) {
@@ -679,6 +733,9 @@ func (p *proxyObject) proxySetIdx(idx valueInt, value, receiver Value, throw boo
 }
 
 func (p *proxyObject) proxySetSym(s *Symbol, value, receiver Value, throw bool) bool {
+	r := p.val.runtime
+	r.enterNative()
+	defer r.leaveNative()
 	target := p.target
 	if v, ok := p.checkHandler().setSym(target, s, value, receiver); ok {
 		if p.proxySetPreCheck(v, throw, s) {
@@ -733,6 +790,9 @@ func (p *proxyObject) proxyDeleteCheck(trapResult bool, targetProp Value, name f
 }
 
 func (p *proxyObject) deleteStr(name unistring.String, throw bool) bool {
+	r := p.val.runtime
+	r.enterNative()
+	defer r.leaveNative()
 	target := p.target
 	if v, ok := p.checkHandler().deleteStr(target, name); ok {
 		p.proxyDeleteCheck(v, target.self.getOwnPropStr(name), name, target, throw)
@@ -743,6 +803,9 @@ func (p *proxyObject) deleteStr(name unistring.String, throw bool) bool {
 }
 
 func (p *proxyObject) deleteIdx(idx valueInt, throw bool) bool {
+	r := p.val.runtime
+	r.enterNative()
+	defer r.leaveNative()
 	target := p.target
 	if v, ok := p.checkHandler().deleteIdx(target, idx); ok {
 		p.proxyDeleteCheck(v, target.self.getOwnPropIdx(idx), idx, target, throw)
@@ -753,6 +816,9 @@ func (p *proxyObject) deleteIdx(idx valueInt, throw bool) bool {
 }
 
 func (p *proxyObject) deleteSym(s *Symbol, throw bool) bool {
+	r := p.val.runtime
+	r.enterNative()
+	defer r.leaveNative()
 	target := p.target
 	if v, ok := p.checkHandler().deleteSym(target, s); ok {
 		p.proxyDeleteCheck(v, target.self.getOwnPropSym(s), s, target, throw)
@@ -787,6 +853,9 @@ func (p *proxyObject) keys(all bool, _ []Value) []Value {
 }
 
 func (p *proxyObject) proxyOwnKeys() ([]Value, bool) {
+	r := p.val.runtime
+	r.enterNative()
+	defer r.leaveNative()
 	target := p.target
 	if v, ok := p.checkHandler().ownKeys(target); ok {
 		keys := p.val.runtime.toObject(v)
@@ -887,6 +956,9 @@ func (p *proxyObject) assertConstructor() func(args []Value, newTarget *Object) 
 }
 
 func (p *proxyObject) apply(call FunctionCall) Value {
+	r := p.val.runtime
+	r.enterNative()
+	defer r.leaveNative()
 	if p.call == nil {
 		panic(p.val.runtime.NewTypeError("proxy target is not a function"))
 	}
@@ -897,6 +969,9 @@ func (p *proxyObject) apply(call FunctionCall) Value {
 }
 
 func (p *proxyObject) construct(args []Value, newTarget *Object) *Object {
+	r := p.val.runtime
+	r.enterNative()
+	defer r.leaveNative()
 	if p.ctor == nil {
 		panic(p.val.runtime.NewTypeError("proxy target is not a constructor"))
 	}

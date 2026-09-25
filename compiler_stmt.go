@@ -8,6 +8,8 @@ import (
 )
 
 func (c *compiler) compileStatement(v ast.Statement, needResult bool) {
+	c.enterNesting(v)
+	defer func() { c.depth-- }()
 
 	switch v := v.(type) {
 	case *ast.BlockStatement:

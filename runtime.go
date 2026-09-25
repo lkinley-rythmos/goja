@@ -210,7 +210,7 @@ type Runtime struct {
 
 	// Stack for tracking objects currently being converted to string
 	// to detect and handle circular references
-	toStringStack []*Object
+	toStringStack objectStack
 
 	alloc allocCounter
 }
@@ -1416,11 +1416,15 @@ func Parse(name, src string, options ...parser.Option) (prg *js_ast.Program, err
 	prg, err1 := parser.ParseFile(nil, name, src, 0, options...)
 	if err1 != nil {
 		// FIXME offset
-		err = &CompilerSyntaxError{
+		se := &CompilerSyntaxError{
 			CompilerError: CompilerError{
 				Message: err1.Error(),
 			},
 		}
+		if list, ok := err1.(parser.ErrorList); ok && len(list) == 1 && list[0].Message == parser.StackOverflowMessage {
+			se.stackOverflow = true
+		}
+		err = se
 	}
 	return
 }
@@ -1459,6 +1463,12 @@ func (r *Runtime) compile(name, src string, strict, inGlobal bool, evalVm *vm) (
 	if err != nil {
 		switch x1 := err.(type) {
 		case *CompilerSyntaxError:
+			if x1.stackOverflow {
+				err = &Exception{
+					val: r.newError(r.getRangeError(), errMsgStackOverflow),
+				}
+				break
+			}
 			err = &Exception{
 				val: r.builtin_new(r.getSyntaxError(), []Value{newStringValue(x1.Error())}),
 			}
@@ -1512,7 +1522,16 @@ func asUncatchableException(v interface{}) error {
 func (r *Runtime) RunProgram(p *Program) (result Value, err error) {
 	vm := r.vm
 	recursive := len(vm.callStack) > 0
+	// A top-level run starts and ends with no native recursion in progress,
+	// which also discards any count left behind by a panic that host code
+	// recovered from itself.
+	depth := 0
+	if recursive {
+		depth = vm.nativeDepth
+	}
+	vm.nativeDepth = depth
 	defer func() {
+		vm.nativeDepth = depth
 		if recursive {
 			vm.sp -= 2
 			vm.popCtx()
@@ -1587,7 +1606,9 @@ func (r *Runtime) CaptureCallStack(depth int, stack []StackFrame) []StackFrame {
 // Interrupt a running JavaScript. The corresponding Go call will return an *InterruptedError containing v.
 // If the interrupt propagates until the stack is empty the currently queued promise resolve/reject jobs will be cleared
 // without being executed. This is the same time they would be executed otherwise.
-// Note, it only works while in JavaScript code, it does not interrupt native Go functions (which includes all built-ins).
+// Note, it only works while in JavaScript code and in the built-ins that can loop for long on script input
+// (the Array.prototype methods, Array.from, Function.prototype.apply, JSON.parse and JSON.stringify), which check for it
+// periodically; it does not interrupt other native Go functions.
 // If the runtime is currently not running, it will be immediately interrupted on the next Run*() call.
 // To avoid that use ClearInterrupt()
 func (r *Runtime) Interrupt(v interface{}) {
@@ -2151,6 +2172,11 @@ func (r *Runtime) wrapReflectFunc(value reflect.Value) func(FunctionCall) Value 
 }
 
 func (r *Runtime) toReflectValue(v Value, dst reflect.Value, ctx *objectExportCtx) error {
+	if _, ok := v.(*Object); ok {
+		// Converting nested objects recurses in Go.
+		r.enterNative()
+		defer r.leaveNative()
+	}
 	typ := dst.Type()
 
 	if typ == typeValue {
@@ -2467,6 +2493,12 @@ func (r *Runtime) ExportTo(v Value, target interface{}) error {
 	if tval.Kind() != reflect.Ptr || tval.IsNil() {
 		return errors.New("target must be a non-nil pointer")
 	}
+	vm := r.vm
+	depth := vm.nativeDepth
+	defer func() {
+		// toReflectValue may panic; this may run outside any vm.try.
+		vm.nativeDepth = depth
+	}()
 	return r.toReflectValue(v, tval.Elem(), &objectExportCtx{})
 }
 
@@ -2531,6 +2563,12 @@ func (r *Runtime) SetParserOptions(opts ...parser.Option) {
 // SetMaxCallStackSize sets the maximum function call depth. When exceeded, a *StackOverflowError is thrown and
 // returned by RunProgram or by a Callable call. This is useful to prevent memory exhaustion caused by an
 // infinite recursion. The default value is math.MaxInt32.
+//
+// Independently of this setting, recursion that the runtime performs in Go on behalf of a script (walking nested
+// values in JSON.stringify or Array.prototype.join, following chains of prototypes, proxies or bound functions, a
+// native function calling back into JavaScript, parsing and compiling nested source) is bounded, so that it cannot
+// overflow the Go stack: past 10000 levels it throws a catchable "RangeError: Maximum call stack size exceeded",
+// as V8 does when its stack runs out.
 // This method (as the rest of the Set* methods) is not safe for concurrent use and may only be called
 // from the vm goroutine or when the vm is not running.
 func (r *Runtime) SetMaxCallStackSize(size int) {
@@ -2588,7 +2626,13 @@ func AssertConstructor(v Value) (Constructor, bool) {
 }
 
 func (r *Runtime) runWrapped(f func()) (err error) {
+	depth := 0
+	if len(r.vm.callStack) > 0 {
+		depth = r.vm.nativeDepth
+	}
+	r.vm.nativeDepth = depth
 	defer func() {
+		r.vm.nativeDepth = depth
 		if x := recover(); x != nil {
 			if ex := asUncatchableException(x); ex != nil {
 				err = ex
@@ -3045,7 +3089,11 @@ func isArray(object *Object) bool {
 		if proxy.target == nil {
 			panic(typeError("Cannot perform 'IsArray' on a proxy that has been revoked"))
 		}
-		return isArray(proxy.target)
+		r := object.runtime
+		r.enterNative()
+		res := isArray(proxy.target)
+		r.leaveNative()
+		return res
 	}
 	switch self.className() {
 	case classArray:

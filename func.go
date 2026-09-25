@@ -135,6 +135,13 @@ type nativeFuncObject struct {
 
 	f         func(FunctionCall) Value
 	construct func(args []Value, newTarget *Object) *Object
+
+	// goCall is f wrapped to count towards maxNativeDepth, created on the
+	// first assertCallable. The vm calls f directly (vmCall), which does not
+	// recurse in Go; a call from Go code (a getter, toString, a bound or
+	// proxied call, a callback) does, and a cycle of native functions calling
+	// each other never passes through the vm's loop.
+	goCall func(FunctionCall) Value
 }
 
 type wrappedFuncObject struct {
@@ -793,7 +800,16 @@ func (f *nativeFuncObject) defaultConstruct(ccall func(ConstructorCall) *Object,
 
 func (f *nativeFuncObject) assertCallable() (func(FunctionCall) Value, bool) {
 	if f.f != nil {
-		return f.f, true
+		if f.goCall == nil {
+			vm := f.val.runtime.vm
+			f.goCall = func(call FunctionCall) Value {
+				vm.enterNative()
+				ret := f.f(call)
+				vm.leaveNative()
+				return ret
+			}
+		}
+		return f.goCall, true
 	}
 	return nil, false
 }

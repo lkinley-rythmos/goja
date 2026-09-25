@@ -297,7 +297,7 @@ func (o *baseObject) hasPropertyStr(name unistring.String) bool {
 		return true
 	}
 	if o.prototype != nil {
-		return o.prototype.self.hasPropertyStr(name)
+		return protoHasPropertyStr(o.prototype, name)
 	}
 	return false
 }
@@ -311,7 +311,7 @@ func (o *baseObject) hasPropertySym(s *Symbol) bool {
 		return true
 	}
 	if o.prototype != nil {
-		return o.prototype.self.hasPropertySym(s)
+		return protoHasPropertySym(o.prototype, s)
 	}
 	return false
 }
@@ -319,9 +319,9 @@ func (o *baseObject) hasPropertySym(s *Symbol) bool {
 func (o *baseObject) getWithOwnProp(prop, p, receiver Value) Value {
 	if prop == nil && o.prototype != nil {
 		if receiver == nil {
-			return o.prototype.get(p, o.val)
+			return protoGet(o.prototype, p, o.val)
 		}
-		return o.prototype.get(p, receiver)
+		return protoGet(o.prototype, p, receiver)
 	}
 	if prop, ok := prop.(*valueProperty); ok {
 		if receiver == nil {
@@ -335,9 +335,9 @@ func (o *baseObject) getWithOwnProp(prop, p, receiver Value) Value {
 func (o *baseObject) getStrWithOwnProp(prop Value, name unistring.String, receiver Value) Value {
 	if prop == nil && o.prototype != nil {
 		if receiver == nil {
-			return o.prototype.self.getStr(name, o.val)
+			return protoGetStr(o.prototype, name, o.val)
 		}
-		return o.prototype.self.getStr(name, receiver)
+		return protoGetStr(o.prototype, name, receiver)
 	}
 	if prop, ok := prop.(*valueProperty); ok {
 		if receiver == nil {
@@ -361,9 +361,9 @@ func (o *baseObject) getStr(name unistring.String, receiver Value) Value {
 	if prop == nil {
 		if o.prototype != nil {
 			if receiver == nil {
-				return o.prototype.self.getStr(name, o.val)
+				return protoGetStr(o.prototype, name, o.val)
 			}
-			return o.prototype.self.getStr(name, receiver)
+			return protoGetStr(o.prototype, name, receiver)
 		}
 	}
 	if prop, ok := prop.(*valueProperty); ok {
@@ -493,7 +493,7 @@ func (o *baseObject) setOwnStr(name unistring.String, val Value, throw bool) boo
 	if ownDesc == nil {
 		if proto := o.prototype; proto != nil {
 			// we know it's foreign because prototype loops are not allowed
-			if res, handled := proto.self.setForeignStr(name, val, o.val, throw); handled {
+			if res, handled := protoSetForeignStr(proto, name, val, o.val, throw); handled {
 				return res
 			}
 		}
@@ -535,7 +535,7 @@ func (o *baseObject) setOwnSym(name *Symbol, val Value, throw bool) bool {
 	if ownDesc == nil {
 		if proto := o.prototype; proto != nil {
 			// we know it's foreign because prototype loops are not allowed
-			if res, handled := proto.self.setForeignSym(name, val, o.val, throw); handled {
+			if res, handled := protoSetForeignSym(proto, name, val, o.val, throw); handled {
 				return res
 			}
 		}
@@ -579,7 +579,7 @@ func (o *baseObject) _setForeignStr(name unistring.String, prop, val, receiver V
 	} else {
 		if proto := o.prototype; proto != nil {
 			if receiver != proto {
-				return proto.self.setForeignStr(name, val, receiver, throw)
+				return protoSetForeignStr(proto, name, val, receiver, throw)
 			}
 			return proto.self.setOwnStr(name, val, throw), true
 		}
@@ -602,7 +602,7 @@ func (o *baseObject) _setForeignIdx(idx valueInt, prop, val, receiver Value, thr
 	} else {
 		if proto := o.prototype; proto != nil {
 			if receiver != proto {
-				return proto.self.setForeignIdx(idx, val, receiver, throw)
+				return protoSetForeignIdx(proto, idx, val, receiver, throw)
 			}
 			return proto.self.setOwnIdx(idx, val, throw), true
 		}
@@ -643,7 +643,7 @@ func (o *baseObject) setForeignSym(name *Symbol, val, receiver Value, throw bool
 	} else {
 		if proto := o.prototype; proto != nil {
 			if receiver != o.val {
-				return proto.self.setForeignSym(name, val, receiver, throw)
+				return protoSetForeignSym(proto, name, val, receiver, throw)
 			}
 			return proto.self.setOwnSym(name, val, throw), true
 		}

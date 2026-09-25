@@ -92,7 +92,46 @@ func submatchesToRegexpResults(submatches [][]int, groups []string) []regexpResu
 	return results
 }
 
+// maxRegexpNesting bounds how deeply groups may nest in a pattern compiled
+// with regexp2. Its parser and compiler recurse per level (a pattern nested
+// 1e6 deep overflows the Go stack, which aborts the process) and are
+// quadratic in the depth of nested lookarounds. Go's regexp/syntax, which
+// compiles the patterns it supports, refuses nesting past the same depth.
+const maxRegexpNesting = 1000
+
+// regexpNestingTooDeep reports whether src nests groups deeper than
+// maxRegexpNesting, counting unescaped parentheses outside character classes.
+func regexpNestingTooDeep(src string) bool {
+	depth := 0
+	inClass := false
+	for i := 0; i < len(src); i++ {
+		switch src[i] {
+		case '\\':
+			i++
+		case '[':
+			inClass = true
+		case ']':
+			inClass = false
+		case '(':
+			if !inClass {
+				depth++
+				if depth > maxRegexpNesting {
+					return true
+				}
+			}
+		case ')':
+			if !inClass && depth > 0 {
+				depth--
+			}
+		}
+	}
+	return false
+}
+
 func compileRegexp2(src string, multiline, dotAll, ignoreCase, unicode bool) (*regexp2Wrapper, error) {
+	if regexpNestingTooDeep(src) {
+		return nil, fmt.Errorf("Invalid regular expression (regexp2): %s (expression nests too deeply)", src)
+	}
 	var opts = regexp2.ECMAScript
 	if multiline {
 		opts |= regexp2.Multiline

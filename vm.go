@@ -375,6 +375,10 @@ type vm struct {
 
 	maxCallStackSize int
 
+	// nativeDepth counts the levels of Go recursion in progress; see
+	// maxNativeDepth.
+	nativeDepth int
+
 	stashAllocs int
 
 	interrupted   uint32
@@ -854,6 +858,7 @@ func (vm *vm) throw(v interface{}) {
 }
 
 func (vm *vm) try(f func()) (ex *Exception) {
+	depth := vm.nativeDepth
 	vm.pushTryFrame(tryPanicMarker, -1)
 	defer vm.popTryFrame()
 
@@ -861,6 +866,10 @@ func (vm *vm) try(f func()) (ex *Exception) {
 		if x := recover(); x != nil {
 			ex = vm.handleThrow(x)
 		}
+		// A panic may have unwound native recursion levels without their
+		// leaveNative; once it is handled here, execution continues at
+		// this level.
+		vm.nativeDepth = depth
 	}()
 
 	f()
@@ -880,12 +889,17 @@ func (vm *vm) runTry() (ex *Exception) {
 }
 
 func (vm *vm) runTryInner() (ex *Exception) {
+	depth := vm.nativeDepth
 	defer func() {
 		if x := recover(); x != nil {
 			ex = vm.handleThrow(x)
 		}
+		vm.nativeDepth = depth
 	}()
 
+	// Each nested run is a level of Go recursion: native code calling back
+	// into JavaScript.
+	vm.enterNative()
 	vm.run()
 	return
 }

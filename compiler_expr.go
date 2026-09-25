@@ -204,9 +204,12 @@ type compiledOptional struct {
 
 func (c *compiler) compileExpression(v ast.Expression) compiledExpr {
 	// log.Printf("compileExpression: %T", v)
-	switch v := v.(type) {
-	case nil:
+	if v == nil {
 		return nil
+	}
+	c.enterNesting(v)
+	defer func() { c.depth-- }()
+	switch v := v.(type) {
 	case *ast.AssignExpression:
 		return c.compileAssignExpression(v)
 	case *ast.NumberLiteral:
