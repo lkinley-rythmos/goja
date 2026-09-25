@@ -217,20 +217,26 @@ func (r *Runtime) arrayproto_join(call FunctionCall) Value {
 	}
 
 	var buf StringBuilder
+	sepLen := sep.Length()
 
 	element0 := o.self.getIdx(valueInt(0), nil)
 	if element0 != nil && element0 != _undefined && element0 != _null {
-		buf.WriteString(element0.toString())
+		str := element0.toString()
+		r.growString(0, str.Length())
+		buf.WriteString(str)
 	}
 
 	for i := 1; i < l; i++ {
 		if i%interruptCheckInterval == 0 {
 			r.checkInterrupt()
 		}
+		r.growString(buf.Len(), sepLen)
 		buf.WriteString(sep)
 		element := o.self.getIdx(valueInt(int64(i)), nil)
 		if element != nil && element != _undefined && element != _null {
-			buf.WriteString(element.toString())
+			str := element.toString()
+			r.growString(buf.Len(), str.Length())
+			buf.WriteString(str)
 		}
 	}
 
@@ -268,8 +274,9 @@ func (r *Runtime) writeItemLocaleString(item Value, buf *StringBuilder) {
 			if c, ok := f.self.assertCallable(); ok {
 				strVal := c(FunctionCall{
 					This: item,
-				})
-				buf.WriteString(strVal.toString())
+				}).toString()
+				r.growString(buf.Len(), strVal.Length())
+				buf.WriteString(strVal)
 				return
 			}
 		}
@@ -290,6 +297,7 @@ func (r *Runtime) arrayproto_toLocaleString(call FunctionCall) Value {
 	if a := r.checkStdArrayObj(array); a != nil {
 		for i, item := range a.values {
 			if i > 0 {
+				r.growString(buf.Len(), 1)
 				buf.WriteRune(',')
 			}
 			r.writeItemLocaleString(item, &buf)
@@ -298,6 +306,7 @@ func (r *Runtime) arrayproto_toLocaleString(call FunctionCall) Value {
 		length := toLength(array.self.getStr("length", nil))
 		for i := int64(0); i < length; i++ {
 			if i > 0 {
+				r.growString(buf.Len(), 1)
 				buf.WriteRune(',')
 				if i%interruptCheckInterval == 0 {
 					r.checkInterrupt()
@@ -1490,6 +1499,8 @@ func (r *Runtime) arrayproto_toSorted(call FunctionCall) Value {
 		for i := int64(0); i < length; i++ {
 			if i%interruptCheckInterval == 0 {
 				r.checkInterrupt()
+				// The list this loop appends to is not counted otherwise.
+				r.countAlloc(interruptCheckInterval * allocSizeValue)
 			}
 			idx := valueInt(i)
 			a = append(a, nilSafe(o.self.getIdx(idx, nil)))
@@ -1688,6 +1699,8 @@ func (r *Runtime) array_from(call FunctionCall) Value {
 				for k := int64(0); k < l; k++ {
 					if k%interruptCheckInterval == 0 {
 						r.checkInterrupt()
+						// The list this loop appends to is not counted otherwise.
+						r.countAlloc(interruptCheckInterval * allocSizeValue)
 					}
 					values = append(values, nilSafe(arrayLike.self.getIdx(valueInt(k), nil)))
 				}

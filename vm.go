@@ -1295,7 +1295,8 @@ func (_add) exec(vm *vm) {
 		if !isRightString {
 			rightString = right.toString()
 		}
-		vm.r.countAlloc(int64(leftString.Length() + rightString.Length()))
+		// The result is a new string of both lengths.
+		vm.r.growString(0, leftString.Length()+rightString.Length())
 		ret = leftString.Concat(rightString)
 	} else {
 		switch left := left.(type) {
@@ -5318,6 +5319,7 @@ func (n concatStrings) exec(vm *vm) {
 			panic(unknownStringTypeErr(s))
 		}
 	}
+	vm.r.growString(0, length)
 
 	vm.sp -= int(n) - 1
 	if allAscii {

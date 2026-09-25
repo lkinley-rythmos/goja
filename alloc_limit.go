@@ -84,3 +84,38 @@ func (r *Runtime) allocBoundary() {
 	ex.stack = r.vm.captureStack(nil, 0)
 	panic(ex)
 }
+
+// maxStringLength is the longest string, in UTF-16 code units, that the
+// built-ins produce: V8's String::kMaxLength on 64-bit platforms
+// (2^29 - 24), past which Node throws "RangeError: Invalid string length".
+// Without it, a single call such as "a".repeat(2**40) asks Go for a buffer
+// so large that the allocation aborts the process.
+const maxStringLength = 1<<29 - 24
+
+//go:noinline
+func (r *Runtime) throwInvalidStringLength() {
+	panic(r.newError(r.getRangeError(), "Invalid string length"))
+}
+
+// growString is called before n more code units are appended to a string
+// result that is cur units long. It refuses a result longer than
+// maxStringLength and charges the n units to the allocation counter, the
+// same estimate the + operator charges, so that the allocation limit refuses
+// the result before it is allocated.
+func (r *Runtime) growString(cur, n int) {
+	if n > maxStringLength-cur {
+		r.throwInvalidStringLength()
+	}
+	r.countAlloc(int64(n))
+}
+
+// chargeStringGrowth is growString for a result built by code that does not
+// know the length of what it appends in advance: called after each step, it
+// charges what the result grew by since *charged and refuses it past
+// maxStringLength. The overshoot is at most one step.
+func (r *Runtime) chargeStringGrowth(charged *int, l int) {
+	if l > *charged {
+		r.growString(*charged, l-*charged)
+		*charged = l
+	}
+}

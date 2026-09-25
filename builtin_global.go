@@ -92,6 +92,7 @@ func (r *Runtime) _encode(uriString String, unescaped *[256]bool) String {
 		return uriString
 	}
 
+	r.growString(0, l)
 	buf := make([]byte, l)
 	i := 0
 	reader = uriString.Reader()
@@ -240,26 +241,51 @@ func (r *Runtime) builtin_encodeURIComponent(call FunctionCall) Value {
 
 func (r *Runtime) builtin_escape(call FunctionCall) Value {
 	s := call.Argument(0).toString()
-	var sb strings.Builder
 	l := s.Length()
+	// Size the result first, so that it is refused before it is allocated.
+	size := 0
 	for i := 0; i < l; i++ {
-		r := s.CharAt(i)
-		if r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' ||
-			r == '@' || r == '*' || r == '_' || r == '+' || r == '-' || r == '.' || r == '/' {
-			sb.WriteByte(byte(r))
-		} else if r <= 0xff {
+		if i%interruptCheckInterval == 0 {
+			r.checkInterrupt()
+		}
+		c := s.CharAt(i)
+		switch {
+		case escapeUnescaped(c):
+			size++
+		case c <= 0xff:
+			size += 3
+		default:
+			size += 6
+		}
+	}
+	r.growString(0, size)
+	var sb strings.Builder
+	sb.Grow(size)
+	for i := 0; i < l; i++ {
+		if i%interruptCheckInterval == 0 {
+			r.checkInterrupt()
+		}
+		c := s.CharAt(i)
+		if escapeUnescaped(c) {
+			sb.WriteByte(byte(c))
+		} else if c <= 0xff {
 			sb.WriteByte('%')
-			sb.WriteByte(hexUpper[r>>4])
-			sb.WriteByte(hexUpper[r&0xf])
+			sb.WriteByte(hexUpper[c>>4])
+			sb.WriteByte(hexUpper[c&0xf])
 		} else {
 			sb.WriteString("%u")
-			sb.WriteByte(hexUpper[r>>12])
-			sb.WriteByte(hexUpper[(r>>8)&0xf])
-			sb.WriteByte(hexUpper[(r>>4)&0xf])
-			sb.WriteByte(hexUpper[r&0xf])
+			sb.WriteByte(hexUpper[c>>12])
+			sb.WriteByte(hexUpper[(c>>8)&0xf])
+			sb.WriteByte(hexUpper[(c>>4)&0xf])
+			sb.WriteByte(hexUpper[c&0xf])
 		}
 	}
 	return asciiString(sb.String())
+}
+
+func escapeUnescaped(r uint16) bool {
+	return r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' ||
+		r == '@' || r == '*' || r == '_' || r == '+' || r == '-' || r == '.' || r == '/'
 }
 
 func (r *Runtime) builtin_unescape(call FunctionCall) Value {

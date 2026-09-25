@@ -845,7 +845,7 @@ func (r *Runtime) regexpproto_stdMatcher(call FunctionCall) Value {
 	}
 	if rx.pattern.global {
 		rx.setOwnStr("lastIndex", intToValue(0), true)
-		results := rx.pattern.findAllSubmatchIndex(s, 0, -1, rx.pattern.sticky)
+		results := rx.pattern.findAllSubmatchIndex(r.vm, s, 0, -1, rx.pattern.sticky)
 		if len(results) == 0 {
 			return _null
 		}
@@ -1119,7 +1119,7 @@ func (r *Runtime) regexpproto_stdSplitter(call FunctionCall) Value {
 	lastIndex := 0
 	found := 0
 
-	results := pattern.findAllSubmatchIndex(s, 0, -1, false)
+	results := pattern.findAllSubmatchIndex(r.vm, s, 0, -1, false)
 	if targetLength == 0 {
 		if len(results) == 0 {
 			valueArray = append(valueArray, s)
@@ -1196,7 +1196,12 @@ func (r *Runtime) regexpproto_stdReplacerGeneric(rxObj *Object, s, replaceStr St
 	lengthS := s.Length()
 	nextSourcePosition := 0
 	var resultBuf StringBuilder
-	for _, result := range results {
+	charged := 0
+	for i, result := range results {
+		if i%interruptCheckInterval == 0 {
+			r.checkInterrupt()
+		}
+		r.chargeStringGrowth(&charged, resultBuf.Len())
 		obj := r.toObject(result)
 		nCaptures := max(toLength(obj.self.getStr("length", nil))-1, 0)
 		matched := toStringValue(nilSafe(obj.self.getIdx(valueInt(0), nil)))
@@ -1261,6 +1266,7 @@ func (r *Runtime) regexpproto_stdReplacerGeneric(rxObj *Object, s, replaceStr St
 	if nextSourcePosition < lengthS {
 		resultBuf.WriteString(s.Substring(nextSourcePosition, lengthS))
 	}
+	r.chargeStringGrowth(&charged, resultBuf.Len())
 	return resultBuf.String()
 }
 
@@ -1355,7 +1361,7 @@ func (r *Runtime) regexpproto_stdReplacer(call FunctionCall) Value {
 	} else {
 		index = rx.getLastIndex()
 	}
-	found := rx.pattern.findAllSubmatchIndex(s, toIntStrict(index), find, rx.pattern.sticky)
+	found := rx.pattern.findAllSubmatchIndex(r.vm, s, toIntStrict(index), find, rx.pattern.sticky)
 	if rx.pattern.global || rx.pattern.sticky {
 		var newLastIndex int64
 		if !rx.pattern.global && len(found) > 0 {

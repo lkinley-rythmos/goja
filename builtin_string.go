@@ -6,6 +6,7 @@ import (
 	"sync"
 	"unicode/utf16"
 	"unicode/utf8"
+	"unsafe"
 
 	"github.com/dop251/goja/unistring"
 
@@ -106,6 +107,7 @@ func (r *Runtime) stringproto_iterator(call FunctionCall) Value {
 }
 
 func (r *Runtime) string_fromcharcode(call FunctionCall) Value {
+	r.growString(0, len(call.Arguments))
 	b := make([]byte, len(call.Arguments))
 	for i, arg := range call.Arguments {
 		chr := toUint16(arg)
@@ -131,6 +133,7 @@ func (r *Runtime) string_fromcharcode(call FunctionCall) Value {
 
 func (r *Runtime) string_fromcodepoint(call FunctionCall) Value {
 	var sb StringBuilder
+	r.growString(0, 2*len(call.Arguments))
 	for _, arg := range call.Arguments {
 		num := arg.ToNumber()
 		var c rune
@@ -158,13 +161,19 @@ func (r *Runtime) string_raw(call FunctionCall) Value {
 	nextIndex := int64(0)
 	numberOfSubstitutions := int64(len(call.Arguments) - 1)
 	for {
+		if nextIndex%interruptCheckInterval == 0 {
+			r.checkInterrupt()
+		}
 		nextSeg := toStringValue(nilSafe(raw.self.getIdx(valueInt(nextIndex), nil)))
+		r.growString(stringElements.Len(), nextSeg.Length())
 		stringElements.WriteString(nextSeg)
 		if nextIndex+1 == literalSegments {
 			return stringElements.String()
 		}
 		if nextIndex < numberOfSubstitutions {
-			stringElements.WriteString(toStringValue(nilSafe(call.Arguments[nextIndex+1])))
+			sub := toStringValue(nilSafe(call.Arguments[nextIndex+1]))
+			r.growString(stringElements.Len(), sub.Length())
+			stringElements.WriteString(sub)
 		}
 		nextIndex++
 	}
@@ -252,6 +261,7 @@ func (r *Runtime) stringproto_concat(call FunctionCall) Value {
 		}
 	}
 
+	r.growString(0, totalLen)
 	if allAscii {
 		var buf strings.Builder
 		buf.Grow(totalLen)
@@ -463,20 +473,27 @@ func (r *Runtime) stringproto_normalize(call FunctionCall) Value {
 		panic(r.newError(r.getRangeError(), "The normalization form should be one of NFC, NFD, NFKC, NFKD"))
 	}
 
+	var res String
 	switch s := s.(type) {
 	case asciiString:
 		return s
 	case unicodeString:
-		ss := s.String()
-		return newStringValue(f.String(ss))
+		r.growString(0, s.Length())
+		res = newStringValue(f.String(s.String()))
 	case *importedString:
 		if s.scanned && s.u == nil {
 			return asciiString(s.s)
 		}
-		return newStringValue(f.String(s.s))
+		r.growString(0, s.Length())
+		res = newStringValue(f.String(s.s))
 	default:
 		panic(unknownStringTypeErr(s))
 	}
+	// Decomposition can lengthen the string.
+	if d := res.Length() - s.Length(); d > 0 {
+		r.growString(s.Length(), d)
+	}
+	return res
 }
 
 func (r *Runtime) _stringPad(call FunctionCall, start bool) Value {
@@ -501,11 +518,58 @@ func (r *Runtime) _stringPad(call FunctionCall, start bool) Value {
 		fillerAscii = " "
 		filler = fillerAscii
 	}
+	if maxLength > maxStringLength {
+		r.throwInvalidStringLength()
+	}
+	r.growString(int(stringLength), int(maxLength-stringLength))
 	remaining := toIntStrict(maxLength - stringLength)
+	fl := filler.Length()
+	if remaining/fl <= 64 {
+		return padSmall(s, strAscii, strUnicode, filler, fillerAscii, fillerUnicode, remaining, int(maxLength), start)
+	}
+	// The fill is the filler repeated, then a prefix of it.
+	var fill String = stringEmpty
+	if count := remaining / fl; count > 0 {
+		if fillerUnicode == nil {
+			fill = asciiString(r.repeatBytes(string(fillerAscii), count))
+		} else {
+			fill = unicodeString(r.repeatUnits(fillerUnicode, count))
+		}
+	}
+	if rest := remaining % fl; rest > 0 {
+		fill = fill.Concat(filler.Substring(0, rest))
+	}
+	if fillerUnicode == nil && strUnicode == nil {
+		var sb strings.Builder
+		sb.Grow(toIntStrict(maxLength))
+		if !start {
+			sb.WriteString(string(strAscii))
+		}
+		sb.WriteString(fill.String())
+		if start {
+			sb.WriteString(string(strAscii))
+		}
+		return asciiString(sb.String())
+	}
+	var sb unicodeStringBuilder
+	sb.Grow(toIntStrict(maxLength))
+	if !start {
+		sb.writeString(s)
+	}
+	sb.writeString(fill)
+	if start {
+		sb.writeString(s)
+	}
+
+	return sb.String()
+}
+
+// padSmall pads with a few copies of the filler, appending them one by one.
+func padSmall(s String, strAscii asciiString, strUnicode unicodeString, filler String, fillerAscii asciiString, fillerUnicode unicodeString, remaining, maxLength int, start bool) Value {
 	if fillerUnicode == nil && strUnicode == nil {
 		fl := fillerAscii.Length()
 		var sb strings.Builder
-		sb.Grow(toIntStrict(maxLength))
+		sb.Grow(maxLength)
 		if !start {
 			sb.WriteString(string(strAscii))
 		}
@@ -522,7 +586,7 @@ func (r *Runtime) _stringPad(call FunctionCall, start bool) Value {
 		return asciiString(sb.String())
 	}
 	var sb unicodeStringBuilder
-	sb.Grow(toIntStrict(maxLength))
+	sb.Grow(maxLength)
 	if !start {
 		sb.writeString(s)
 	}
@@ -537,7 +601,6 @@ func (r *Runtime) _stringPad(call FunctionCall, start bool) Value {
 	if start {
 		sb.writeString(s)
 	}
-
 	return sb.String()
 }
 
@@ -560,26 +623,50 @@ func (r *Runtime) stringproto_repeat(call FunctionCall) Value {
 	if numInt < 0 {
 		panic(r.newError(r.getRangeError(), "Invalid count value"))
 	}
-	if numInt == 0 || s.Length() == 0 {
+	l := s.Length()
+	if numInt == 0 || l == 0 {
 		return stringEmpty
 	}
-	num := toIntStrict(numInt)
+	if numInt > int64(maxStringLength/l) {
+		r.throwInvalidStringLength()
+	}
+	num := int(numInt)
+	r.growString(0, l*num)
 	a, u := devirtualizeString(s)
 	if u == nil {
-		var sb strings.Builder
-		sb.Grow(len(a) * num)
-		for i := 0; i < num; i++ {
-			sb.WriteString(string(a))
-		}
-		return asciiString(sb.String())
+		return asciiString(r.repeatBytes(string(a), num))
 	}
+	return unicodeString(r.repeatUnits(u, num))
+}
 
-	var sb unicodeStringBuilder
-	sb.Grow(u.Length() * num)
-	for i := 0; i < num; i++ {
-		sb.writeUnicodeString(u)
+// repeatBytes returns s (not empty) repeated n (> 0) times, doubling the copied prefix so that
+// the result takes O(log n) copies rather than n writes, and observing
+// Runtime.Interrupt between the copies.
+func (r *Runtime) repeatBytes(s string, n int) string {
+	total := len(s) * n
+	b := make([]byte, total)
+	k := copy(b, s)
+	for k < total {
+		r.checkInterrupt()
+		k += copy(b[k:], b[:k])
 	}
-	return sb.String()
+	return unsafe.String(&b[0], total)
+}
+
+// repeatUnits is repeatBytes for a unicodeString (whose first unit is the
+// BOM).
+func (r *Runtime) repeatUnits(u unicodeString, n int) []uint16 {
+	src := u[1:]
+	total := len(src) * n
+	b := make([]uint16, total+1)
+	b[0] = unistring.BOM
+	dst := b[1:]
+	k := copy(dst, src)
+	for k < total {
+		r.checkInterrupt()
+		k += copy(dst[k:], dst[:k])
+	}
+	return b
 }
 
 func getReplaceValue(replaceValue Value) (str String, rcall func(FunctionCall) Value) {
@@ -604,8 +691,13 @@ func (r *Runtime) stringReplace(s String, found []regexpResult, newstring String
 
 	lastIndex := 0
 	lengthS := s.Length()
+	charged := 0
 	if rcall != nil {
-		for _, item := range found {
+		for i, item := range found {
+			if i%interruptCheckInterval == 0 {
+				r.checkInterrupt()
+			}
+			r.chargeStringGrowth(&charged, buf.Len())
 			if item.indexes[0] != lastIndex {
 				buf.WriteSubstring(s, lastIndex, item.indexes[0])
 			}
@@ -637,7 +729,11 @@ func (r *Runtime) stringReplace(s String, found []regexpResult, newstring String
 			lastIndex = item.indexes[1]
 		}
 	} else {
-		for _, item := range found {
+		for i, item := range found {
+			if i%interruptCheckInterval == 0 {
+				r.checkInterrupt()
+			}
+			r.chargeStringGrowth(&charged, buf.Len())
 			if item.indexes[0] != lastIndex {
 				buf.WriteString(s.Substring(lastIndex, item.indexes[0]))
 			}
@@ -675,6 +771,7 @@ func (r *Runtime) stringReplace(s String, found []regexpResult, newstring String
 	if lastIndex != lengthS {
 		buf.WriteString(s.Substring(lastIndex, lengthS))
 	}
+	r.chargeStringGrowth(&charged, buf.Len())
 
 	return buf.String()
 }
@@ -731,8 +828,13 @@ func (r *Runtime) stringproto_replaceAll(call FunctionCall) Value {
 	advanceBy := toIntStrict(max(1, int64(searchLength)))
 
 	pos := s.index(searchStr, 0)
-	for pos != -1 {
-		found = append(found, regexpResult{indexes: []int{pos, pos + searchLength}})
+	for n := 1; pos != -1; n++ {
+		if n%interruptCheckInterval == 0 {
+			r.checkInterrupt()
+		}
+		result := regexpResult{indexes: []int{pos, pos + searchLength}}
+		r.countAlloc(result.allocSize() - allocSizeRegexpResult)
+		found = appendResult(r.vm, found, result)
 		pos = s.index(searchStr, pos+advanceBy)
 	}
 
@@ -988,15 +1090,25 @@ func (r *Runtime) stringproto_substring(call FunctionCall) Value {
 func (r *Runtime) stringproto_toLowerCase(call FunctionCall) Value {
 	r.checkObjectCoercible(call.This)
 	s := toStringValue(call.This)
-
-	return s.toLower()
+	r.growString(0, s.Length())
+	res := s.toLower()
+	// Case mapping can lengthen the string.
+	if d := res.Length() - s.Length(); d > 0 {
+		r.growString(s.Length(), d)
+	}
+	return res
 }
 
 func (r *Runtime) stringproto_toUpperCase(call FunctionCall) Value {
 	r.checkObjectCoercible(call.This)
 	s := toStringValue(call.This)
-
-	return s.toUpper()
+	r.growString(0, s.Length())
+	res := s.toUpper()
+	// Case mapping can lengthen the string ("ß" is "SS").
+	if d := res.Length() - s.Length(); d > 0 {
+		r.growString(s.Length(), d)
+	}
+	return res
 }
 
 func (r *Runtime) stringproto_trim(call FunctionCall) Value {

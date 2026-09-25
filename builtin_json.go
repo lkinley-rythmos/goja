@@ -3,35 +3,17 @@ package goja
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
 	"math"
 	"strconv"
 	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
-	"unsafe"
-
-	"github.com/dop251/goja/unistring"
 )
 
 const hex = "0123456789abcdef"
 
 func (r *Runtime) builtinJSON_parse(call FunctionCall) Value {
-	d := json.NewDecoder(strings.NewReader(call.Argument(0).toString().String()))
-
-	value, err := r.builtinJSON_decodeValue(d)
-	if errors.Is(err, io.EOF) {
-		panic(r.newErrorf(r.getSyntaxError(), "Unexpected end of JSON input (%v)", err.Error()))
-	}
-	if err != nil {
-		panic(r.newError(r.getSyntaxError(), err.Error()))
-	}
-
-	if tok, err := d.Token(); err != io.EOF {
-		panic(r.newErrorf(r.getSyntaxError(), "Unexpected token at the end: %v", tok))
-	}
+	value := r.builtinJSON_parseSource(call.Argument(0).toString())
 
 	var reviver func(FunctionCall) Value
 
@@ -46,103 +28,6 @@ func (r *Runtime) builtinJSON_parse(call FunctionCall) Value {
 	}
 
 	return value
-}
-
-// jsonParseFrame is an array or object that JSON.parse has opened and not
-// yet closed.
-type jsonParseFrame struct {
-	object    *Object
-	array     []Value
-	key       string
-	isArray   bool
-	expectKey bool
-}
-
-var allocSizeJSONParseFrame = int64(unsafe.Sizeof(jsonParseFrame{}))
-
-// builtinJSON_decodeValue decodes one JSON value. It keeps the containers it
-// is inside of on an explicit stack instead of recursing, so the nesting depth
-// of the input does not consume the Go stack; as in V8, which parses JSON
-// iteratively, the depth is limited only by memory, which the frames are
-// charged to.
-func (r *Runtime) builtinJSON_decodeValue(d *json.Decoder) (Value, error) {
-	var stackBuf [8]jsonParseFrame
-	stack := stackBuf[:0]
-	for n := 0; ; n++ {
-		if n%interruptCheckInterval == 0 {
-			r.checkInterrupt()
-		}
-		tok, err := d.Token()
-		if err != nil {
-			return nil, err
-		}
-		var value Value
-		if l := len(stack); l > 0 && stack[l-1].expectKey {
-			top := &stack[l-1]
-			switch tok := tok.(type) {
-			case string:
-				top.key = tok
-				top.expectKey = false
-				continue
-			case json.Delim:
-				if tok == '}' {
-					value = top.object
-					stack[l-1] = jsonParseFrame{}
-					stack = stack[:l-1]
-					goto store
-				}
-			}
-			return nil, fmt.Errorf("Unexpected token (%T): %v", tok, tok)
-		}
-		switch tok := tok.(type) {
-		case json.Delim:
-			switch tok {
-			case '{':
-				r.countAlloc(allocSizeJSONParseFrame)
-				stack = append(stack, jsonParseFrame{object: r.NewObject(), expectKey: true})
-				continue
-			case '[':
-				r.countAlloc(allocSizeJSONParseFrame)
-				stack = append(stack, jsonParseFrame{isArray: true})
-				continue
-			case ']':
-				if l := len(stack); l > 0 && stack[l-1].isArray {
-					value = r.newArrayValues(stack[l-1].array)
-					stack[l-1] = jsonParseFrame{}
-					stack = stack[:l-1]
-					goto store
-				}
-			}
-		case nil:
-			value = _null
-		case string:
-			r.countAlloc(int64(len(tok)))
-			value = newStringValue(tok)
-		case float64:
-			value = floatToValue(tok)
-		case bool:
-			if tok {
-				value = valueTrue
-			} else {
-				value = valueFalse
-			}
-		}
-		if value == nil {
-			return nil, fmt.Errorf("Unexpected token (%T): %v", tok, tok)
-		}
-	store:
-		l := len(stack)
-		if l == 0 {
-			return value, nil
-		}
-		top := &stack[l-1]
-		if top.isArray {
-			top.array = append(top.array, value)
-		} else {
-			top.object.self._putProp(unistring.NewFromString(top.key), value, true, true, true)
-			top.expectKey = true
-		}
-	}
 }
 
 type jsonReviver struct {
@@ -289,6 +174,9 @@ func (r *Runtime) builtinJSON_stringify(call FunctionCall) Value {
 	}
 
 	if ctx.do(call.Argument(0)) {
+		ctx.checkpoint()
+		// The result is a copy of the buffer.
+		r.countAlloc(int64(ctx.buf.Len()))
 		if ctx.allAscii {
 			return asciiString(ctx.buf.String())
 		} else {
@@ -382,6 +270,15 @@ func (ctx *_builtinJSON_stringifyContext) str(key Value, holder *Object) bool {
 			ctx.buf.WriteString("false")
 		}
 	case String:
+		// Charge a string before copying it into the output: one value can
+		// be as long as the longest string.
+		if n := int64(value1.Length()) + 2; n > 1024 {
+			ctx.r.countAlloc(n)
+			ctx.charged += n
+			if int64(ctx.buf.Len())+n > maxStringLength {
+				ctx.r.throwInvalidStringLength()
+			}
+		}
 		ctx.quote(value1)
 	case valueInt:
 		ctx.buf.WriteString(value.String())
@@ -425,6 +322,11 @@ func (ctx *_builtinJSON_stringifyContext) str(key Value, holder *Object) bool {
 func (ctx *_builtinJSON_stringifyContext) checkpoint() {
 	r := ctx.r
 	if l := int64(ctx.buf.Len()); l > ctx.charged {
+		// The buffer holds UTF-8: while it is ASCII its length is the
+		// result's; otherwise it is at most 3 bytes per code unit.
+		if l > maxStringLength && (ctx.allAscii || l > 3*maxStringLength) {
+			r.throwInvalidStringLength()
+		}
 		r.countAlloc(l - ctx.charged)
 		ctx.charged = l
 	}

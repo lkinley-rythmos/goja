@@ -283,6 +283,21 @@ func (b *StringBuilder) String() String {
 	return b.unicodeBuilder.String()
 }
 
+// Len returns the number of code units written so far.
+func (b *StringBuilder) Len() int {
+	if b.ascii() {
+		return b.asciiBuilder.Len()
+	}
+	return b.unicodeBuilder.len()
+}
+
+func (b *unicodeStringBuilder) len() int {
+	if len(b.buf) == 0 {
+		return 0
+	}
+	return len(b.buf) - 1 // the BOM
+}
+
 func (b *StringBuilder) Grow(n int) {
 	if b.ascii() {
 		b.asciiBuilder.Grow(n)

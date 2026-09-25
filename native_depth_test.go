@@ -125,21 +125,10 @@ func TestNativeDepth_JSONParseReviver(t *testing.T) {
 	}
 }
 
-// jsonDecoderLimitsDepth reports whether this toolchain's encoding/json
-// Decoder refuses deep nesting itself (encoding/json v2 does, at 10000).
-func jsonDecoderLimitsDepth() bool {
-	d := json.NewDecoder(strings.NewReader(strings.Repeat("[", 20000)))
-	for {
-		if _, err := d.Token(); err != nil {
-			return !strings.Contains(err.Error(), "EOF")
-		}
-	}
-}
-
 // TestNativeDepth_JSONParseDeepInput parses 10^7 levels of nesting. Parsing
 // used to recurse once per level and aborted the process with a Go stack
 // overflow; it is iterative now, like V8's, so the depth is limited only by
-// memory (Node 18 parses this input too).
+// memory (Node 18 parses this input too, in 3.7 s).
 func TestNativeDepth_JSONParseDeepInput(t *testing.T) {
 	if testing.Short() {
 		t.Skip("parses 10^7 levels")
@@ -160,10 +149,9 @@ func TestNativeDepth_JSONParseDeepInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The same on every toolchain: JSON.parse no longer uses encoding/json,
+	// whose v2-based decoder refuses more than 10000 levels.
 	want := "10000000"
-	if jsonDecoderLimitsDepth() {
-		want = "SyntaxError"
-	}
 	if got := v.String(); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -444,6 +432,16 @@ func TestNativeLoops_ObserveInterrupt(t *testing.T) {
 		{"array-like join", `Array.prototype.join.call({length: 2 ** 53 - 1})`, nil},
 		{"Array.from", `Array.from({length: 2 ** 53 - 1})`, nil},
 		{"apply", `Math.max.apply(null, {length: 2 ** 53 - 1})`, nil},
+		// Catastrophic backtracking in regexp2 (the backreference rules
+		// out Go's regexp).
+		{"regexp test", `/^(a+)+\1$/.test("a".repeat(40) + "b")`, nil},
+		{"regexp exec unicode", `/^(a+)+\1$/u.exec("a".repeat(40) + "b")`, nil},
+		{"regexp replace global", `("a".repeat(40) + "b").replace(/(a+)+\1$/g, "")`, nil},
+		{"regexp split", `("a".repeat(40) + "b").split(/(a+)+\1$/)`, nil},
+		{"regexp matchAll", `[...("x" + "a".repeat(40) + "b").matchAll(/(a+)+\1$/g)]`, nil},
+		{"regexp many matches", `"ab".repeat(1 << 22).replace(/(?<=a)b/g, "c")`, nil},
+		{"replaceAll many matches", `"a".repeat(1 << 28).replaceAll("a", "b")`, nil},
+		{"escape", `escape("é".repeat(1 << 27))`, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) { runInterrupted(t, tc.script, tc.globals) })
 	}
@@ -507,4 +505,58 @@ func TestNativeDepth_Export(t *testing.T) {
 	if err := vm.ExportTo(shallow, &m); err != nil || m["a"] == nil || shallow.Export() == nil {
 		t.Fatal(err)
 	}
+}
+
+func TestRegexp2LongMatchStillCompletes(t *testing.T) {
+	// The first alternative backtracks for longer than several match
+	// slices before the second one matches: the slices must not change
+	// the result.
+	const script = `
+	var re = /^(?:(a+)+\1b|a+c)$/;
+	var t = Date.now();
+	var res = re.test("a".repeat(21) + "c") && !re.test("a".repeat(21) + "d");
+	[res, Date.now() - t > 200].join();
+	`
+	testScript(script, asciiString("true,true"), t)
+}
+
+// jsonParseResult is the printer of scratchpad probe/jsonerr.js, which
+// produced jsonParseNode18Cases in Node 18.
+const jsonParseResult = `
+function jsonParseResult(c) {
+	try {
+		const v = JSON.parse(c);
+		return "OK " + (typeof v === "string" ? JSON.stringify(v) + " len " + v.length + " codes " + [...v].map(x => x.charCodeAt(0).toString(16)).join(",") : (Object.is(v, -0) ? "-0" : JSON.stringify(v)));
+	} catch (e) {
+		return e.name + ": " + e.message;
+	}
+}
+`
+
+func TestJSONParseMatchesNode18(t *testing.T) {
+	vm := New()
+	if _, err := vm.RunString(jsonParseResult); err != nil {
+		t.Fatal(err)
+	}
+	fn, _ := AssertFunction(vm.Get("jsonParseResult"))
+	for _, tc := range jsonParseNode18Cases {
+		v, err := fn(nil, vm.ToValue(tc.src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := v.String(); got != tc.want {
+			t.Errorf("JSON.parse(%q):\n got %q\nwant %q", tc.src, got, tc.want)
+		}
+	}
+}
+
+func TestJSONParseUnicodeSource(t *testing.T) {
+	// A source holding non-ASCII characters (and a lone surrogate) is
+	// scanned as UTF-16 code units.
+	const script = `
+	var v = JSON.parse('{"é": ["\ud800", "ü\\u00e9", 1.5e1, {"k\\n": null}], "x": "\\ud83d\\ude00"}');
+	[Object.keys(v).join(), v["é"][0].charCodeAt(0).toString(16), v["é"][0].length, v["é"][1], v["é"][2],
+		Object.keys(v["é"][3])[0] === "k\n", v.x.codePointAt(0).toString(16)].join("|");
+	`
+	testScript(script, newStringValue("é,x|d800|1|üé|15|true|1f600"), t)
 }

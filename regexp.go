@@ -6,7 +6,9 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf16"
+	"unsafe"
 
 	"github.com/dlclark/regexp2/v2"
 	"github.com/dop251/goja/unistring"
@@ -79,6 +81,37 @@ type regexpResult struct {
 	groups  []string
 }
 
+var allocSizeRegexpResult = int64(unsafe.Sizeof(regexpResult{}))
+
+// appendResult appends a match to a list and charges the list's growth.
+func appendResult(vm *vm, results []regexpResult, result regexpResult) []regexpResult {
+	c := cap(results)
+	results = append(results, result)
+	if c1 := cap(results); c1 != c {
+		vm.r.countAlloc(int64(c1) * allocSizeRegexpResult)
+	}
+	return results
+}
+
+// chargeResults charges the matches Go's regexp found all at once. Unlike
+// regexp2's, which are charged one by one, they can only be charged after
+// they have been allocated.
+func chargeResults(vm *vm, results []regexpResult) []regexpResult {
+	n := int64(cap(results)) * allocSizeRegexpResult
+	for i := range results {
+		n += results[i].allocSize() - allocSizeRegexpResult
+	}
+	vm.r.countAlloc(n)
+	return results
+}
+
+// allocSize estimates the memory a match result holds, for the allocation
+// counter: a global match or split can collect one per character of input.
+func (result *regexpResult) allocSize() int64 {
+	return allocSizeRegexpResult + int64(cap(result.indexes))*int64(unsafe.Sizeof(0)) +
+		int64(cap(result.groups))*int64(unsafe.Sizeof(""))
+}
+
 func (result *regexpResult) appendIndexesAndGroup(index1, index2 int, name string) {
 	result.indexes = append(result.indexes, index1, index2)
 	result.groups = append(result.groups, name)
@@ -149,6 +182,7 @@ func compileRegexp2(src string, multiline, dotAll, ignoreCase, unicode bool) (*r
 	if err1 != nil {
 		return nil, fmt.Errorf("Invalid regular expression (regexp2): %s (%v)", src, err1)
 	}
+	regexp2Pattern.MatchTimeout = regexp2MatchSlice
 
 	return &regexp2Wrapper{rx: regexp2Pattern}, nil
 }
@@ -187,28 +221,28 @@ func buildUTF8PosMap(s unicodeString) (positionMap, string) {
 	return pm, sb.String()
 }
 
-func (p *regexpPattern) findSubmatchIndex(s String, start int) regexpResult {
+func (p *regexpPattern) findSubmatchIndex(vm *vm, s String, start int) regexpResult {
 	if p.regexpWrapper == nil {
-		return p.regexp2Wrapper.findSubmatchIndex(s, start, p.unicode, p.global || p.sticky)
+		return p.regexp2Wrapper.findSubmatchIndex(vm, s, start, p.unicode, p.global || p.sticky)
 	}
 	if start != 0 {
 		// Unfortunately Go's regexp library does not allow starting from an arbitrary position.
 		// If we just drop the first _start_ characters of the string the assertions (^, $, \b and \B) will not
 		// work correctly.
 		p.createRegexp2()
-		return p.regexp2Wrapper.findSubmatchIndex(s, start, p.unicode, p.global || p.sticky)
+		return p.regexp2Wrapper.findSubmatchIndex(vm, s, start, p.unicode, p.global || p.sticky)
 	}
 	return p.regexpWrapper.findSubmatchIndex(s, p.unicode)
 }
 
-func (p *regexpPattern) findAllSubmatchIndex(s String, start int, limit int, sticky bool) []regexpResult {
+func (p *regexpPattern) findAllSubmatchIndex(vm *vm, s String, start int, limit int, sticky bool) []regexpResult {
 	if p.regexpWrapper == nil {
-		return p.regexp2Wrapper.findAllSubmatchIndex(s, start, limit, sticky, p.unicode)
+		return p.regexp2Wrapper.findAllSubmatchIndex(vm, s, start, limit, sticky, p.unicode)
 	}
 	if start == 0 {
 		a, u := devirtualizeString(s)
 		if u == nil {
-			return p.regexpWrapper.findAllSubmatchIndex(string(a), limit, sticky)
+			return chargeResults(vm, p.regexpWrapper.findAllSubmatchIndex(string(a), limit, sticky))
 		}
 		if limit == 1 {
 			result := p.regexpWrapper.findSubmatchIndexUnicode(u, p.unicode)
@@ -223,7 +257,7 @@ func (p *regexpPattern) findAllSubmatchIndex(s String, start int, limit int, sti
 			// Try to convert s to UTF-8. If it does not contain any invalid UTF-16 we can do the matching in UTF-8.
 			pm, str := buildUTF8PosMap(u)
 			if pm != nil {
-				res := p.regexpWrapper.findAllSubmatchIndex(str, limit, sticky)
+				res := chargeResults(vm, p.regexpWrapper.findAllSubmatchIndex(str, limit, sticky))
 				for _, result := range res {
 					for i, idx := range result.indexes {
 						result.indexes[i] = pm.get(idx)
@@ -235,7 +269,7 @@ func (p *regexpPattern) findAllSubmatchIndex(s String, start int, limit int, sti
 	}
 
 	p.createRegexp2()
-	return p.regexp2Wrapper.findAllSubmatchIndex(s, start, limit, sticky, p.unicode)
+	return p.regexp2Wrapper.findAllSubmatchIndex(vm, s, start, limit, sticky, p.unicode)
 }
 
 // clone creates a copy of the regexpPattern which can be used concurrently.
@@ -270,15 +304,14 @@ type regexpObject struct {
 	standard bool
 }
 
-func (r *regexp2Wrapper) findSubmatchIndex(s String, start int, fullUnicode, doCache bool) regexpResult {
+func (r *regexp2Wrapper) findSubmatchIndex(vm *vm, s String, start int, fullUnicode, doCache bool) regexpResult {
 	if fullUnicode {
-		return r.findSubmatchIndexUnicode(s, start, doCache)
+		return r.findSubmatchIndexUnicode(vm, s, start, doCache)
 	}
-	return r.findSubmatchIndexUTF16(s, start, doCache)
+	return r.findSubmatchIndexUTF16(vm, s, start, doCache)
 }
 
-func (r *regexp2Wrapper) findUTF16Cached(s String, start int, doCache bool) (match *regexp2.Match, runes []rune, err error) {
-	wrapped := r.rx
+func (r *regexp2Wrapper) findUTF16Cached(vm *vm, s String, start int, doCache bool) (match *regexp2.Match, runes []rune, err error) {
 	cache := r.cache
 	if cache != nil && cache.posMap == nil && cache.target.SameAs(s) {
 		runes = cache.runes
@@ -286,7 +319,7 @@ func (r *regexp2Wrapper) findUTF16Cached(s String, start int, doCache bool) (mat
 		runes = s.utf16Runes()
 		cache = nil
 	}
-	match, err = wrapped.FindRunesMatchStartingAt(runes, start)
+	match, err = r.findRunesAt(vm, runes, start)
 	if doCache && match != nil && err == nil {
 		if cache == nil {
 			if r.cache == nil {
@@ -303,8 +336,8 @@ func (r *regexp2Wrapper) findUTF16Cached(s String, start int, doCache bool) (mat
 	return
 }
 
-func (r *regexp2Wrapper) findSubmatchIndexUTF16(s String, start int, doCache bool) regexpResult {
-	match, _, err := r.findUTF16Cached(s, start, doCache)
+func (r *regexp2Wrapper) findSubmatchIndexUTF16(vm *vm, s String, start int, doCache bool) regexpResult {
+	match, _, err := r.findUTF16Cached(vm, s, start, doCache)
 	if err != nil {
 		return regexpResult{}
 	}
@@ -328,14 +361,13 @@ func (r *regexp2Wrapper) findSubmatchIndexUTF16(s String, start int, doCache boo
 	return result
 }
 
-func (r *regexp2Wrapper) findUnicodeCached(s String, start int, doCache bool) (match *regexp2.Match, posMap []int, err error) {
+func (r *regexp2Wrapper) findUnicodeCached(vm *vm, s String, start int, doCache bool) (match *regexp2.Match, posMap []int, err error) {
 	var (
 		runes       []rune
 		mappedStart int
 		splitPair   bool
 		savedRune   rune
 	)
-	wrapped := r.rx
 	cache := r.cache
 	if cache != nil && cache.posMap != nil && cache.target.SameAs(s) {
 		runes, posMap = cache.runes, cache.posMap
@@ -349,7 +381,7 @@ func (r *regexp2Wrapper) findUnicodeCached(s String, start int, doCache bool) (m
 		_, second := utf16.EncodeRune(runes[mappedStart])
 		savedRune, runes[mappedStart] = runes[mappedStart], second
 	}
-	match, err = wrapped.FindRunesMatchStartingAt(runes, mappedStart)
+	match, err = r.findRunesAt(vm, runes, mappedStart)
 	if doCache && match != nil && err == nil {
 		if splitPair {
 			runes[mappedStart] = savedRune
@@ -371,8 +403,8 @@ func (r *regexp2Wrapper) findUnicodeCached(s String, start int, doCache bool) (m
 	return
 }
 
-func (r *regexp2Wrapper) findSubmatchIndexUnicode(s String, start int, doCache bool) regexpResult {
-	match, posMap, err := r.findUnicodeCached(s, start, doCache)
+func (r *regexp2Wrapper) findSubmatchIndexUnicode(vm *vm, s String, start int, doCache bool) regexpResult {
+	match, posMap, err := r.findUnicodeCached(vm, s, start, doCache)
 	if match == nil || err != nil {
 		return regexpResult{}
 	}
@@ -393,17 +425,21 @@ func (r *regexp2Wrapper) findSubmatchIndexUnicode(s String, start int, doCache b
 	return result
 }
 
-func (r *regexp2Wrapper) findAllSubmatchIndexUTF16(s String, start, limit int, sticky bool) []regexpResult {
-	wrapped := r.rx
-	match, runes, err := r.findUTF16Cached(s, start, false)
+func (r *regexp2Wrapper) findAllSubmatchIndexUTF16(vm *vm, s String, start, limit int, sticky bool) []regexpResult {
+	match, runes, err := r.findUTF16Cached(vm, s, start, false)
 	if match == nil || err != nil {
 		return nil
 	}
 	if limit < 0 {
 		limit = len(runes) + 1
 	}
-	results := make([]regexpResult, 0, limit)
-	for match != nil {
+	// limit is the input length for a global match; most inputs have far
+	// fewer matches.
+	results := make([]regexpResult, 0, lengthCapHint(int64(limit)))
+	for n := 1; match != nil; n++ {
+		if n%interruptCheckInterval == 0 {
+			vm.checkInterrupt()
+		}
 		groups := match.Groups()
 
 		result := regexpResult{
@@ -428,12 +464,13 @@ func (r *regexp2Wrapper) findAllSubmatchIndexUTF16(s String, start, limit int, s
 			start = result.indexes[1]
 		}
 
-		results = append(results, result)
+		vm.r.countAlloc(result.allocSize() - allocSizeRegexpResult)
+		results = appendResult(vm, results, result)
 		limit--
 		if limit <= 0 {
 			break
 		}
-		match, err = wrapped.FindNextMatch(match)
+		match, err = r.findNext(vm, match)
 		if err != nil {
 			return nil
 		}
@@ -479,17 +516,21 @@ func posMapReverseLookup(posMap []int, pos int) (int, bool) {
 	return mapped, false
 }
 
-func (r *regexp2Wrapper) findAllSubmatchIndexUnicode(s unicodeString, start, limit int, sticky bool) []regexpResult {
-	wrapped := r.rx
+func (r *regexp2Wrapper) findAllSubmatchIndexUnicode(vm *vm, s unicodeString, start, limit int, sticky bool) []regexpResult {
 	if limit < 0 {
 		limit = len(s) + 1
 	}
-	results := make([]regexpResult, 0, limit)
-	match, posMap, err := r.findUnicodeCached(s, start, false)
+	// limit is the input length for a global match; most inputs have far
+	// fewer matches.
+	results := make([]regexpResult, 0, lengthCapHint(int64(limit)))
+	match, posMap, err := r.findUnicodeCached(vm, s, start, false)
 	if err != nil {
 		return nil
 	}
-	for match != nil {
+	for n := 1; match != nil; n++ {
+		if n%interruptCheckInterval == 0 {
+			vm.checkInterrupt()
+		}
 		groups := match.Groups()
 
 		result := regexpResult{
@@ -514,8 +555,9 @@ func (r *regexp2Wrapper) findAllSubmatchIndexUnicode(s unicodeString, start, lim
 			start = result.indexes[1]
 		}
 
-		results = append(results, result)
-		match, err = wrapped.FindNextMatch(match)
+		vm.r.countAlloc(result.allocSize() - allocSizeRegexpResult)
+		results = appendResult(vm, results, result)
+		match, err = r.findNext(vm, match)
 		if err != nil {
 			return nil
 		}
@@ -523,15 +565,82 @@ func (r *regexp2Wrapper) findAllSubmatchIndexUnicode(s unicodeString, start, lim
 	return results
 }
 
-func (r *regexp2Wrapper) findAllSubmatchIndex(s String, start, limit int, sticky, fullUnicode bool) []regexpResult {
+func (r *regexp2Wrapper) findAllSubmatchIndex(vm *vm, s String, start, limit int, sticky, fullUnicode bool) []regexpResult {
 	a, u := devirtualizeString(s)
 	if u != nil {
 		if fullUnicode {
-			return r.findAllSubmatchIndexUnicode(u, start, limit, sticky)
+			return r.findAllSubmatchIndexUnicode(vm, u, start, limit, sticky)
 		}
-		return r.findAllSubmatchIndexUTF16(u, start, limit, sticky)
+		return r.findAllSubmatchIndexUTF16(vm, u, start, limit, sticky)
 	}
-	return r.findAllSubmatchIndexUTF16(a, start, limit, sticky)
+	return r.findAllSubmatchIndexUTF16(vm, a, start, limit, sticky)
+}
+
+// regexp2MatchSlice is the MatchTimeout every regexp2 pattern is compiled
+// with. regexp2 cannot be cancelled, and a backtracking match (such as
+// /^(a+)+\1$/ on a few dozen characters) can run for hours, so a match runs
+// in time slices: when one expires, the pending Runtime.Interrupt is raised
+// if there is one, and otherwise the match is run again from the start with
+// twice the time. The interrupt is therefore seen within about twice the time
+// the match had run for when it arrived, and a match that legitimately needs
+// long costs at most about twice its time. regexp2's clock ticks every 100ms,
+// which adds to each slice.
+const regexp2MatchSlice = 50 * time.Millisecond
+
+// regexp2MaxSlice is the slice after which a match runs without a timeout.
+const regexp2MaxSlice = time.Hour
+
+func isRegexp2Timeout(err error) bool {
+	// regexp2 reports an expired MatchTimeout only by this message.
+	return err != nil && strings.HasPrefix(err.Error(), "match timeout after ")
+}
+
+// retrySlice returns a shallow copy of rx with twice its MatchTimeout. The
+// copy shares everything compiled with rx; MatchTimeout is the only field a
+// match reads from the Regexp it is called on that the copy changes.
+func retrySlice(rx *regexp2.Regexp) *regexp2.Regexp {
+	c := *rx
+	if c.MatchTimeout >= regexp2MaxSlice {
+		c.MatchTimeout = regexp2.DefaultMatchTimeout
+	} else {
+		c.MatchTimeout *= 2
+	}
+	return &c
+}
+
+// allocSizeRegexp2Match is what regexp2 allocates for a match beyond the
+// regexpResult goja makes of it (its Match, groups and captures), measured
+// at about 350 bytes for a single-group pattern.
+const allocSizeRegexp2Match = 352
+
+func (r *regexp2Wrapper) findRunesAt(vm *vm, runes []rune, start int) (*regexp2.Match, error) {
+	rx := r.rx
+	for {
+		m, err := rx.FindRunesMatchStartingAt(runes, start)
+		if !isRegexp2Timeout(err) {
+			if m != nil {
+				vm.r.countAlloc(allocSizeRegexp2Match)
+			}
+			return m, err
+		}
+		vm.checkInterrupt()
+		rx = retrySlice(rx)
+	}
+}
+
+func (r *regexp2Wrapper) findNext(vm *vm, m *regexp2.Match) (*regexp2.Match, error) {
+	rx := r.rx
+	for {
+		next, err := rx.FindNextMatch(m)
+		if !isRegexp2Timeout(err) {
+			if next != nil {
+				vm.r.countAlloc(allocSizeRegexp2Match)
+			}
+			return next, err
+		}
+		vm.checkInterrupt()
+		rx = retrySlice(rx)
+	}
 }
 
 func (r *regexp2Wrapper) clone() *regexp2Wrapper {
@@ -671,7 +780,7 @@ func (r *regexpObject) getLastIndex() int64 {
 func (r *regexpObject) execRegexp(target String) (match bool, result regexpResult) {
 	index := r.getLastIndex()
 	if index >= 0 && index <= int64(target.Length()) {
-		result = r.pattern.findSubmatchIndex(target, int(index))
+		result = r.pattern.findSubmatchIndex(r.val.runtime.vm, target, int(index))
 	}
 	match = len(result.indexes) > 0 && (!r.pattern.sticky || int64(result.indexes[0]) == index)
 
