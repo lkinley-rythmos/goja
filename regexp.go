@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"regexp/syntax"
 	"sort"
 	"strings"
 	"time"
 	"unicode/utf16"
+	"unicode/utf8"
 	"unsafe"
 
 	"github.com/dlclark/regexp2/v2"
@@ -74,6 +76,11 @@ type regexpPattern struct {
 
 	regexpWrapper  *regexpWrapper
 	regexp2Wrapper *regexp2Wrapper
+
+	// goStartContext is set when the Go regexp has an assertion that looks
+	// before the position it matches at (^, \A, \b or \B), so that it cannot
+	// be run from the middle of the input.
+	goStartContext bool
 }
 
 type regexpResult struct {
@@ -235,14 +242,25 @@ func (p *regexpPattern) findSubmatchIndex(vm *vm, s String, start int) regexpRes
 	return p.regexpWrapper.findSubmatchIndex(s, p.unicode)
 }
 
+// goFindAllIncrementalAbove is the input length (in bytes) above which a
+// global match with Go's regexp collects its matches one at a time, charging
+// and checking Interrupt as it goes, rather than with one
+// FindAllStringSubmatchIndex call. That call is not interruptible, and holds
+// every match (about 80 bytes each) before any can be charged: a /./g over
+// 10 MB allocated about 800 MB. Below the threshold it is at most a few MB.
+const goFindAllIncrementalAbove = 64 << 10
+
 func (p *regexpPattern) findAllSubmatchIndex(vm *vm, s String, start int, limit int, sticky bool) []regexpResult {
 	if p.regexpWrapper == nil {
 		return p.regexp2Wrapper.findAllSubmatchIndex(vm, s, start, limit, sticky, p.unicode)
 	}
-	if start == 0 {
+	// A pattern that looks before its match position cannot be resumed
+	// mid-input with Go's regexp; for a large input, regexp2 (which resumes
+	// with the whole input as context) collects the matches instead.
+	if start == 0 && !(p.goStartContext && limit != 1 && s.Length() > goFindAllIncrementalAbove/3) {
 		a, u := devirtualizeString(s)
 		if u == nil {
-			return chargeResults(vm, p.regexpWrapper.findAllSubmatchIndex(string(a), limit, sticky))
+			return p.regexpWrapper.findAllSubmatchIndex(vm, string(a), limit, sticky)
 		}
 		if limit == 1 {
 			result := p.regexpWrapper.findSubmatchIndexUnicode(u, p.unicode)
@@ -255,9 +273,12 @@ func (p *regexpPattern) findAllSubmatchIndex(vm *vm, s String, start int, limit 
 		// input.
 		if p.unicode {
 			// Try to convert s to UTF-8. If it does not contain any invalid UTF-16 we can do the matching in UTF-8.
+			// The position map and the UTF-8 copy are as large as the
+			// input several times over.
+			vm.r.countAlloc(int64(u.Length()) * (int64(unsafe.Sizeof(positionMapItem{})) + 3))
 			pm, str := buildUTF8PosMap(u)
 			if pm != nil {
-				res := chargeResults(vm, p.regexpWrapper.findAllSubmatchIndex(str, limit, sticky))
+				res := p.regexpWrapper.findAllSubmatchIndex(vm, str, limit, sticky)
 				for _, result := range res {
 					for i, idx := range result.indexes {
 						result.indexes[i] = pm.get(idx)
@@ -293,6 +314,7 @@ func (p *regexpPattern) clone() *regexpPattern {
 	if p.regexp2Wrapper != nil {
 		ret.regexp2Wrapper = p.regexp2Wrapper.clone()
 	}
+	ret.goStartContext = p.goStartContext
 	return ret
 }
 
@@ -316,6 +338,7 @@ func (r *regexp2Wrapper) findUTF16Cached(vm *vm, s String, start int, doCache bo
 	if cache != nil && cache.posMap == nil && cache.target.SameAs(s) {
 		runes = cache.runes
 	} else {
+		vm.r.countAlloc(int64(s.Length()) * int64(unsafe.Sizeof(rune(0))))
 		runes = s.utf16Runes()
 		cache = nil
 	}
@@ -373,6 +396,7 @@ func (r *regexp2Wrapper) findUnicodeCached(vm *vm, s String, start int, doCache 
 		runes, posMap = cache.runes, cache.posMap
 		mappedStart, splitPair = posMapReverseLookup(posMap, start)
 	} else {
+		vm.r.countAlloc(int64(s.Length()) * int64(unsafe.Sizeof(0)+unsafe.Sizeof(rune(0))))
 		posMap, runes, mappedStart, splitPair = buildPosMap(&lenientUtf16Decoder{utf16Reader: s.utf16Reader()}, s.Length(), start)
 		cache = nil
 	}
@@ -649,9 +673,12 @@ func (r *regexp2Wrapper) clone() *regexp2Wrapper {
 	}
 }
 
-func (r *regexpWrapper) findAllSubmatchIndex(s string, limit int, sticky bool) []regexpResult {
+func (r *regexpWrapper) findAllSubmatchIndex(vm *vm, s string, limit int, sticky bool) []regexpResult {
 	wrapped := (*regexp.Regexp)(r)
-	results := submatchesToRegexpResults(wrapped.FindAllStringSubmatchIndex(s, limit), wrapped.SubexpNames())
+	if len(s) > goFindAllIncrementalAbove {
+		return r.findAllIncremental(vm, s, limit, sticky)
+	}
+	results := chargeResults(vm, submatchesToRegexpResults(wrapped.FindAllStringSubmatchIndex(s, limit), wrapped.SubexpNames()))
 	pos := 0
 	if sticky {
 		for i, result := range results {
@@ -664,6 +691,79 @@ func (r *regexpWrapper) findAllSubmatchIndex(s string, limit int, sticky bool) [
 		}
 	}
 	return results
+}
+
+// findAllIncremental returns what findAllSubmatchIndex returns for a pattern
+// without goStartContext, finding one match at a time: it is
+// FindAllStringSubmatchIndex's loop (regexp.(*Regexp).allMatches), with each
+// search run on the rest of the input, which for such a pattern matches
+// exactly as a search from that position in the whole input does.
+func (r *regexpWrapper) findAllIncremental(vm *vm, s string, limit int, sticky bool) []regexpResult {
+	wrapped := (*regexp.Regexp)(r)
+	names := wrapped.SubexpNames()
+	var results []regexpResult
+	end := len(s)
+	stickyPos := 0
+	for pos, prevMatchEnd, n := 0, -1, 1; pos <= end && limit != 0; n++ {
+		if n%interruptCheckInterval == 0 {
+			vm.checkInterrupt()
+		}
+		m := wrapped.FindStringSubmatchIndex(s[pos:])
+		if m == nil {
+			break
+		}
+		for i := range m {
+			if m[i] >= 0 {
+				m[i] += pos
+			}
+		}
+		accept := true
+		if m[1] == pos {
+			// An empty match. One right after the previous match is not
+			// allowed; either way, move on by a character.
+			if m[0] == prevMatchEnd {
+				accept = false
+			}
+			if _, width := utf8.DecodeRuneInString(s[pos:]); width > 0 {
+				pos += width
+			} else {
+				pos = end + 1
+			}
+		} else {
+			pos = m[1]
+		}
+		prevMatchEnd = m[1]
+		if !accept {
+			continue
+		}
+		if sticky {
+			if m[0] != stickyPos {
+				break
+			}
+			stickyPos = m[1]
+		}
+		vm.r.countAlloc(int64(cap(m)) * int64(unsafe.Sizeof(0)))
+		results = appendResult(vm, results, regexpResult{indexes: m, groups: names})
+		if limit > 0 {
+			limit--
+		}
+	}
+	return results
+}
+
+// hasStartContext reports whether a Go regexp pattern has an assertion that
+// looks before the position it matches at.
+func hasStartContext(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpBeginLine, syntax.OpBeginText, syntax.OpWordBoundary, syntax.OpNoWordBoundary:
+		return true
+	}
+	for _, sub := range re.Sub {
+		if hasStartContext(sub) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *regexpWrapper) findSubmatchIndex(s String, fullUnicode bool) regexpResult {

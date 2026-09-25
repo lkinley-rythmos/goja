@@ -139,3 +139,64 @@ func TestStringResults_FromCharCodeRefusedByAllocationLimit(t *testing.T) {
 		vm.SetAllocationLimit(16 << 20)
 	}
 }
+
+func TestGlobalMatch_RefusedByAllocationLimit(t *testing.T) {
+	// A global match over 10 MB has 10M matches, about 800 MB of results
+	// with Go's regexp. They must be charged as they are collected, so that
+	// the limit refuses the match long before that.
+	const limit = 16 << 20
+	for _, tc := range []struct{ name, call string }{
+		{"match", `s.match(/./g)`},
+		{"replace", `s.replace(/./g, "b")`},
+		{"replaceAll", `s.replaceAll(/./g, "b")`},
+		{"split", `s.split(/(?:)/)`},
+		{"unicode", `u.match(/./gu)`},
+		// Patterns that look behind their position are collected by regexp2.
+		{"word boundary", `w.match(/\b./g)`},
+		{"multiline start", `l.match(/^./gm)`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vm := New()
+			if _, err := vm.RunString(`var s = "a".repeat(1e7), u = "é".repeat(5e6), w = "a ".repeat(5e6), l = "a\n".repeat(5e6)`); err != nil {
+				t.Fatal(err)
+			}
+			prg := MustCompile("", tc.call, false)
+			runtime.GC()
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			vm.SetAllocationLimit(limit)
+			_, err := vm.RunProgram(prg)
+			runtime.ReadMemStats(&after)
+			if !errors.Is(err, ErrAllocationLimitExceeded) {
+				t.Fatalf("err: %v", err)
+			}
+			if d := after.TotalAlloc - before.TotalAlloc; d > 100<<20 && !raceDetectorEnabled {
+				t.Fatalf("allocated %d bytes before refusing", d)
+			}
+		})
+	}
+}
+
+func TestGlobalMatch_LargeInputSameResults(t *testing.T) {
+	// Above the threshold, global matches go through the incremental Go
+	// path or, for patterns that look behind, regexp2: the results must be
+	// those of the small input, repeated.
+	const script = `
+	var unit = "ab cd,é ef\n";
+	var n = 20000; // 220000 units, above the threshold
+	var big = unit.repeat(n);
+	var bad = [];
+	function check(name, got, want) {
+		if (got !== want) bad.push(name + ": " + String(got).slice(0, 40) + " != " + String(want).slice(0, 40));
+	}
+	[/\w+/g, /\b\w/g, /^\w/gm, /é|\s/gu, /(\w)(\w)/g, /\B./g].forEach(function(re) {
+		check(re + " match", big.match(re).join("|"), Array(n).fill(unit.match(re).join("|")).join("|"));
+		check(re + " replace", big.replace(re, "[$&]"), unit.replace(re, "[$&]").repeat(n));
+		check(re + " split", big.split(re).length, n * (unit.split(re).length - 1) + 1);
+	});
+	check("empty", big.match(/(?:)/g).length, big.length + 1);
+	check("end of line", big.replace(/$/gm, "[]"), "ab cd,é ef[]\n".repeat(n) + "[]");
+	bad.join("; ");
+	`
+	testScript(script, stringEmpty, t)
+}

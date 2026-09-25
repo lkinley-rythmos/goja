@@ -441,6 +441,7 @@ func TestNativeLoops_ObserveInterrupt(t *testing.T) {
 		{"regexp matchAll", `[...("x" + "a".repeat(40) + "b").matchAll(/(a+)+\1$/g)]`, nil},
 		{"regexp many matches", `"ab".repeat(1 << 22).replace(/(?<=a)b/g, "c")`, nil},
 		{"replaceAll many matches", `"a".repeat(1 << 28).replaceAll("a", "b")`, nil},
+		{"Go regexp many matches", `"a".repeat(3e7).replace(/./g, "b")`, nil},
 		{"escape", `escape("é".repeat(1 << 27))`, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) { runInterrupted(t, tc.script, tc.globals) })

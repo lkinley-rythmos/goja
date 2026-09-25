@@ -258,6 +258,7 @@ func compileRegexpUncached(patternStr, flags string) (p *regexpPattern, err erro
 	var global, ignoreCase, multiline, dotAll, sticky, unicode bool
 	var wrapper *regexpWrapper
 	var wrapper2 *regexp2Wrapper
+	var goStartContext bool
 
 	if flags != "" {
 		invalidFlags := func() {
@@ -338,6 +339,8 @@ func compileRegexpUncached(patternStr, flags string) (p *regexpPattern, err erro
 			}
 		} else {
 			wrapper = (*regexpWrapper)(pattern)
+			parsed, err := syntax.Parse(re2Str, syntax.Perl)
+			goStartContext = err != nil || hasStartContext(parsed)
 		}
 	} else {
 		var incompat parser.RegexpErrorIncompatible
@@ -360,6 +363,7 @@ func compileRegexpUncached(patternStr, flags string) (p *regexpPattern, err erro
 	p = &regexpPattern{
 		src:            patternStr,
 		regexpWrapper:  wrapper,
+		goStartContext: goStartContext,
 		regexp2Wrapper: wrapper2,
 		global:         global,
 		ignoreCase:     ignoreCase,
