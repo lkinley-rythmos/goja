@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The uri-reference format of ajv-formats (2.x), the pattern a single match
@@ -19,6 +20,13 @@ var largeInputPatterns = []struct{ src, flags string }{
 	{"\\Bo", ""}, {"x*", ""}, {"(?:)", ""}, {"(a)(b)?c", ""}, {"[^a-z ]", ""}, {"é+", ""}, {"😀|x", "u"}, {"😀|x", ""},
 	{"f.o", "s"}, {"foo|bar", ""}, {"\\d{3}-\\d{4}", ""}, {"$", ""}, {"$", "m"}, {"(\\w+)@(\\w+)\\.com", ""},
 	{"é\\w", "i"}, {"zz+", ""}, {ajvURIReference, "i"},
+	// Literal prefixes tried at each occurrence: assertions after the
+	// prefix, a prefix at the start and the match at the end, dense
+	// occurrences, a pattern reading far past each failing occurrence, and
+	// prefixes that ^ keeps out of the skip.
+	{"foo\\d", ""}, {"foo\\b", ""}, {"\\.com\\b", ""}, {"o\\n$", ""}, {"a[^a]", ""}, {"ab*c\\B", ""}, {"a.*z", "s"},
+	{"a(?:b|c)*d", ""}, {"(foo)\\d", ""}, {"foo^", ""}, {"^foo", ""}, {"(^foo)", ""}, {"^foo\\d", "m"}, {"abc$", "m"},
+	{"é😀x", "u"}, {"😀x", "u"}, {"zzzz z", ""},
 }
 
 func largeInputs() []string {
@@ -28,6 +36,7 @@ func largeInputs() []string {
 		base, "foo" + base, base + "foo123", base[:40000] + "foo9 x@y.com" + base, strings.Repeat("a", 90000) + "bc",
 		base + "é😀", "é" + base + "😀x", strings.Repeat("é", 50000) + "éa", base + "555-1234\n", strings.Repeat("zzzz ", 20000),
 		"http://example.com/" + strings.Repeat("a", 100000), strings.Repeat("a", 100000),
+		"foo" + base + "foo1", strings.Repeat("a", 100000) + "z", strings.Repeat("abcabcd ", 15000), strings.Repeat("ab", 50000),
 	}
 }
 
@@ -69,7 +78,7 @@ func TestGoRegexpLargeInputSameAsWhole(t *testing.T) {
 			}
 			// UTF-8 (ASCII strings, and the UTF-8 copy of a global match).
 			want := wrapped.FindStringSubmatchIndex(in)
-			if got := p.regexpWrapper.findStringSubmatchIndex(vm, in, p.goStartContext); !slices.Equal(got, want) {
+			if got := p.regexpWrapper.findStringSubmatchIndex(vm, in, p.prefixSkip); !slices.Equal(got, want) {
 				t.Errorf("/%s/%s on input %d: %v, want %v", name, pt.flags, i, got, want)
 			}
 			// UTF-16.
@@ -82,7 +91,7 @@ func TestGoRegexpLargeInputSameAsWhole(t *testing.T) {
 			// Every match, one at a time.
 			if !p.goStartContext {
 				want := wrapped.FindAllStringSubmatchIndex(in, 50)
-				got := p.regexpWrapper.findAllIncremental(vm, in, 50, false, false)
+				got := p.regexpWrapper.findAllIncremental(vm, in, 50, false, p.prefixSkip)
 				if len(got) != len(want) {
 					t.Errorf("/%s/%s on input %d: %d matches, want %d", name, pt.flags, i, len(got), len(want))
 					continue
@@ -210,5 +219,62 @@ func TestGoRegexpLargeSingleMatchInterrupt(t *testing.T) {
 		{"global, next match far", `xbig.match(/x|a[^a]/g)`},
 	} {
 		t.Run(tc.name, func(t *testing.T) { runInterrupted(t, tc.script, globals) })
+	}
+}
+
+func TestGoRegexpPrefixSkip(t *testing.T) {
+	// A pattern with a literal prefix that does not begin with ^ is tried at
+	// each occurrence of the prefix in a large input.
+	for _, tc := range []struct {
+		src, flags string
+		skip       bool
+	}{
+		{"foo\\d", "", true}, {"foo\\b", "", true}, {"\\.com\\b", "", true}, {"foo", "", true}, {"(foo)\\d", "", true}, {"foo^", "", true},
+		{"foo\\d", "m", true}, {"foo\\d", "s", true}, {"^foo", "", false}, {"^foo\\d", "", false}, {"(^foo)", "", false},
+		{"(?:^foo|fob)", "", false}, {"^foo", "m", false}, {"\\bfoo", "", false}, {"foo", "i", false}, {"foo|bar", "", false},
+		{"\\d+", "", false}, {"(?:)foo", "", true},
+	} {
+		p, err := compileRegexp(tc.src, tc.flags)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (p.prefixSkip != nil) != tc.skip {
+			t.Errorf("/%s/%s: prefix skip %v", tc.src, tc.flags, p.prefixSkip != nil)
+		}
+		if p.prefixSkip != nil && p.prefixSkip.get() == nil {
+			t.Errorf("/%s/%s: no anchored regexp", tc.src, tc.flags)
+		}
+	}
+	// The regexp tried at each occurrence is anchored there.
+	if p, err := compileRegexp("foo\\d", ""); err != nil || !p.prefixSkip.get().MatchString("foo1x") || p.prefixSkip.get().MatchString("xfoo1") {
+		t.Errorf("anchored regexp: %v", err)
+	}
+	// A failing try reads little, and the tries stop once they have read
+	// the input over: neither dense occurrences nor a pattern that reads to
+	// the end at each occurrence make the search read the input over for
+	// each occurrence (the latter would take minutes).
+	vm := New().vm
+	for _, tc := range []struct {
+		src, flags, input string
+		at                int
+	}{
+		{"foo\\d", "", strings.Repeat("foo ", 50000) + "foo1", 200000},
+		{"a.*z", "s", strings.Repeat("ab", 100000) + "y", -1},
+		{"ab*c\\d", "", strings.Repeat("abbbbbbbbb", 20000) + "abc1", 200000},
+	} {
+		p, err := compileRegexp(tc.src, tc.flags)
+		if err != nil || p.prefixSkip == nil {
+			t.Fatalf("/%s/%s: %v", tc.src, tc.flags, err)
+		}
+		start := time.Now()
+		for i := 0; i < 3; i++ {
+			m := p.regexpWrapper.findStringSubmatchIndex(vm, tc.input, p.prefixSkip)
+			if tc.at < 0 && m != nil || tc.at >= 0 && (len(m) != 2 || m[0] != tc.at) {
+				t.Fatalf("/%s/%s: match %v", tc.src, tc.flags, m)
+			}
+		}
+		if d := time.Since(start); d > 10*time.Second {
+			t.Errorf("/%s/%s: 3 searches took %v", tc.src, tc.flags, d)
+		}
 	}
 }

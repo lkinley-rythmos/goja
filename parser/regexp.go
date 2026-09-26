@@ -86,7 +86,22 @@ type _RegExp_parser struct {
 	captureCount    int
 	captureNames    []string
 	namesSeen       map[string]bool
+
+	// The ranges of the sets the property escapes have been written as, for
+	// both engines.
+	expansion int
 }
+
+// maxRegexpExpansion bounds the ranges of the sets a pattern's property
+// escapes are written as, over both engines. A property with no name an
+// engine knows is written as a class (see writeClass); its set can have
+// hundreds of ranges, which take time to write and the engines time to
+// compile (Go's regexp holds every range, of named tables too), and a
+// pattern made of thousands of such escapes would take seconds to compile,
+// which cannot be interrupted. The bound is about 170 escapes of the largest
+// sets, which compile in about 100 ms; V8 refuses patterns of about 12,500
+// escapes with this message.
+const maxRegexpExpansion = 1 << 18
 
 // TransformRegExp transforms a JavaScript pattern into  a Go "regexp" pattern.
 //
@@ -621,6 +636,15 @@ func (self *_RegExp_parser) scanBracket() {
 	}
 }
 
+// expand counts the ranges of a set a property escape is written as, and
+// refuses the pattern past maxRegexpExpansion.
+func (self *_RegExp_parser) expand(set runeSet) {
+	self.expansion += len(set) / 2
+	if self.expansion > maxRegexpExpansion {
+		self.syntaxError("Regular expression too large")
+	}
+}
+
 // writeGoClass rewrites the class that has just been scanned, which has
 // property escapes, for Go's regexp when ignoring case and one of them has no
 // name Go's regexp knows: Go's regexp adds the case variants of the others
@@ -642,8 +666,9 @@ func (self *_RegExp_parser) writeGoClass(negated bool) {
 	if negated {
 		set = set.complement()
 	}
+	self.expand(set)
 	self.goRegexp.WriteString(`(?-i:`)
-	self.writeGoCharSet(set, false)
+	writeClass(&self.goRegexp, set, false)
 	self.goRegexp.WriteByte(')')
 }
 
@@ -657,9 +682,7 @@ type classProperty struct {
 // writeRegexp2Class writes the class that has just been scanned, which has
 // property escapes, to regexp2 (see writeRegexp2Property). Positive
 // properties are items of the class. With negated ones, or ignoring case,
-// regexp2 gets the set the class stands for, as a set of positive categories
-// and ranges or as the negation of one, whichever is smaller (regexp2 is
-// slow to build sets with many ranges).
+// regexp2 gets the set the class stands for (see writeClass).
 func (self *_RegExp_parser) writeRegexp2Class(negated bool) {
 	b := &self.regexp2
 	end := self.chrOffset // after the ]
@@ -676,7 +699,9 @@ func (self *_RegExp_parser) writeRegexp2Class(negated bool) {
 			if name := p.prop.goName(); name != "" {
 				b.WriteString(`\p{` + name + `}`)
 			} else {
-				writeRanges(b, p.prop.charSet(false, false), `\u`)
+				set := p.prop.charSet(false, false)
+				self.expand(set)
+				writeClassItems(b, set, true)
 			}
 			pos = p.end
 		}
@@ -690,30 +715,11 @@ func (self *_RegExp_parser) writeRegexp2Class(negated bool) {
 		set = caseClosure(set)
 		b.WriteString(`(?-i:`)
 	}
-	var names []string
-	rest := set
-	for _, p := range self.classProps {
-		if name := p.prop.goName(); name != "" && !p.negate {
-			names = append(names, name)
-			rest = rest.minus(p.prop.charSet(false, false))
-		}
+	if negated {
+		set = set.complement()
 	}
-	b.WriteByte('[')
-	if comp := set.complement(); len(comp) < len(rest)+2*len(names) {
-		if !negated {
-			b.WriteByte('^')
-		}
-		writeRanges(b, comp, `\u`)
-	} else {
-		if negated {
-			b.WriteByte('^')
-		}
-		for _, name := range names {
-			b.WriteString(`\p{` + name + `}`)
-		}
-		writeRanges(b, rest, `\u`)
-	}
-	b.WriteByte(']')
+	self.expand(set)
+	writeClass(b, set, true)
 	if self.ignoreCase {
 		b.WriteByte(')')
 	}
@@ -1177,20 +1183,20 @@ func (self *_RegExp_parser) scanPropertyEscape(inClass bool) {
 	end += self.offset + 1
 	self.seek(end)
 
-	self.writeGoProperty(prop, negate, inClass)
-
 	if !self.regexp2Used {
 		self.regexp2.Grow(len(self.str))
 		self.regexp2Used = true
 	}
 	if inClass {
 		// The class is written when it ends.
+		self.writeGoProperty(prop, negate, inClass)
 		self.classProps = append(self.classProps, classProperty{start: start, end: end, prop: prop, negate: negate})
 		return
 	}
 	self.regexp2.WriteString(self.str[self.regexp2Offset:start])
-	self.writeRegexp2Property(prop, negate)
 	self.regexp2Offset = end
+	self.writeGoProperty(prop, negate, inClass)
+	self.writeRegexp2Property(prop, negate)
 }
 
 // writeGoProperty writes a property escape for Go's regexp. Go's regexp knows
@@ -1211,7 +1217,9 @@ func (self *_RegExp_parser) writeGoProperty(prop regexpProperty, negate, inClass
 			// The negation, and the characters whose case variants are
 			// not all in the property, matched case-sensitively.
 			self.writeString(`(?-i:`)
-			if extra = prop.notClosed(); len(extra) > 0 {
+			extra = prop.notClosed()
+			self.expand(extra)
+			if len(extra) > 0 {
 				self.writeByte('[')
 			}
 			self.writeString(`\P{`)
@@ -1226,6 +1234,7 @@ func (self *_RegExp_parser) writeGoProperty(prop regexpProperty, negate, inClass
 		default:
 			extra = prop.foldExtra(true)
 		}
+		self.expand(extra)
 		if !inClass && len(extra) > 0 {
 			self.writeByte('[')
 		}
@@ -1242,13 +1251,21 @@ func (self *_RegExp_parser) writeGoProperty(prop regexpProperty, negate, inClass
 		}
 		return
 	}
-	if self.ignoreCase && !inClass {
+	if inClass {
+		c := prop.classItems(negate)
+		self.expand(c.set)
+		self.writeString(c.text)
+		return
+	}
+	c := prop.class(negate, self.ignoreCase, false)
+	self.expand(c.set)
+	if self.ignoreCase {
 		self.writeString(`(?-i:`)
-		self.writeGoCharSet(prop.charSet(negate, true), false)
+		self.writeString(c.text)
 		self.writeByte(')')
 		return
 	}
-	self.writeGoCharSet(prop.charSet(negate, false), inClass)
+	self.writeString(c.text)
 }
 
 // writeRegexp2Property writes a property escape outside a class for regexp2.
@@ -1260,6 +1277,7 @@ func (self *_RegExp_parser) writeGoProperty(prop regexpProperty, negate, inClass
 // and the circled letters) and is slow for large ones, so ignoring case it
 // gets sets closed under case folding, matched case-sensitively: \P{L} is
 // then written (?-i:[^\p{L}]|[letters with case variants that are not]).
+// A property with no name is written as a class (see writeClass).
 func (self *_RegExp_parser) writeRegexp2Property(prop regexpProperty, negate bool) {
 	b := &self.regexp2
 	name := prop.goName()
@@ -1270,6 +1288,7 @@ func (self *_RegExp_parser) writeRegexp2Property(prop regexpProperty, negate boo
 		var extra runeSet
 		if self.ignoreCase {
 			extra = prop.foldExtra(negate)
+			self.expand(extra)
 			b.WriteString(`(?-i:`)
 		}
 		switch {
@@ -1290,34 +1309,16 @@ func (self *_RegExp_parser) writeRegexp2Property(prop regexpProperty, negate boo
 		if self.ignoreCase {
 			b.WriteByte(')')
 		}
-	case self.ignoreCase:
-		b.WriteString(`(?-i:[`)
-		writeRanges(b, prop.charSet(negate, true), `\u`)
-		b.WriteString(`])`)
 	default:
-		b.WriteByte('[')
-		writeRanges(b, prop.charSet(negate, false), `\u`)
-		b.WriteByte(']')
-	}
-}
-
-// writeGoCharSet writes a character set for Go's regexp, as a class unless
-// inClass.
-func (self *_RegExp_parser) writeGoCharSet(s runeSet, inClass bool) {
-	if self.passOffset != -1 {
-		self.stopPassing()
-	}
-	if len(s) == 0 {
-		// The empty set.
-		self.goRegexp.WriteString(`\P{Any}`)
-		return
-	}
-	if !inClass {
-		self.goRegexp.WriteByte('[')
-	}
-	writeRanges(&self.goRegexp, s, `\x`)
-	if !inClass {
-		self.goRegexp.WriteByte(']')
+		c := prop.class(negate, self.ignoreCase, true)
+		self.expand(c.set)
+		if self.ignoreCase {
+			b.WriteString(`(?-i:`)
+			b.WriteString(c.text)
+			b.WriteByte(')')
+		} else {
+			b.WriteString(c.text)
+		}
 	}
 }
 

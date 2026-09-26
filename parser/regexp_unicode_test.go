@@ -22,11 +22,12 @@ func TestTransformRegExpUnicodeProperties(t *testing.T) {
 		{pattern: `[\p{L}\d]`, unicode: true, re2: `[\p{L}\d]`, regexp2: `[\p{L}\d]`},
 		{pattern: `\P{L}`, unicode: true, re2: `\P{L}`, regexp2: `[^\p{L}]`},
 		// regexp2 gets no negated categories: a class with negated
-		// properties is written as the set it stands for.
-		{pattern: `[\P{L}\P{N}x]`, unicode: true, re2: `[\P{L}\P{N}x]`, regexp2: `[^]`},
-		{pattern: `[^\P{L}\p{N}x]`, unicode: true, re2: `[^\P{L}\p{N}x]`, regexp2: `[\u{41}-\u{5a}\u{61}-\u{77}\u{79}-\u{7a}\u{aa}...`},
-		{pattern: `[\P{Lu}\p{L}]`, unicode: true, re2: `[\P{Lu}\p{L}]`, regexp2: `[^]`},
-		{pattern: `[\p{L}\P{Nd}]`, unicode: true, re2: `[\p{L}\P{Nd}]`, regexp2: `[^\u{30}-\u{39}\u{660}-\u{669}...`},
+		// properties is written as the set it stands for, with the tables
+		// it contains by name, or as the negation of its complement.
+		{pattern: `[\P{L}\P{N}x]`, unicode: true, re2: `[\P{L}\P{N}x]`, regexp2: `[\u{0}-\u{10ffff}]`},
+		{pattern: `[^\P{L}\p{N}x]`, unicode: true, re2: `[^\P{L}\p{N}x]`, regexp2: `[^\p{C}\p{Mn}\p{S}\p{P}\p{Mc}\p{N}\u{20}\u{78}\u{a0}...`},
+		{pattern: `[\P{Lu}\p{L}]`, unicode: true, re2: `[\P{Lu}\p{L}]`, regexp2: `[\u{0}-\u{10ffff}]`},
+		{pattern: `[\p{L}\P{Nd}]`, unicode: true, re2: `[\p{L}\P{Nd}]`, regexp2: `[^\p{Nd}]`},
 		// Ignoring case, Go's regexp gets the case variants its tables lack
 		// (U+0345 folds to U+03B9, in LC), and regexp2 a set matched
 		// case-sensitively.
@@ -37,14 +38,23 @@ func TestTransformRegExpUnicodeProperties(t *testing.T) {
 		// negation of LC, and the letters U+0345 folds to.
 		{pattern: `\P{LC}`, unicode: true, icase: true, re2: `(?-i:[\P{LC}\x{399}\x{3b9}\x{1fbe}])`, regexp2: `(?-i:[^\p{LC}]|[\u{345}\u{399}\u{3b9}\u{1fbe}])`},
 		{pattern: `[\P{LC}]`, unicode: true, icase: true, re2: `[\P{LC}\x{345}\x{399}\x{3b9}\x{1fbe}]`, regexp2: `(?-i:[^\u{41}-\u{5a}\u{61}-\u{7a}\u{b5}...`},
-		{pattern: `x[\p{Lu}a]`, unicode: true, icase: true, re2: `x[\p{Lu}a]`, regexp2: `x(?-i:[^\u{0}-\u{40}\u{5b}-\u{60}\u{7b}-\u{b4}...`},
+		{pattern: `x[\p{Lu}a]`, unicode: true, icase: true, re2: `x[\p{Lu}a]`, regexp2: `x(?-i:[\u{41}-\u{5a}\u{61}-\u{7a}\u{b5}\u{c0}-\u{d6}...`},
 		// Ignoring case, a class with property escapes is given to regexp2
 		// as the set it stands for.
-		{pattern: `[^a\P{Any}]`, unicode: true, icase: true, re2: `(?-i:[\x{0}-\x{40}\x{42}-\x{60}\x{62}-\x{10ffff}])`, regexp2: `(?-i:[^\u{41}\u{61}])`},
+		{pattern: `[^a\P{Any}]`, unicode: true, icase: true, re2: `(?-i:[^\x{41}\x{61}])`, regexp2: `(?-i:[^\u{41}\u{61}])`},
 		{pattern: `[\w\p{AHex}]`, unicode: true, icase: true, re2: `(?-i:[\x{30}-\x{39}\x{41}-\x{5a}\x{5f}\x{61}-\x{7a}\x{17f}\x{212a}])`, regexp2: `(?-i:[\u{30}-\u{39}\u{41}-\u{5a}\u{5f}\u{61}-\u{7a}\u{17f}\u{212a}])`},
 		{pattern: `[\w\p{Nd}]`, unicode: true, icase: true, re2: `[\w\p{Nd}]`, regexp2: `(?-i:[\p{Nd}\u{41}-\u{5a}\u{5f}\u{61}-\u{7a}\u{17f}\u{212a}])`},
-		// Other properties are sets.
+		// Other properties are sets: written with the tables the engine
+		// knows by name that they contain (regexp2 knows the binary
+		// properties of Go's unicode package too), and the rest as ranges,
+		// or as the negation of the same for the complement.
 		{pattern: `\p{ASCII_Hex_Digit}`, unicode: true, re2: `[\x{30}-\x{39}\x{41}-\x{46}\x{61}-\x{66}]`, regexp2: `[\u{30}-\u{39}\u{41}-\u{46}\u{61}-\u{66}]`},
+		{pattern: `\p{Alphabetic}`, unicode: true, re2: `[\p{L}\x{345}...`, regexp2: `[\p{L}\p{Other_Alphabetic}\u{16ee}-\u{16f0}...`},
+		{pattern: `\P{Alphabetic}`, unicode: true, re2: `[^\p{L}\x{345}...`, regexp2: `[^\p{L}\p{Other_Alphabetic}\u{16ee}-\u{16f0}...`},
+		{pattern: `\P{Alphabetic}`, unicode: true, icase: true, re2: `(?-i:[^\p{L}\x{345}...`, regexp2: `(?-i:[^\p{L}\p{Other_Alphabetic}\u{16ee}-\u{16f0}...`},
+		{pattern: `\p{scx=Latn}`, unicode: true, re2: `[\p{Latin}\x{363}-\x{36f}...`, regexp2: `[\p{Latin}\u{363}-\u{36f}...`},
+		{pattern: `[\P{Assigned}]`, unicode: true, re2: `[\p{Cn}]`, regexp2: `[\p{Cn}]`},
+		{pattern: `[^\P{Assigned}]`, unicode: true, re2: `[^\p{Cn}]`, regexp2: `[^\p{Cn}]`},
 		{pattern: `[\p{AHex}_]`, unicode: true, re2: `[\x{30}-\x{39}\x{41}-\x{46}\x{61}-\x{66}_]`, regexp2: `[\u{30}-\u{39}\u{41}-\u{46}\u{61}-\u{66}_]`},
 		{pattern: `[^\P{AHex}_]`, unicode: true, re2: `[^\x{0}-\x{2f}\x{3a}-\x{40}\x{47}-\x{60}\x{67}-\x{10ffff}_]`, regexp2: `[\u{30}-\u{39}\u{41}-\u{46}\u{61}-\u{66}]`},
 		{pattern: `\p{AHex}`, unicode: true, icase: true, re2: `(?-i:[\x{30}-\x{39}\x{41}-\x{46}\x{61}-\x{66}])`, regexp2: `(?-i:[\u{30}-\u{39}\u{41}-\u{46}\u{61}-\u{66}])`},
@@ -157,6 +167,15 @@ func TestRuneSet(t *testing.T) {
 	if got := a.union(b).minus(runeSet{'b', 'e'}); !got.equal(runeSet{'a', 'a', 'f', 'f', 'w', 'z'}) {
 		t.Errorf("minus: %q", got)
 	}
+	if got := (runeSet{0, 10, 20, 30}).minus(runeSet{0, 0, 2, 3, 5, 5, 10, 22, 30, 40}); !got.equal(runeSet{1, 1, 4, 4, 6, 9, 23, 29}) {
+		t.Errorf("minus: %d", got)
+	}
+	if got := (runeSet{0, 10}).minus(runeSet{0, 10}); len(got) != 0 {
+		t.Errorf("minus: %d", got)
+	}
+	if got := (runeSet{5, 10}).minus(runeSet{0, 1, 20, 30}); !got.equal(runeSet{5, 10}) {
+		t.Errorf("minus: %d", got)
+	}
 	if !a.contains('b') || a.contains('d') || !a.contains('x') || a.contains(-1) {
 		t.Error("contains")
 	}
@@ -190,6 +209,71 @@ func TestRegexpPropertyNames(t *testing.T) {
 	} {
 		if _, ok := lookupRegexpProperty(tc.name); ok != tc.ok {
 			t.Errorf("%q: %v", tc.name, ok)
+		}
+	}
+}
+
+func TestTransformRegExpExpansionLimit(t *testing.T) {
+	// A pattern whose property escapes expand past maxRegexpExpansion is
+	// refused; \P{Alphabetic} is a large set with no name Go's regexp knows.
+	escape := `\P{Alphabetic}`
+	if _, _, err := TransformRegExp2(strings.Repeat(escape, 100), false, true, true); err != nil {
+		t.Fatal(err)
+	}
+	pattern := strings.Repeat(escape, 1000)
+	_, _, err := TransformRegExp2(pattern, false, true, true)
+	want := "Invalid regular expression: /" + pattern + "/: Regular expression too large"
+	if _, ok := err.(RegexpSyntaxError); !ok || err.Error() != want {
+		t.Errorf("err %v", err)
+	}
+	// Classes count too.
+	_, _, err = TransformRegExp2(strings.Repeat(`[\P{L}\p{sc=Greek}]`, 2000), false, true, true)
+	if _, ok := err.(RegexpSyntaxError); !ok || !strings.HasSuffix(err.Error(), "Regular expression too large") {
+		t.Errorf("err %v", err)
+	}
+}
+
+func TestRuneSetCover(t *testing.T) {
+	if !(runeSet{'b', 'c', 'x', 'x'}).subsetOf(runeSet{'a', 'c', 'x', 'z'}) || (runeSet{'b', 'd'}).subsetOf(runeSet{'a', 'c', 'x', 'z'}) ||
+		(runeSet{0, 0}).subsetOf(nil) || !(runeSet{}).subsetOf(runeSet{'a', 'a'}) {
+		t.Error("subsetOf")
+	}
+	for _, regexp2 := range []bool{false, true} {
+		tables := engineNamedTables(regexp2)
+		for i := 1; i < len(tables); i++ {
+			if len(tables[i].set) > len(tables[i-1].set) {
+				t.Fatalf("regexp2 %v: tables not sorted at %d", regexp2, i)
+			}
+		}
+		// The cover of a set is exact: the names and the rest make it up.
+		for _, p := range []regexpProperty{{propBinary, "Alphabetic"}, {propBinary, "ID_Continue"}, {propBinary, "Assigned"}, {propScriptExtensions, "Latin"}} {
+			for _, negate := range []bool{false, true} {
+				set := p.charSet(negate, false)
+				names, rest := set.cover(tables)
+				if len(names) > coverMaxNames {
+					t.Errorf("%v: %d names", p, len(names))
+				}
+				got := rest
+				for _, name := range names {
+					var table runeSet
+					for _, tb := range tables {
+						if tb.name == name {
+							table = tb.set
+						}
+					}
+					if table == nil || !table.subsetOf(set) {
+						t.Errorf("%v negate=%v: %s is not a subset", p, negate, name)
+					}
+					got = got.union(table)
+				}
+				if !got.equal(set) {
+					t.Errorf("%v negate=%v: cover %v differs from the set", p, negate, names)
+				}
+			}
+		}
+		// A small set is written as it is.
+		if names, rest := (runeSet{'0', '9'}).cover(tables); len(names) != 0 || !rest.equal(runeSet{'0', '9'}) {
+			t.Errorf("small set: %v %v", names, rest)
 		}
 	}
 }

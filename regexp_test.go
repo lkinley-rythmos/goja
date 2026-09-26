@@ -2,6 +2,8 @@ package goja
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -1177,6 +1179,40 @@ func TestRegexpCacheCapResets(t *testing.T) {
 	if _, err := compileRegexp("after-reset", ""); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestRegexpCacheBytesBound(t *testing.T) {
+	// The cache is bounded by the estimated size of its templates too: a
+	// pattern with many property escapes holds hundreds of kilobytes.
+	resetRegexpCache()
+	big := strings.Repeat(`\P{Alphabetic}`, 100)
+	p, err := compileRegexp(big, "giu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.size < 200<<10 || p.size > 4<<20 {
+		t.Fatalf("size %d", p.size)
+	}
+	regexpCache.Lock()
+	bytes := regexpCache.bytes
+	regexpCache.Unlock()
+	if bytes != p.size {
+		t.Fatalf("cache bytes %d, want %d", bytes, p.size)
+	}
+	n := 0
+	for i := 0; int64(i)*p.size <= regexpCacheMaxBytes+p.size; i++ {
+		if _, err := compileRegexp(big+strconv.Itoa(i), "giu"); err != nil {
+			t.Fatal(err)
+		}
+		n++
+	}
+	regexpCache.Lock()
+	bytes, entries := regexpCache.bytes, len(regexpCache.m)
+	regexpCache.Unlock()
+	if bytes > regexpCacheMaxBytes || entries >= n {
+		t.Fatalf("after %d patterns: %d bytes, %d entries", n, bytes, entries)
+	}
+	resetRegexpCache()
 }
 
 func TestRegexpCacheInvalidNotCached(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"unicode/utf16"
 	"unicode/utf8"
+	"unsafe"
 
 	"github.com/dop251/goja/parser"
 )
@@ -182,8 +183,8 @@ func escapeInvalidUtf16(s String) string {
 	return s.String()
 }
 
-func compileRegexpFromValueString(patternStr String, flags string) (*regexpPattern, error) {
-	return compileRegexp(escapeInvalidUtf16(patternStr), flags)
+func (r *Runtime) compileRegexpFromValueString(patternStr String, flags string) (*regexpPattern, error) {
+	return compileRegexpFor(r, escapeInvalidUtf16(patternStr), flags)
 }
 
 type regexpCacheKey struct {
@@ -194,17 +195,24 @@ type regexpCacheKey struct {
 // see SetRegexpCacheSize.
 const regexpCacheMaxEntries = 1024
 
+// regexpCacheMaxBytes bounds the cache by the estimated size of its
+// templates as well (regexpPattern.size): a pattern with property escapes
+// can hold hundreds of kilobytes, and the memory is nobody's to charge.
+const regexpCacheMaxBytes = 32 << 20
+
 // regexpCache holds immutable compiled pattern templates shared by every
 // Runtime in the process. compileRegexp hands out clone()s, never the
 // template itself — exactly what the compiler does for regexp literals —
 // and the underlying *regexp.Regexp and *regexp2.Regexp are safe for
 // concurrent use. Per-object state (lastIndex, the regexp2 match cache)
-// lives on the clone or the regexpObject. When the cap is reached the whole
-// map is dropped, which keeps memory at O(cap) with no LRU bookkeeping.
+// lives on the clone or the regexpObject. When either cap is reached the
+// whole map is dropped, which keeps memory at O(cap) with no LRU
+// bookkeeping.
 var regexpCache = struct {
 	sync.Mutex
-	m   map[regexpCacheKey]*regexpPattern
-	max int
+	m     map[regexpCacheKey]*regexpPattern
+	max   int
+	bytes int64 // the estimated size of the templates in m
 }{m: make(map[regexpCacheKey]*regexpPattern), max: regexpCacheMaxEntries}
 
 // SetRegexpCacheSize sets the maximum number of compiled regular expression
@@ -218,6 +226,7 @@ func SetRegexpCacheSize(n int) {
 	regexpCache.Lock()
 	regexpCache.max = n
 	regexpCache.m = make(map[regexpCacheKey]*regexpPattern)
+	regexpCache.bytes = 0
 	regexpCache.Unlock()
 }
 
@@ -226,10 +235,18 @@ func SetRegexpCacheSize(n int) {
 func ResetRegexpCache() {
 	regexpCache.Lock()
 	regexpCache.m = make(map[regexpCacheKey]*regexpPattern)
+	regexpCache.bytes = 0
 	regexpCache.Unlock()
 }
 
 func compileRegexp(patternStr, flags string) (*regexpPattern, error) {
+	return compileRegexpFor(nil, patternStr, flags)
+}
+
+// compileRegexpFor is compileRegexp for a pattern a running script makes: r
+// (nil for a literal, compiled with the script) is charged the memory the
+// compiled pattern holds when it is not in the cache yet.
+func compileRegexpFor(r *Runtime, patternStr, flags string) (*regexpPattern, error) {
 	key := regexpCacheKey{src: patternStr, flags: flags}
 	regexpCache.Lock()
 	max := regexpCache.max
@@ -238,7 +255,7 @@ func compileRegexp(patternStr, flags string) (*regexpPattern, error) {
 	if template != nil {
 		return template.clone(), nil
 	}
-	template, err := compileRegexpUncached(patternStr, flags)
+	template, err := compileRegexpUncached(r, patternStr, flags)
 	if err != nil {
 		return nil, err
 	}
@@ -246,19 +263,85 @@ func compileRegexp(patternStr, flags string) (*regexpPattern, error) {
 		return template, nil
 	}
 	regexpCache.Lock()
-	if len(regexpCache.m) >= max {
+	if len(regexpCache.m) >= max || regexpCache.bytes+template.size > regexpCacheMaxBytes {
 		regexpCache.m = make(map[regexpCacheKey]*regexpPattern)
+		regexpCache.bytes = 0
 	}
 	regexpCache.m[key] = template
+	regexpCache.bytes += template.size
 	regexpCache.Unlock()
 	return template.clone(), nil
 }
 
-func compileRegexpUncached(patternStr, flags string) (p *regexpPattern, err error) {
+// goProgSize estimates the memory of Go's program for a parsed pattern: an
+// instruction per literal character, class or operator, and a class's
+// ranges (in a slice that append may have left slack in).
+func goProgSize(re *syntax.Regexp) int64 {
+	prog, err := syntax.Compile(re.Simplify())
+	if err != nil {
+		return 0
+	}
+	n := int64(len(prog.Inst)) * int64(unsafe.Sizeof(syntax.Inst{}))
+	for i := range prog.Inst {
+		n += 2 * int64(len(prog.Inst[i].Rune)) * int64(unsafe.Sizeof(rune(0)))
+	}
+	return n
+}
+
+// regexp2SizePerByte estimates regexp2's code from its pattern: about five
+// bytes per literal character, and less for a class, whose ranges take a
+// fraction of their text (and which regexp2 stores once when repeated).
+const regexp2SizePerByte = 5
+
+// chargeRegexp charges r, if any, memory a pattern's compilation is about
+// to hold.
+func chargeRegexp(r *Runtime, n int64) {
+	if r != nil {
+		r.countAlloc(n)
+	}
+}
+
+// regexpSourceError puts the source of a pattern back into a syntax error's
+// message, which shows the pattern as V8 does: the parser saw the pattern
+// with its surrogate pair escapes converted.
+func regexpSourceError(err error, converted, source string) error {
+	if converted == source {
+		return err
+	}
+	prefix := "Invalid regular expression: /" + converted + "/: "
+	if msg := err.Error(); strings.HasPrefix(msg, prefix) {
+		return errors.New("Invalid regular expression: /" + source + "/: " + msg[len(prefix):])
+	}
+	return err
+}
+
+// startsWithBeginText reports whether a Go regexp pattern begins with ^
+// (BeginText). LiteralPrefix leaves the ^ out of such a pattern's prefix, so
+// a match cannot be looked for at a later occurrence of the prefix.
+func startsWithBeginText(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpBeginText:
+		return true
+	case syntax.OpConcat, syntax.OpCapture:
+		return len(re.Sub) > 0 && startsWithBeginText(re.Sub[0])
+	case syntax.OpAlternate:
+		for _, sub := range re.Sub {
+			if startsWithBeginText(sub) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPattern, err error) {
 	var global, ignoreCase, multiline, dotAll, sticky, unicode bool
 	var wrapper *regexpWrapper
 	var wrapper2 *regexp2Wrapper
 	var goStartContext bool
+	var prefixSkip *anchoredRegexp
+	var size int64
+	source := patternStr
 
 	if flags != "" {
 		invalidFlags := func() {
@@ -330,21 +413,32 @@ func compileRegexpUncached(patternStr, flags string) (p *regexpPattern, err erro
 			re2Str = fmt.Sprintf("(?%s:%s)", re2flags, re2Str)
 		}
 
-		pattern, err1 := regexp.Compile(re2Str)
+		parsed, err1 := syntax.Parse(re2Str, syntax.Perl)
+		if err1 == nil {
+			// The program is charged before it is built.
+			size = goProgSize(parsed)
+			chargeRegexp(r, size)
+			var pattern *regexp.Regexp
+			pattern, err1 = regexp.Compile(re2Str)
+			if err1 == nil {
+				wrapper = (*regexpWrapper)(pattern)
+				goStartContext = hasStartContext(parsed)
+				if prefix, _ := pattern.LiteralPrefix(); prefix != "" && !startsWithBeginText(parsed) {
+					prefixSkip = &anchoredRegexp{src: re2Str}
+				}
+			}
+		}
 		if err1 != nil {
 			var syntaxError *syntax.Error
 			if !errors.As(err1, &syntaxError) || syntaxError.Code != syntax.ErrInvalidRepeatSize {
 				err = fmt.Errorf("Invalid regular expression (re2): %s (%v)", re2Str, err1)
 				return
 			}
-		} else {
-			wrapper = (*regexpWrapper)(pattern)
-			parsed, err := syntax.Parse(re2Str, syntax.Perl)
-			goStartContext = err != nil || hasStartContext(parsed)
 		}
 	} else {
 		var incompat parser.RegexpErrorIncompatible
 		if !errors.As(err, &incompat) {
+			err = regexpSourceError(err, patternStr, source)
 			return
 		}
 	}
@@ -353,9 +447,12 @@ func compileRegexpUncached(patternStr, flags string) (p *regexpPattern, err erro
 		// regexp2 is the only engine for patterns Go's regexp rejects, and
 		// the engine used for any match starting at lastIndex > 0 (global or
 		// sticky). Build it once here, on the template, so clones share it.
+		size2 := regexp2SizePerByte * int64(len(regexp2Str))
+		chargeRegexp(r, size2)
+		size += size2
 		wrapper2, err = compileRegexp2(regexp2Str, multiline, dotAll, ignoreCase, unicode)
 		if err != nil {
-			err = fmt.Errorf("Invalid regular expression (regexp2): %s (%v)", patternStr, err)
+			err = fmt.Errorf("Invalid regular expression (regexp2): %s (%v)", source, err)
 			return
 		}
 	}
@@ -364,6 +461,7 @@ func compileRegexpUncached(patternStr, flags string) (p *regexpPattern, err erro
 		src:            regexp2Str,
 		regexpWrapper:  wrapper,
 		goStartContext: goStartContext,
+		prefixSkip:     prefixSkip,
 		regexp2Wrapper: wrapper2,
 		global:         global,
 		ignoreCase:     ignoreCase,
@@ -371,12 +469,13 @@ func compileRegexpUncached(patternStr, flags string) (p *regexpPattern, err erro
 		dotAll:         dotAll,
 		sticky:         sticky,
 		unicode:        unicode,
+		size:           size,
 	}
 	return
 }
 
 func (r *Runtime) _newRegExp(patternStr String, flags string, proto *Object) *regexpObject {
-	pattern, err := compileRegexpFromValueString(patternStr, flags)
+	pattern, err := r.compileRegexpFromValueString(patternStr, flags)
 	if err != nil {
 		panic(r.newSyntaxError(err.Error()))
 	}
@@ -474,7 +573,7 @@ func (r *Runtime) regexpproto_compile(call FunctionCall) Value {
 		if flagsVal != _undefined {
 			flags = toStringValue(flagsVal).String()
 		}
-		pattern, err = compileRegexpFromValueString(source, flags)
+		pattern, err = r.compileRegexpFromValueString(source, flags)
 		if err != nil {
 			panic(r.newSyntaxError(err.Error()))
 		}

@@ -407,3 +407,156 @@ func TestRegexpUnicodePropertiesAllocationLimit(t *testing.T) {
 		})
 	}
 }
+
+// test() on one input, recorded with Node.js 18.20.3: cases the tables above
+// do not cover. With the u and i flags, the characters whose case folding is
+// a word character (U+017F, U+212A) are word characters, so a class with \W
+// and its case variants leaves s and k out; Case_Ignorable has
+// Word_Break=MidLetter, MidNumLet and Single_Quote (":", "'", "."). (A bare
+// \W with the i and u flags is not here: regexp2 gets it wrong, as it does
+// \b, which is a separate matter.)
+var regexpUnicodeNode18TestCases = []struct {
+	pattern, flags, input string
+	want                  bool
+}{
+	{`[\W\p{Emoji}]`, "iu", "s", false}, {`[\W\p{Emoji}]`, "iu", "k", false}, {`[\W\p{Emoji}]`, "iu", "\u017f", false},
+	{`[\W\p{Emoji}]`, "iu", "\u212a", false}, {`[\W\p{Emoji}]`, "iu", "S", false}, {`[\W\p{Emoji}]`, "iu", "-", true},
+	{`[\W\p{Emoji}]`, "iu", "1", true}, {`[\W\p{Emoji}]`, "iu", "a", false}, {`[\W\p{Emoji}]`, "iu", "_", false},
+	{`[\W\p{Emoji}]`, "iu", "\U0001F600", true}, {`[\W\p{Emoji}]`, "iu", "\u00e9", true}, {`[\W\p{Emoji}]`, "iu", " ", true},
+	{`[\W\p{Emoji}]`, "u", "s", false}, {`[\W\p{Emoji}]`, "u", "\u017f", true}, {`[\W\p{Emoji}]`, "u", "\u212a", true},
+	{`[^\W\p{Emoji}]`, "iu", "\u017f", true}, {`[^\W\p{Emoji}]`, "iu", "s", true}, {`[^\W\p{Emoji}]`, "iu", "-", false},
+	{`\p{Case_Ignorable}`, "u", ":", true}, {`\p{Case_Ignorable}`, "u", "'", true}, {`\p{Case_Ignorable}`, "u", ".", true},
+	{`\p{Case_Ignorable}`, "u", "\u00b7", true}, {`\p{Case_Ignorable}`, "u", "\u2019", true}, {`\p{Case_Ignorable}`, "u", "\uff1a", true},
+	{`\p{Case_Ignorable}`, "u", "a", false}, {`\p{Case_Ignorable}`, "u", " ", false}, {`\p{Case_Ignorable}`, "u", "-", false},
+	{`\p{Case_Ignorable}`, "u", "\u0301", true}, {`\p{Case_Ignorable}`, "u", "\u0640", true},
+	{`[\p{Case_Ignorable}]`, "u", ":", true}, {`[\p{Case_Ignorable}]`, "u", "a", false},
+	{`\P{Case_Ignorable}`, "u", ":", false}, {`\P{Case_Ignorable}`, "u", "a", true},
+}
+
+func TestRegexpUnicodePropertiesTestCasesMatchNode18(t *testing.T) {
+	vm := New()
+	for _, c := range regexpUnicodeNode18TestCases {
+		// Go's regexp, and regexp2 through an empty lookahead.
+		for _, wrap := range []string{"%s", "(?=)(?:%s)"} {
+			vm.Set("p", strings.Replace(wrap, "%s", c.pattern, 1))
+			vm.Set("f", c.flags)
+			vm.Set("s", c.input)
+			v, err := vm.RunString(`new RegExp(p, f).test(s)`)
+			if err != nil {
+				t.Errorf("/%s/%s: %v", c.pattern, c.flags, err)
+				continue
+			}
+			if got := v.ToBoolean(); got != c.want {
+				t.Errorf("/%s/%s.test(%q) with %s: %v, want %v", c.pattern, c.flags, c.input, wrap, got, c.want)
+			}
+		}
+	}
+}
+
+func TestRegexpUnicodePropertiesTooLarge(t *testing.T) {
+	// A pattern whose property escapes expand past a bound is refused with
+	// V8's message for a pattern too large to compile, before any engine is
+	// given it; one under the bound compiles.
+	vm := New()
+	vm.Set("p", strings.Repeat(`\P{Alphabetic}`, 2000))
+	for _, src := range []string{`new RegExp(p, "giu")`, `new RegExp(p, "u")`, `RegExp(p, "iu")`, `"x".match(new RegExp(p, "u"))`} {
+		_, err := vm.RunString(src)
+		var ex *Exception
+		if !errors.As(err, &ex) {
+			t.Fatalf("%s: err %v", src, err)
+		}
+		v := ex.Value().(*Object)
+		want := "Invalid regular expression: /" + strings.Repeat(`\P{Alphabetic}`, 2000) + "/: Regular expression too large"
+		if name, msg := v.Get("name").String(), v.Get("message").String(); name != "SyntaxError" || msg != want {
+			t.Errorf("%s: %s: %.60s...", src, name, msg)
+		}
+	}
+	vm.Set("p", strings.Repeat(`\P{Alphabetic}`, 50))
+	if v, err := vm.RunString(`new RegExp(p, "giu").test("a".repeat(50)) + " " + new RegExp(p, "giu").test("-".repeat(50))`); err != nil || v.String() != "false true" {
+		t.Errorf("under the bound: %v %v", v, err)
+	}
+}
+
+func TestRegexpUnicodePropertiesCompileInterrupt(t *testing.T) {
+	// Compiling a pattern with many property escapes takes tens of
+	// milliseconds, and one past the bound is refused at once, so a script
+	// compiling them without end stops soon after Runtime.Interrupt. The
+	// patterns differ so that none is served from the cache.
+	for _, tc := range []struct{ name, script string }{
+		{"too large", `for (var i = 0; ; i++) { try { new RegExp("\\P{Alphabetic}".repeat(5000) + i, "giu"); } catch (e) { if (!(e instanceof SyntaxError)) throw e; } }`},
+		{"under the bound", `for (var i = 0; ; i++) { new RegExp("\\P{Alphabetic}".repeat(100) + i, "giu"); }`},
+		{"classes", `for (var i = 0; ; i++) { try { new RegExp("[\\P{L}\\p{sc=Greek}]".repeat(5000) + i, "giu"); } catch (e) { if (!(e instanceof SyntaxError)) throw e; } }`},
+	} {
+		t.Run(tc.name, func(t *testing.T) { runInterrupted(t, tc.script, nil) })
+	}
+}
+
+func TestRegexpUnicodePropertiesCompileAllocationLimit(t *testing.T) {
+	// A pattern a script makes is charged the memory its compiled engines
+	// hold: many property escapes hold hundreds of kilobytes each (Go's
+	// regexp keeps every range of every class), which the allocation limit
+	// refuses in the end.
+	ResetRegexpCache()
+	vm := New()
+	if _, err := vm.RunString(`var p = "\\P{Alphabetic}".repeat(100)`); err != nil {
+		t.Fatal(err)
+	}
+	vm.SetAllocationLimit(8 << 20)
+	before := vm.AllocatedBytes()
+	if _, err := vm.RunString(`new RegExp(p + "a", "u")`); err != nil {
+		t.Fatal(err)
+	}
+	if n := vm.AllocatedBytes() - before; n < 200<<10 || n > 4<<20 {
+		t.Errorf("one pattern charged %d bytes", n)
+	}
+	// Served from the cache, the same pattern is not charged again.
+	before = vm.AllocatedBytes()
+	if _, err := vm.RunString(`new RegExp(p + "a", "u")`); err != nil {
+		t.Fatal(err)
+	}
+	if n := vm.AllocatedBytes() - before; n > 10<<10 {
+		t.Errorf("a cached pattern charged %d bytes", n)
+	}
+	_, err := vm.RunString(`for (var i = 0; i < 64; i++) new RegExp(p + i, "giu")`)
+	if !errors.Is(err, ErrAllocationLimitExceeded) {
+		t.Fatalf("err: %v", err)
+	}
+	ResetRegexpCache()
+}
+
+func TestRegexpNamedGroupsUnicodeInput(t *testing.T) {
+	// Named groups with the u flag on non-ASCII input, small and large
+	// (which is read through an interruptible reader); recorded with
+	// Node.js 18.
+	const script = `
+	var big = "\u00e9" + "a".repeat(70000) + " 42";
+	function g(re, s) { var m = re.exec(s); return m && m.groups ? JSON.stringify(m.groups) : String(m && m.groups); }
+	JSON.stringify([g(/(?<n>\d+)/u, "\u00e9 42"), g(/(?<n>\d+)/u, big), g(/(?<n>\d+)/, "\u00e9 42"), g(/(?<a>x)?(?<n>\d+)/u, "\u00e9 42"),
+		"\u00e9 42".replace(/(?<n>\d+)/u, "[$<n>]"), big.replace(/(?<n>\d+)/u, "[$<n>]").slice(-6),
+		"\u00e9 42".replace(/(?<n>\d+)/u, function() { return JSON.stringify(arguments[arguments.length - 1]); })])
+	`
+	testScript(script, newStringValue(`["{\"n\":\"42\"}","{\"n\":\"42\"}","{\"n\":\"42\"}","{\"n\":\"42\"}","é [42]","a [42]","é {\"n\":\"42\"}"]`), t)
+}
+
+func TestRegexpSyntaxErrorShowsSource(t *testing.T) {
+	// The message shows the pattern as given, as V8 does, not with its
+	// surrogate pair escapes converted for the parser.
+	vm := New()
+	for _, tc := range []struct{ pattern, flags, want string }{
+		{`\uD83D\uDE00(`, "u", `Invalid regular expression: /\uD83D\uDE00(/: Unterminated group`},
+		{`\ud83d\ude00[`, "u", `Invalid regular expression: /\ud83d\ude00[/: Unterminated character class`},
+		{`a\uD83D\uDE00\q`, "u", `Invalid regular expression: /a\uD83D\uDE00\q/: Invalid escape`},
+		{"\U0001F600(", "u", "Invalid regular expression: /\U0001F600(/: Unterminated group"},
+	} {
+		vm.Set("p", tc.pattern)
+		vm.Set("f", tc.flags)
+		_, err := vm.RunString(`new RegExp(p, f)`)
+		var ex *Exception
+		if !errors.As(err, &ex) {
+			t.Fatalf("/%s/%s: err %v", tc.pattern, tc.flags, err)
+		}
+		if msg := ex.Value().(*Object).Get("message").String(); msg != tc.want {
+			t.Errorf("/%s/%s: %q, want %q", tc.pattern, tc.flags, msg, tc.want)
+		}
+	}
+}
