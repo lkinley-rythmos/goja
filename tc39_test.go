@@ -100,19 +100,6 @@ var (
 		"test/language/statements/class/elements/private-setter-is-not-a-own-property.js":  true,
 		"test/language/statements/class/elements/private-getter-is-not-a-own-property.js":  true,
 
-		// restricted unicode regexp syntax
-		"test/built-ins/RegExp/unicode_restricted_quantifiable_assertion.js":         true,
-		"test/built-ins/RegExp/unicode_restricted_octal_escape.js":                   true,
-		"test/built-ins/RegExp/unicode_restricted_incomple_quantifier.js":            true,
-		"test/built-ins/RegExp/unicode_restricted_incomplete_quantifier.js":          true,
-		"test/built-ins/RegExp/unicode_restricted_identity_escape_x.js":              true,
-		"test/built-ins/RegExp/unicode_restricted_identity_escape_u.js":              true,
-		"test/built-ins/RegExp/unicode_restricted_identity_escape_alpha.js":          true,
-		"test/built-ins/RegExp/unicode_restricted_identity_escape.js":                true,
-		"test/built-ins/RegExp/unicode_restricted_brackets.js":                       true,
-		"test/built-ins/RegExp/unicode_restricted_character_class_escape.js":         true,
-		"test/annexB/built-ins/RegExp/prototype/compile/pattern-string-invalid-u.js": true,
-
 		// Because goja parser works in UTF-8 it is not possible to pass strings containing invalid UTF-16 code points.
 		// This is mitigated by escaping them as \uXXXX, however because of this the RegExp source becomes
 		// `\uXXXX` instead of `<the actual UTF-16 code point of XXXX>`.
@@ -227,6 +214,99 @@ var (
 		"test/language/module-code/top-level-await/pending-async-dep-from-cycle.js":                                                         true,
 		"test/language/module-code/top-level-await/module-graphs-does-not-hang.js":                                                          true,
 
+		// Unicode property escapes follow Node.js 18 (Unicode 15.1): scripts
+		// added since are not accepted, and the properties Go's unicode
+		// package has no data for (Script_Extensions, Bidi_Mirrored, the
+		// emoji and case-mapping properties) use its tables. These tests
+		// expect Unicode 17.
+		"test/built-ins/RegExp/property-escapes/generated/Script_-_Beria_Erfe.js":               true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Beria_Erfe.js":    true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Garay.js":         true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Gurung_Khema.js":  true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Kirat_Rai.js":     true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Ol_Onal.js":       true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Sidetic.js":       true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Sunuwar.js":       true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Tai_Yo.js":        true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Todhri.js":        true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Tolong_Siki.js":   true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Tulu_Tigalari.js": true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_-_Garay.js":                    true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_-_Gurung_Khema.js":             true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_-_Kirat_Rai.js":                true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_-_Ol_Onal.js":                  true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_-_Sidetic.js":                  true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_-_Sunuwar.js":                  true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_-_Tai_Yo.js":                   true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_-_Todhri.js":                   true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_-_Tolong_Siki.js":              true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_-_Tulu_Tigalari.js":            true,
+
+		"test/built-ins/RegExp/property-escapes/generated/Bidi_Mirrored.js":                            true,
+		"test/built-ins/RegExp/property-escapes/generated/Changes_When_Casefolded.js":                  true,
+		"test/built-ins/RegExp/property-escapes/generated/Changes_When_Casemapped.js":                  true,
+		"test/built-ins/RegExp/property-escapes/generated/Changes_When_Lowercased.js":                  true,
+		"test/built-ins/RegExp/property-escapes/generated/Changes_When_NFKC_Casefolded.js":             true,
+		"test/built-ins/RegExp/property-escapes/generated/Changes_When_Titlecased.js":                  true,
+		"test/built-ins/RegExp/property-escapes/generated/Changes_When_Uppercased.js":                  true,
+		"test/built-ins/RegExp/property-escapes/generated/Emoji.js":                                    true,
+		"test/built-ins/RegExp/property-escapes/generated/Emoji_Presentation.js":                       true,
+		"test/built-ins/RegExp/property-escapes/generated/Extended_Pictographic.js":                    true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Adlam.js":                true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Arabic.js":               true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Armenian.js":             true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Avestan.js":              true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Bengali.js":              true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Bopomofo.js":             true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Carian.js":               true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Caucasian_Albanian.js":   true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Cherokee.js":             true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Common.js":               true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Coptic.js":               true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Cyrillic.js":             true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Devanagari.js":           true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Duployan.js":             true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Elbasan.js":              true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Ethiopic.js":             true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Georgian.js":             true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Glagolitic.js":           true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Gothic.js":               true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Greek.js":                true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Gunjala_Gondi.js":        true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Han.js":                  true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Hebrew.js":               true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Inherited.js":            true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Kaithi.js":               true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Kannada.js":              true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Katakana.js":             true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Latin.js":                true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Lisu.js":                 true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Lycian.js":               true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Lydian.js":               true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Mahajani.js":             true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Meroitic_Hieroglyphs.js": true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Mongolian.js":            true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Nandinagari.js":          true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Newa.js":                 true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Old_Hungarian.js":        true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Old_Permic.js":           true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Old_Turkic.js":           true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Osage.js":                true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Phags_Pa.js":             true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Runic.js":                true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Samaritan.js":            true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Sharada.js":              true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Shavian.js":              true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Syriac.js":               true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Tai_Le.js":               true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Tangut.js":               true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Telugu.js":               true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Thai.js":                 true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Tibetan.js":              true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Tifinagh.js":             true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Tirhuta.js":              true,
+		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Toto.js":                 true,
+
 		// Extended Unicode group names in non-unicode regexp
 		"test/built-ins/RegExp/named-groups/non-unicode-property-names-valid.js": true,
 
@@ -234,12 +314,8 @@ var (
 		"test/annexB/built-ins/RegExp/named-groups/non-unicode-malformed.js": true,
 
 		// Duplicate group name and Go regex engine
-		"test/language/literals/regexp/named-groups/invalid-duplicate-groupspecifier.js":     true,
-		"test/language/literals/regexp/named-groups/invalid-duplicate-groupspecifier-2.js":   true,
-		"test/language/literals/regexp/named-groups/invalid-duplicate-groupspecifier-u.js":   true,
-		"test/language/literals/regexp/named-groups/invalid-duplicate-groupspecifier-2-u.js": true,
-
-		"test/language/literals/regexp/named-groups/invalid-identity-escape-in-capture-u.js": true,
+		"test/language/literals/regexp/named-groups/invalid-duplicate-groupspecifier.js":   true,
+		"test/language/literals/regexp/named-groups/invalid-duplicate-groupspecifier-2.js": true,
 	}
 
 	featuresBlackList = []string{
@@ -247,7 +323,6 @@ var (
 		"Symbol.asyncIterator",
 		"resizable-arraybuffer",
 		"regexp-duplicate-named-groups",
-		"regexp-unicode-property-escapes",
 		"regexp-match-indices",
 		"regexp-modifiers",
 		"RegExp.escape",
@@ -318,6 +393,13 @@ func init() {
 				)
 			}
 		}
+	}
+
+	if !unicodeVersion.Equal(semver.New(17, 0, 0, "", "")) {
+		// These tests expect the General_Category, Script and binary
+		// property tables of Unicode 17, which regexp property escapes take
+		// from Go's unicode package.
+		skip("test/built-ins/RegExp/property-escapes/generated/")
 	}
 
 	skip(

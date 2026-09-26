@@ -314,7 +314,7 @@ func compileRegexpUncached(patternStr, flags string) (p *regexpPattern, err erro
 		patternStr = convertRegexpToUtf16(patternStr)
 	}
 
-	re2Str, err := parser.TransformRegExp(patternStr, dotAll, unicode)
+	re2Str, regexp2Str, err := parser.TransformRegExp2(patternStr, dotAll, unicode, ignoreCase)
 	if err == nil {
 		re2flags := ""
 		if multiline {
@@ -353,7 +353,7 @@ func compileRegexpUncached(patternStr, flags string) (p *regexpPattern, err erro
 		// regexp2 is the only engine for patterns Go's regexp rejects, and
 		// the engine used for any match starting at lastIndex > 0 (global or
 		// sticky). Build it once here, on the template, so clones share it.
-		wrapper2, err = compileRegexp2(patternStr, multiline, dotAll, ignoreCase, unicode)
+		wrapper2, err = compileRegexp2(regexp2Str, multiline, dotAll, ignoreCase, unicode)
 		if err != nil {
 			err = fmt.Errorf("Invalid regular expression (regexp2): %s (%v)", patternStr, err)
 			return
@@ -361,7 +361,7 @@ func compileRegexpUncached(patternStr, flags string) (p *regexpPattern, err erro
 	}
 
 	p = &regexpPattern{
-		src:            patternStr,
+		src:            regexp2Str,
 		regexpWrapper:  wrapper,
 		goStartContext: goStartContext,
 		regexp2Wrapper: wrapper2,
