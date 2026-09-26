@@ -31,7 +31,7 @@ func TestTransformRegExpUnicodeProperties(t *testing.T) {
 		// Ignoring case, Go's regexp gets the case variants its tables lack
 		// (U+0345 folds to U+03B9, in LC), and regexp2 a set matched
 		// case-sensitively.
-		{pattern: `\p{Lu}`, unicode: true, icase: true, re2: `\p{Lu}`, regexp2: `(?-i:[\p{Lu}\u{61}-\u{7a}...`},
+		{pattern: `\p{Lu}`, unicode: true, icase: true, re2: `\p{Lu}`, regexp2: `(?-i:[\u{41}-\u{5a}\u{61}-\u{7a}\u{b5}...`},
 		{pattern: `\p{LC}`, unicode: true, icase: true, re2: `[\p{LC}\x{345}]`, regexp2: `(?-i:[\p{LC}\u{345}])`},
 		{pattern: `\p{sc=Arabic}`, unicode: true, icase: true, re2: `\p{Arabic}`, regexp2: `(?-i:\p{Arabic})`},
 		// Negated, ECMAScript adds the case variants of what is left: the
@@ -66,7 +66,7 @@ func TestTransformRegExpUnicodeProperties(t *testing.T) {
 		{pattern: `\p{L}`, re2: `p{L}`},
 		{pattern: `[\P]`, re2: `[P]`},
 	} {
-		re2, r2, err := TransformRegExp2(tc.pattern, false, tc.unicode, tc.icase)
+		re2, r2, err := TransformRegExp2(tc.pattern, false, tc.unicode, tc.icase, false)
 		if tc.incompatibleWith != "" {
 			if _, ok := err.(RegexpErrorIncompatible); !ok || err.Error() != tc.incompatibleWith {
 				t.Errorf("%s: err %v", tc.pattern, err)
@@ -135,7 +135,7 @@ func TestTransformRegExpUnicodeSyntax(t *testing.T) {
 		{`[\u{5a}-\u{41}]`, "Range out of order in character class"},
 		{`\u{110000}`, "Invalid Unicode escape"},
 	} {
-		_, _, err := TransformRegExp2(tc.pattern, false, true, false)
+		_, _, err := TransformRegExp2(tc.pattern, false, true, false, false)
 		if tc.err == "" {
 			if _, ok := err.(RegexpSyntaxError); ok {
 				t.Errorf("%s: %v", tc.pattern, err)
@@ -147,7 +147,7 @@ func TestTransformRegExpUnicodeSyntax(t *testing.T) {
 			t.Errorf("%s: err %v, want %s", tc.pattern, err, want)
 		}
 		// Without the u flag, none of these is an error, except the ranges.
-		if _, _, err := TransformRegExp2(tc.pattern, false, false, false); err != nil && !strings.Contains(tc.err, "class") {
+		if _, _, err := TransformRegExp2(tc.pattern, false, false, false, false); err != nil && !strings.Contains(tc.err, "class") {
 			if _, ok := err.(RegexpSyntaxError); ok {
 				t.Errorf("%s without u: %v", tc.pattern, err)
 			}
@@ -214,22 +214,48 @@ func TestRegexpPropertyNames(t *testing.T) {
 }
 
 func TestTransformRegExpExpansionLimit(t *testing.T) {
-	// A pattern whose property escapes expand past maxRegexpExpansion is
-	// refused; \P{Alphabetic} is a large set with no name Go's regexp knows.
-	escape := `\P{Alphabetic}`
-	if _, _, err := TransformRegExp2(strings.Repeat(escape, 100), false, true, true); err != nil {
-		t.Fatal(err)
+	// A pattern whose property escapes cost an engine that compiles it more
+	// than maxRegexpExpansion is refused. \P{Alphabetic} is a large set with
+	// no name Go's regexp knows, written as \p{L} and ranges; \p{L} costs
+	// Go's regexp its table and regexp2 nothing; \p{Lu} with the i flag
+	// costs regexp2 its closure under case folding, written as ranges.
+	tooLarge := func(pattern string, ignoreCase, needRegexp2 bool) bool {
+		t.Helper()
+		_, _, err := TransformRegExp2(pattern, false, true, ignoreCase, needRegexp2)
+		if err == nil {
+			return false
+		}
+		want := "Invalid regular expression: /" + pattern + "/: Regular expression too large"
+		if _, ok := err.(RegexpSyntaxError); !ok || err.Error() != want {
+			t.Fatalf("%.40s...: err %v", pattern, err)
+		}
+		return true
 	}
-	pattern := strings.Repeat(escape, 1000)
-	_, _, err := TransformRegExp2(pattern, false, true, true)
-	want := "Invalid regular expression: /" + pattern + "/: Regular expression too large"
-	if _, ok := err.(RegexpSyntaxError); !ok || err.Error() != want {
-		t.Errorf("err %v", err)
-	}
-	// Classes count too.
-	_, _, err = TransformRegExp2(strings.Repeat(`[\P{L}\p{sc=Greek}]`, 2000), false, true, true)
-	if _, ok := err.(RegexpSyntaxError); !ok || !strings.HasSuffix(err.Error(), "Regular expression too large") {
-		t.Errorf("err %v", err)
+	for _, tc := range []struct {
+		escape              string
+		n                   int
+		ignoreCase, regexp2 bool
+		want                bool
+	}{
+		{`\P{Alphabetic}`, 100, true, true, false},
+		{`\P{Alphabetic}`, 1000, true, true, true},
+		{`\P{Alphabetic}`, 1000, false, false, true},
+		{`[\P{L}\p{sc=Greek}]`, 2000, true, false, true},
+		{`\p{L}`, 1000, false, false, false},
+		{`\p{L}`, 2000, false, false, true},
+		{`\p{L}`, 2000, false, true, true},
+		{`\p{Lu}`, 400, true, false, false},
+		{`\p{Lu}`, 400, true, true, true},
+		{`(?=)\p{Lu}`, 400, true, false, true},
+		{`\p{Lu}`, 50, true, true, false},
+	} {
+		pattern := strings.Repeat(tc.escape, tc.n)
+		if strings.HasPrefix(tc.escape, "(?=)") {
+			pattern = "(?=)" + strings.Repeat(tc.escape[4:], tc.n)
+		}
+		if got := tooLarge(pattern, tc.ignoreCase, tc.regexp2); got != tc.want {
+			t.Errorf("%s x%d (i: %v, regexp2: %v): too large %v", tc.escape, tc.n, tc.ignoreCase, tc.regexp2, got)
+		}
 	}
 }
 

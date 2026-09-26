@@ -86,25 +86,30 @@ type regexpPattern struct {
 	// prefixSkip is the Go regexp anchored at its start, for a large input,
 	// which is searched for the pattern's literal prefix and tried at each
 	// occurrence (see findStringSubmatchIndex); nil when the pattern has no
-	// prefix or begins with ^.
+	// prefix or has a ^.
 	prefixSkip *anchoredRegexp
 
 	// size is the estimated memory the compiled engines hold, charged to the
-	// Runtime that compiled the pattern and counted by the cache.
+	// Runtime that compiled the pattern and counted by the cache (with
+	// prefixSkip's).
 	size int64
 }
 
 // anchoredRegexp is a Go regexp anchored at its start, compiled on first use
-// (once, shared by the clones of a pattern) from the pattern's source.
+// (once, shared by the clones of a pattern) from the pattern's source, and
+// charged then to the Runtime that first uses it. Its size is the same
+// estimate as the pattern's program.
 type anchoredRegexp struct {
 	once sync.Once
 	src  string
+	size int64
 	re   *regexp.Regexp
 }
 
 // get returns the regexp, or nil if it cannot be compiled.
-func (a *anchoredRegexp) get() *regexp.Regexp {
+func (a *anchoredRegexp) get(vm *vm) *regexp.Regexp {
 	a.once.Do(func() {
+		vm.r.countAlloc(a.size)
 		a.re, _ = regexp.Compile(`\A(?:` + a.src + `)`)
 	})
 	return a.re
@@ -842,22 +847,13 @@ func (r *regexpWrapper) findStringSubmatchIndex(vm *vm, s string, prefixSkip *an
 		// Go's regexp, given a string, jumps to the next occurrence of the
 		// prefix whenever a match fails, which it cannot with a reader: it
 		// would read every character from here on. So the match is tried at
-		// each occurrence with the pattern anchored there, which stops
-		// reading as soon as it fails, until the tries have read as much as
-		// the input once over (a pattern can read far past each occurrence
-		// before failing); past that the rest is searched at once.
-		if anchored := prefixSkip.get(); anchored != nil {
-			for budget := len(s); budget > 0; {
-				rd := &interruptibleStringReader{vm: vm, s: s[pos:]}
-				if m := anchored.FindReaderSubmatchIndex(rd); m != nil {
-					return shiftIndexes(m, pos)
-				}
-				budget -= rd.pos
-				i := indexInterruptible(vm, s[pos+1:], prefix)
-				if i < 0 {
-					return nil
-				}
-				pos += 1 + i
+		// the occurrences with the pattern anchored there, which stops
+		// reading as soon as it fails, as long as that pays.
+		if anchored := prefixSkip.get(vm); anchored != nil {
+			var m []int
+			var done bool
+			if m, pos, done = prefixTries(vm, anchored, s, prefix, pos); done {
+				return m
 			}
 		}
 	}
@@ -868,6 +864,51 @@ func (r *regexpWrapper) findStringSubmatchIndex(vm *vm, s string, prefixSkip *an
 		m = wrapped.FindReaderSubmatchIndex(&interruptibleStringReader{vm: vm, s: s[pos:]})
 	}
 	return shiftIndexes(m, pos)
+}
+
+// The bounds of the tries at the occurrences of the prefix (prefixTries),
+// past which the reader reads the rest of the input at once, as for a
+// pattern without a prefix. A try reads at most tryWindow bytes: one that
+// reads further is dropped, since a pattern that reads far past a failing
+// occurrence would read the input over at every occurrence. The tries read
+// at most the input once over in all. And they stop when the occurrences
+// are dense, tryDenseGap bytes apart on average over tryDenseAfter tries,
+// where the reader is as fast.
+const (
+	tryWindow     = 1 << 12
+	tryDenseGap   = 8
+	tryDenseAfter = 64
+)
+
+// prefixTries tries the pattern, anchored, at each occurrence of its prefix
+// in s from pos (an occurrence), within the bounds above. It returns the
+// match and done when a try matched or none is left to try; otherwise pos is
+// an occurrence at which no try has been made, for the reader to go on
+// from.
+func prefixTries(vm *vm, anchored *regexp.Regexp, s, prefix string, pos int) (m []int, next int, done bool) {
+	start := pos
+	for tries, budget := 0, len(s); budget > 0; tries++ {
+		if tries == tryDenseAfter && pos-start < tries*tryDenseGap {
+			break
+		}
+		rd := &interruptibleStringReader{vm: vm, s: s[pos:], end: tryWindow}
+		m := anchored.FindReaderSubmatchIndex(rd)
+		if rd.truncated {
+			// The try read the whole window: its result is not the
+			// pattern's on the whole input.
+			break
+		}
+		if m != nil {
+			return shiftIndexes(m, pos), pos, true
+		}
+		budget -= rd.pos
+		i := indexInterruptible(vm, s[pos+1:], prefix)
+		if i < 0 {
+			return nil, len(s), true
+		}
+		pos += 1 + i
+	}
+	return nil, pos, false
 }
 
 // shiftIndexes moves the indexes of a match found in the input from pos.
@@ -897,18 +938,25 @@ func indexInterruptible(vm *vm, s, sub string) int {
 }
 
 // interruptibleStringReader reads a UTF-8 string, rune by rune, as Go's
-// regexp does, and checks for Runtime.Interrupt as it goes.
+// regexp does, and checks for Runtime.Interrupt as it goes. With end > 0 it
+// reads no further than that, and reports truncated if it was asked to.
 type interruptibleStringReader struct {
-	vm   *vm
-	s    string
-	pos  int
-	left int
+	vm        *vm
+	s         string
+	pos       int
+	left      int
+	end       int
+	truncated bool
 }
 
 func (r *interruptibleStringReader) ReadRune() (rune, int, error) {
 	if r.left--; r.left < 0 {
 		r.left = interruptReadInterval
 		r.vm.checkInterrupt()
+	}
+	if r.end > 0 && r.pos >= r.end && r.pos < len(r.s) {
+		r.truncated = true
+		return 0, 0, io.EOF
 	}
 	if r.pos >= len(r.s) {
 		return 0, 0, io.EOF

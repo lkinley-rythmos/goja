@@ -229,10 +229,15 @@ func TestGoRegexpPrefixSkip(t *testing.T) {
 		src, flags string
 		skip       bool
 	}{
-		{"foo\\d", "", true}, {"foo\\b", "", true}, {"\\.com\\b", "", true}, {"foo", "", true}, {"(foo)\\d", "", true}, {"foo^", "", true},
+		{"foo\\d", "", true}, {"foo\\b", "", true}, {"\\.com\\b", "", true}, {"foo", "", true}, {"(foo)\\d", "", true},
 		{"foo\\d", "m", true}, {"foo\\d", "s", true}, {"^foo", "", false}, {"^foo\\d", "", false}, {"(^foo)", "", false},
 		{"(?:^foo|fob)", "", false}, {"^foo", "m", false}, {"\\bfoo", "", false}, {"foo", "i", false}, {"foo|bar", "", false},
 		{"\\d+", "", false}, {"(?:)foo", "", true},
+		// A ^ anywhere, hidden in a repeat or after the prefix, refuses the
+		// skip: a try at an occurrence takes it for the beginning.
+		{"foo^", "", false}, {"(?:^foo){1}", "", false}, {"(?:^){1}foo", "", false}, {"(?:^){1,1}foo", "", false},
+		{"(?:(?:^){1})foo", "", false}, {"(?:^f){1}oo", "", false}, {"foo(?:^|x)", "", false}, {"foo$", "", true},
+		{"foo\\n^bar", "m", false}, {"(?:^){0}foo", "", true},
 	} {
 		p, err := compileRegexp(tc.src, tc.flags)
 		if err != nil {
@@ -241,19 +246,19 @@ func TestGoRegexpPrefixSkip(t *testing.T) {
 		if (p.prefixSkip != nil) != tc.skip {
 			t.Errorf("/%s/%s: prefix skip %v", tc.src, tc.flags, p.prefixSkip != nil)
 		}
-		if p.prefixSkip != nil && p.prefixSkip.get() == nil {
+		if p.prefixSkip != nil && p.prefixSkip.get(New().vm) == nil {
 			t.Errorf("/%s/%s: no anchored regexp", tc.src, tc.flags)
 		}
 	}
 	// The regexp tried at each occurrence is anchored there.
-	if p, err := compileRegexp("foo\\d", ""); err != nil || !p.prefixSkip.get().MatchString("foo1x") || p.prefixSkip.get().MatchString("xfoo1") {
+	vm := New().vm
+	if p, err := compileRegexp("foo\\d", ""); err != nil || !p.prefixSkip.get(vm).MatchString("foo1x") || p.prefixSkip.get(vm).MatchString("xfoo1") {
 		t.Errorf("anchored regexp: %v", err)
 	}
 	// A failing try reads little, and the tries stop once they have read
 	// the input over: neither dense occurrences nor a pattern that reads to
 	// the end at each occurrence make the search read the input over for
 	// each occurrence (the latter would take minutes).
-	vm := New().vm
 	for _, tc := range []struct {
 		src, flags, input string
 		at                int
@@ -276,5 +281,114 @@ func TestGoRegexpPrefixSkip(t *testing.T) {
 		if d := time.Since(start); d > 10*time.Second {
 			t.Errorf("/%s/%s: 3 searches took %v", tc.src, tc.flags, d)
 		}
+	}
+}
+
+func TestGoRegexpPrefixSkipBeginText(t *testing.T) {
+	// Patterns with ^ in every form, including ones LiteralPrefix gives a
+	// prefix for, match a large input as the whole-input search does.
+	pats := []string{"^foo", "(?:^)foo", "(^)foo", "(?:^|^)foo", "(?:^){1}foo", "(?:^)+foo", "(?:^)*foo", "(?:^)?foo", "(?:(?:^))foo", "(?:^foo)", "((?:^)foo)",
+		"(?:^)(?:)foo", "(?:)^foo", "(?:(?:)|(?:))^foo", "(?:^){2}foo", "(?:^){1,}foo", "(?:^){0,1}foo", "(?:^\\b)foo", "(?:\\b^)foo", "(?:^)(?:^)foo", "(?:^$|^)foo",
+		"(?:^)?(?:^)foo", "(?:(^))foo", "(?<n>^)foo", "(?:^){1}(?:)foo", "(?:(?:^)+)foo", "(?:^)foo|(?:^)foo", "^foo|^foo", "(?:^fo)o", "(?:^f)(?:oo)", "a{0}^foo", "(?:a{0})^foo",
+		"x{0}(?:^)foo", "(?:^){1,1}foo", "(?:(?:^){1})foo", "(?:^|^){1}foo", "(?:^foo){1}", "(?:^f){1}oo", "(?:^){1}(?:^){1}foo", "(?:x{0}|x{0})^foo", "(?:x?){0}^foo",
+		"[]{0}^foo", "(?:a*){0}^foo", "(^){1}foo", "(?:x{0}^)foo", "foo(?:^){1}", "foo(?:^|x)", "(?:^){0}foo"}
+	inputs := []string{strings.Repeat("x", 70000) + "foo" + strings.Repeat("y", 100), "foo" + strings.Repeat("x", 70000) + "foo", strings.Repeat("x\n", 35000) + "foo"}
+	vm := New().vm
+	for _, flags := range []string{"", "i", "s", "m", "u", "g"} {
+		for _, pt := range pats {
+			p, err := compileRegexp(pt, flags)
+			if err != nil || p.regexpWrapper == nil {
+				continue
+			}
+			wrapped := (*regexp.Regexp)(p.regexpWrapper)
+			for _, in := range inputs {
+				want := wrapped.FindStringSubmatchIndex(in)
+				if got := p.regexpWrapper.findStringSubmatchIndex(vm, in, p.prefixSkip); !slices.Equal(got, want) {
+					prefix, _ := wrapped.LiteralPrefix()
+					t.Errorf("/%s/%s prefix %q skip %v: got %v, want %v", pt, flags, prefix, p.prefixSkip != nil, got, want)
+				}
+			}
+		}
+	}
+}
+
+func TestGoRegexpPrefixTries(t *testing.T) {
+	// The tries at the prefix's occurrences: each occurrence is tried once,
+	// a try reads only what the pattern needs, and the tries give up when
+	// the occurrences are dense or a try reads past its window.
+	vm := New().vm
+	compile := func(src string) (*regexp.Regexp, string) {
+		p, err := compileRegexp(src, "")
+		if err != nil || p.prefixSkip == nil {
+			t.Fatalf("/%s/: %v", src, err)
+		}
+		prefix, _ := (*regexp.Regexp)(p.regexpWrapper).LiteralPrefix()
+		return p.prefixSkip.get(vm), prefix
+	}
+	count := func(s string, prefix string) int {
+		return strings.Count(s, prefix)
+	}
+	// Sparse occurrences: every one tried, then the match.
+	anchored, prefix := compile("foo\\d")
+	s := strings.Repeat("foo             ", 1000) + "foo1"
+	m, next, done := prefixTries(vm, anchored, s, prefix, 0)
+	if !done || !slices.Equal(m, []int{len(s) - 4, len(s)}) || next != len(s)-4 {
+		t.Errorf("sparse: %v %d %v", m, next, done)
+	}
+	// No match: every occurrence tried.
+	s = strings.Repeat("foo             ", 1000)
+	if m, next, done = prefixTries(vm, anchored, s, prefix, 0); !done || m != nil || next != len(s) {
+		t.Errorf("no match: %v %d %v", m, next, done)
+	}
+	// Overlapping occurrences are all tried.
+	anchored, prefix = compile("aa\\d")
+	s = strings.Repeat("aaa                 ", 100) + "aa1"
+	if m, _, done = prefixTries(vm, anchored, s, prefix, 0); !done || !slices.Equal(m, []int{len(s) - 3, len(s)}) {
+		t.Errorf("overlapping: %v %v", m, done)
+	}
+	// Dense occurrences: the tries stop after tryDenseAfter of them, at an
+	// occurrence not tried.
+	anchored, prefix = compile("a\\d")
+	s = strings.Repeat("a", 100000) + "a1"
+	if m, next, done = prefixTries(vm, anchored, s, prefix, 0); done || m != nil || next != tryDenseAfter {
+		t.Errorf("dense: %v %d %v", m, next, done)
+	}
+	if n := count(s[:tryDenseAfter], "a"); n != tryDenseAfter {
+		t.Errorf("dense: %d occurrences", n)
+	}
+	// A try reading past its window is dropped, whatever it found.
+	anchored, prefix = compile("a.*z")
+	s = strings.Repeat("a", 100000) + "z"
+	if m, next, done = prefixTries(vm, anchored, s, prefix, 0); done || m != nil || next != 0 {
+		t.Errorf("far reading: %v %d %v", m, next, done)
+	}
+	s = "a" + strings.Repeat("b", 100000) + "z"
+	if m, next, done = prefixTries(vm, anchored, s, prefix, 0); done || m != nil || next != 0 {
+		t.Errorf("far reading match: %v %d %v", m, next, done)
+	}
+	// The tries read at most the input once over: a pattern that reads
+	// four occurrences ahead at each one gives up a quarter of the way.
+	anchored, prefix = compile("a[ab]{200}c")
+	s = strings.Repeat("a"+strings.Repeat("b", 49), 8000) + "z"
+	m, next, done = prefixTries(vm, anchored, s, prefix, 0)
+	if done || m != nil || next < len(s)/5 || next > len(s)/3 {
+		t.Errorf("budget: %v %d %v", m, next, done)
+	}
+	// A reader bounded by end reports reading past it.
+	rd := &interruptibleStringReader{vm: vm, s: "abcdef", end: 3}
+	for i := 0; i < 3; i++ {
+		if _, _, err := rd.ReadRune(); err != nil || rd.truncated {
+			t.Fatal("truncated early")
+		}
+	}
+	if _, _, err := rd.ReadRune(); err != io.EOF || !rd.truncated {
+		t.Fatal("not truncated")
+	}
+	rd = &interruptibleStringReader{vm: vm, s: "abc", end: 3}
+	for i := 0; i < 4; i++ {
+		rd.ReadRune()
+	}
+	if rd.truncated {
+		t.Fatal("truncated at the end of the input")
 	}
 }

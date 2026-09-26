@@ -262,30 +262,60 @@ func compileRegexpFor(r *Runtime, patternStr, flags string) (*regexpPattern, err
 	if max <= 0 {
 		return template, nil
 	}
+	size := template.size
+	if template.prefixSkip != nil {
+		size += template.prefixSkip.size
+	}
+	if size > regexpCacheMaxBytes {
+		// Too large to share the cache with anything.
+		return template.clone(), nil
+	}
 	regexpCache.Lock()
-	if len(regexpCache.m) >= max || regexpCache.bytes+template.size > regexpCacheMaxBytes {
+	if len(regexpCache.m) >= max || regexpCache.bytes+size > regexpCacheMaxBytes {
 		regexpCache.m = make(map[regexpCacheKey]*regexpPattern)
 		regexpCache.bytes = 0
 	}
 	regexpCache.m[key] = template
-	regexpCache.bytes += template.size
+	regexpCache.bytes += size
 	regexpCache.Unlock()
 	return template.clone(), nil
 }
 
-// goProgSize estimates the memory of Go's program for a parsed pattern: an
-// instruction per literal character, class or operator, and a class's
-// ranges (in a slice that append may have left slack in).
+// goProgSize estimates the memory of Go's program for a simplified parsed
+// pattern (what regexp.Compile builds from): an instruction per literal
+// character, class or operator, and a class's ranges (in a slice that append
+// may have left slack in). A repeat is simplified into copies of its
+// operand, which are walked as many times.
 func goProgSize(re *syntax.Regexp) int64 {
-	prog, err := syntax.Compile(re.Simplify())
-	if err != nil {
-		return 0
+	const inst = int64(unsafe.Sizeof(syntax.Inst{}))
+	n := inst
+	switch re.Op {
+	case syntax.OpLiteral:
+		n = int64(len(re.Rune)) * inst
+	case syntax.OpCharClass:
+		n += 2 * int64(len(re.Rune)) * int64(unsafe.Sizeof(rune(0)))
 	}
-	n := int64(len(prog.Inst)) * int64(unsafe.Sizeof(syntax.Inst{}))
-	for i := range prog.Inst {
-		n += 2 * int64(len(prog.Inst[i].Rune)) * int64(unsafe.Sizeof(rune(0)))
+	for _, sub := range re.Sub {
+		n += goProgSize(sub)
 	}
 	return n
+}
+
+// hasBeginText reports whether a simplified pattern has ^ (BeginText, or
+// BeginLine with the m flag) anywhere. A match tried with the pattern
+// anchored at a position of the input (see findStringSubmatchIndex) would
+// take that position for the beginning of the text.
+func hasBeginText(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpBeginText, syntax.OpBeginLine:
+		return true
+	}
+	for _, sub := range re.Sub {
+		if hasBeginText(sub) {
+			return true
+		}
+	}
+	return false
 }
 
 // regexp2SizePerByte estimates regexp2's code from its pattern: about five
@@ -313,25 +343,6 @@ func regexpSourceError(err error, converted, source string) error {
 		return errors.New("Invalid regular expression: /" + source + "/: " + msg[len(prefix):])
 	}
 	return err
-}
-
-// startsWithBeginText reports whether a Go regexp pattern begins with ^
-// (BeginText). LiteralPrefix leaves the ^ out of such a pattern's prefix, so
-// a match cannot be looked for at a later occurrence of the prefix.
-func startsWithBeginText(re *syntax.Regexp) bool {
-	switch re.Op {
-	case syntax.OpBeginText:
-		return true
-	case syntax.OpConcat, syntax.OpCapture:
-		return len(re.Sub) > 0 && startsWithBeginText(re.Sub[0])
-	case syntax.OpAlternate:
-		for _, sub := range re.Sub {
-			if startsWithBeginText(sub) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPattern, err error) {
@@ -397,7 +408,7 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 		patternStr = convertRegexpToUtf16(patternStr)
 	}
 
-	re2Str, regexp2Str, err := parser.TransformRegExp2(patternStr, dotAll, unicode, ignoreCase)
+	re2Str, regexp2Str, err := parser.TransformRegExp2(patternStr, dotAll, unicode, ignoreCase, global || sticky)
 	if err == nil {
 		re2flags := ""
 		if multiline {
@@ -416,20 +427,28 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 		parsed, err1 := syntax.Parse(re2Str, syntax.Perl)
 		if err1 == nil {
 			// The program is charged before it is built.
-			size = goProgSize(parsed)
+			simplified := parsed.Simplify()
+			size = goProgSize(simplified)
 			chargeRegexp(r, size)
 			var pattern *regexp.Regexp
 			pattern, err1 = regexp.Compile(re2Str)
 			if err1 == nil {
 				wrapper = (*regexpWrapper)(pattern)
 				goStartContext = hasStartContext(parsed)
-				if prefix, _ := pattern.LiteralPrefix(); prefix != "" && !startsWithBeginText(parsed) {
-					prefixSkip = &anchoredRegexp{src: re2Str}
+				// LiteralPrefix leaves out a ^ the pattern begins with, so
+				// a pattern with ^ cannot be tried at an occurrence of its
+				// prefix.
+				if prefix, _ := pattern.LiteralPrefix(); prefix != "" && !hasBeginText(simplified) {
+					prefixSkip = &anchoredRegexp{src: re2Str, size: size}
 				}
 			}
 		}
 		if err1 != nil {
 			var syntaxError *syntax.Error
+			if errors.As(err1, &syntaxError) && syntaxError.Code == syntax.ErrLarge {
+				err = errors.New("Invalid regular expression: /" + source + "/: Regular expression too large")
+				return
+			}
 			if !errors.As(err1, &syntaxError) || syntaxError.Code != syntax.ErrInvalidRepeatSize {
 				err = fmt.Errorf("Invalid regular expression (re2): %s (%v)", re2Str, err1)
 				return

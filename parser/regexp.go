@@ -87,21 +87,32 @@ type _RegExp_parser struct {
 	captureNames    []string
 	namesSeen       map[string]bool
 
-	// The ranges of the sets the property escapes have been written as, for
-	// both engines.
-	expansion int
+	// What the property escapes cost each engine (see maxRegexpExpansion),
+	// and whether regexp2 compiles the pattern whatever it has.
+	goExpansion, regexp2Expansion int
+	needRegexp2                   bool
 }
 
-// maxRegexpExpansion bounds the ranges of the sets a pattern's property
-// escapes are written as, over both engines. A property with no name an
-// engine knows is written as a class (see writeClass); its set can have
-// hundreds of ranges, which take time to write and the engines time to
-// compile (Go's regexp holds every range, of named tables too), and a
-// pattern made of thousands of such escapes would take seconds to compile,
-// which cannot be interrupted. The bound is about 170 escapes of the largest
-// sets, which compile in about 100 ms; V8 refuses patterns of about 12,500
+// maxRegexpExpansion bounds what a pattern's property escapes cost an engine
+// to compile, in units of about 50 ns: what a range of a named table costs
+// Go's regexp, which copies the table into its program (\p{L} is about 660
+// ranges, 24 µs), or expansionClassTable times that in a class, whose
+// ranges it sorts together, or when it adds the table's case variants. A
+// range written out (see writeClass) costs Go's regexp expansionTextRange
+// units to parse, and regexp2 more, and more per range the more a class has
+// (see regexp2TextUnits). A class rewritten as the set it stands for costs
+// expansionClass units to compute, for both engines. A pattern made of
+// thousands of escapes would take seconds to compile, which cannot be
+// interrupted; the bound keeps an engine's share to about 100 ms, and its
+// program to a few megabytes. Each engine's cost is bounded on its own, and
+// only if it compiles the pattern. V8 refuses patterns of about 12,500
 // escapes with this message.
-const maxRegexpExpansion = 1 << 18
+const (
+	maxRegexpExpansion  = 1 << 20
+	expansionTextRange  = 3
+	expansionClassTable = 4
+	expansionClass      = 3000
+)
 
 // TransformRegExp transforms a JavaScript pattern into  a Go "regexp" pattern.
 //
@@ -117,28 +128,31 @@ const maxRegexpExpansion = 1 << 18
 // If the pattern is invalid (not valid even in JavaScript), then this function
 // returns an empty string and a generic error.
 func TransformRegExp(pattern string, dotAll, unicode bool) (transformed string, err error) {
-	transformed, _, err = TransformRegExp2(pattern, dotAll, unicode, false)
+	transformed, _, err = TransformRegExp2(pattern, dotAll, unicode, false, false)
 	return
 }
 
 // TransformRegExp2 is TransformRegExp that also returns the pattern to give
 // regexp2 (github.com/dlclark/regexp2) in ECMAScript mode, for when the
 // result is an error of type RegexpErrorIncompatible or the caller needs
-// regexp2 for other reasons. It is the input pattern, except that Unicode
-// property escapes (\p{...} and \P{...} with the u flag), which regexp2 does
-// not implement as ECMAScript specifies, are replaced by character sets;
-// ignoreCase is the i flag, which those sets depend on.
-func TransformRegExp2(pattern string, dotAll, unicode, ignoreCase bool) (transformed, regexp2Pattern string, err error) {
+// regexp2 for other reasons (needRegexp2 says it does whatever the pattern
+// has, so that the pattern is refused if regexp2 would take too long to
+// compile it; see maxRegexpExpansion). It is the input pattern, except that
+// Unicode property escapes (\p{...} and \P{...} with the u flag), which
+// regexp2 does not implement as ECMAScript specifies, are replaced by
+// character sets; ignoreCase is the i flag, which those sets depend on.
+func TransformRegExp2(pattern string, dotAll, unicode, ignoreCase, needRegexp2 bool) (transformed, regexp2Pattern string, err error) {
 	if pattern == "" {
 		return "", "", nil
 	}
 
 	parser := _RegExp_parser{
-		str:        pattern,
-		length:     len(pattern),
-		dotAll:     dotAll,
-		unicode:    unicode,
-		ignoreCase: ignoreCase,
+		str:         pattern,
+		length:      len(pattern),
+		dotAll:      dotAll,
+		unicode:     unicode,
+		ignoreCase:  ignoreCase,
+		needRegexp2: needRegexp2,
 	}
 	err = parser.parse()
 	if err != nil {
@@ -169,6 +183,9 @@ func (self *_RegExp_parser) regexp2Pattern() string {
 func (self *_RegExp_parser) parse() (err error) {
 	self.read() // Pull in the first character
 	self.scan()
+	if self.err == nil {
+		self.checkExpansion()
+	}
 	if self.err == nil {
 		return self.incompat
 	}
@@ -636,11 +653,29 @@ func (self *_RegExp_parser) scanBracket() {
 	}
 }
 
-// expand counts the ranges of a set a property escape is written as, and
-// refuses the pattern past maxRegexpExpansion.
-func (self *_RegExp_parser) expand(set runeSet) {
-	self.expansion += len(set) / 2
-	if self.expansion > maxRegexpExpansion {
+// expandGo and expandRegexp2 count what a property escape costs an engine,
+// and refuse the pattern once it is past maxRegexpExpansion for both (see
+// checkExpansion for the end of the pattern).
+func (self *_RegExp_parser) expandGo(units int) {
+	self.goExpansion += units
+	if self.goExpansion > maxRegexpExpansion && self.regexp2Expansion > maxRegexpExpansion {
+		self.syntaxError("Regular expression too large")
+	}
+}
+
+func (self *_RegExp_parser) expandRegexp2(units int) {
+	self.regexp2Expansion += units
+	if self.goExpansion > maxRegexpExpansion && self.regexp2Expansion > maxRegexpExpansion {
+		self.syntaxError("Regular expression too large")
+	}
+}
+
+// checkExpansion refuses the pattern at its end if it costs an engine that
+// compiles it more than maxRegexpExpansion: Go's regexp unless the pattern
+// has a construct it lacks, and regexp2 then or when the caller says so.
+func (self *_RegExp_parser) checkExpansion() {
+	if self.goExpansion > maxRegexpExpansion && self.incompat == nil ||
+		self.regexp2Expansion > maxRegexpExpansion && (self.needRegexp2 || self.incompat != nil) {
 		self.syntaxError("Regular expression too large")
 	}
 }
@@ -666,9 +701,9 @@ func (self *_RegExp_parser) writeGoClass(negated bool) {
 	if negated {
 		set = set.complement()
 	}
-	self.expand(set)
 	self.goRegexp.WriteString(`(?-i:`)
-	writeClass(&self.goRegexp, set, false)
+	self.expandGo(expansionClass + writeClass(&self.goRegexp, set, false))
+	self.expandRegexp2(expansionClass)
 	self.goRegexp.WriteByte(')')
 }
 
@@ -699,9 +734,7 @@ func (self *_RegExp_parser) writeRegexp2Class(negated bool) {
 			if name := p.prop.goName(); name != "" {
 				b.WriteString(`\p{` + name + `}`)
 			} else {
-				set := p.prop.charSet(false, false)
-				self.expand(set)
-				writeClassItems(b, set, true)
+				self.expandRegexp2(writeClassItems(b, p.prop.charSet(false, false), true))
 			}
 			pos = p.end
 		}
@@ -718,8 +751,8 @@ func (self *_RegExp_parser) writeRegexp2Class(negated bool) {
 	if negated {
 		set = set.complement()
 	}
-	self.expand(set)
-	writeClass(b, set, true)
+	self.expandRegexp2(expansionClass + writeClass(b, set, true))
+	self.expandGo(expansionClass)
 	if self.ignoreCase {
 		b.WriteByte(')')
 	}
@@ -1208,6 +1241,11 @@ func (self *_RegExp_parser) scanPropertyEscape(inClass bool) {
 // closed under case folding, matched case-sensitively (outside a class).
 func (self *_RegExp_parser) writeGoProperty(prop regexpProperty, negate, inClass bool) {
 	if name := prop.goRegexpName(); name != "" {
+		if inClass || self.ignoreCase && !negate {
+			self.expandGo(expansionClassTable * prop.ranges())
+		} else {
+			self.expandGo(prop.ranges())
+		}
 		var extra runeSet
 		switch {
 		case !self.ignoreCase:
@@ -1218,7 +1256,7 @@ func (self *_RegExp_parser) writeGoProperty(prop regexpProperty, negate, inClass
 			// not all in the property, matched case-sensitively.
 			self.writeString(`(?-i:`)
 			extra = prop.notClosed()
-			self.expand(extra)
+			self.expandGo(expansionTextRange * len(extra) / 2)
 			if len(extra) > 0 {
 				self.writeByte('[')
 			}
@@ -1234,7 +1272,7 @@ func (self *_RegExp_parser) writeGoProperty(prop regexpProperty, negate, inClass
 		default:
 			extra = prop.foldExtra(true)
 		}
-		self.expand(extra)
+		self.expandGo(expansionTextRange * len(extra) / 2)
 		if !inClass && len(extra) > 0 {
 			self.writeByte('[')
 		}
@@ -1253,12 +1291,12 @@ func (self *_RegExp_parser) writeGoProperty(prop regexpProperty, negate, inClass
 	}
 	if inClass {
 		c := prop.classItems(negate)
-		self.expand(c.set)
+		self.expandGo(c.units)
 		self.writeString(c.text)
 		return
 	}
 	c := prop.class(negate, self.ignoreCase, false)
-	self.expand(c.set)
+	self.expandGo(c.units)
 	if self.ignoreCase {
 		self.writeString(`(?-i:`)
 		self.writeString(c.text)
@@ -1288,7 +1326,16 @@ func (self *_RegExp_parser) writeRegexp2Property(prop regexpProperty, negate boo
 		var extra runeSet
 		if self.ignoreCase {
 			extra = prop.foldExtra(negate)
-			self.expand(extra)
+			if c := prop.class(negate, true, true); c.units < regexp2TextUnits(len(extra)/2) {
+				// The set written as a class (with the tables it contains
+				// by name) is cheaper than the name and its variants.
+				self.expandRegexp2(c.units)
+				b.WriteString(`(?-i:`)
+				b.WriteString(c.text)
+				b.WriteByte(')')
+				return
+			}
+			self.expandRegexp2(regexp2TextUnits(len(extra) / 2))
 			b.WriteString(`(?-i:`)
 		}
 		switch {
@@ -1311,7 +1358,7 @@ func (self *_RegExp_parser) writeRegexp2Property(prop regexpProperty, negate boo
 		}
 	default:
 		c := prop.class(negate, self.ignoreCase, true)
-		self.expand(c.set)
+		self.expandRegexp2(c.units)
 		if self.ignoreCase {
 			b.WriteString(`(?-i:`)
 			b.WriteString(c.text)

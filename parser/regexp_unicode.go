@@ -130,6 +130,12 @@ func (p regexpProperty) sets() *regexpPropertySets {
 	return s
 }
 
+// ranges returns the ranges of the property's set, which Go's regexp copies
+// into its program for an escape by name.
+func (p regexpProperty) ranges() int {
+	return len(p.sets().set) / 2
+}
+
 // goRegexpName returns the name Go's regexp knows the property by, or "".
 func (p regexpProperty) goRegexpName() string {
 	if p.goName() != "" && p.sets().goRegexpKnowsName {
@@ -636,18 +642,19 @@ func classCost(names []string, rest runeSet) int {
 }
 
 // writeClassItems writes s as class items for an engine: the tables the
-// engine knows by name that it contains, and the rest as ranges.
-func writeClassItems(b rangeWriter, s runeSet, regexp2 bool) {
+// engine knows by name that it contains, and the rest as ranges. It returns
+// what the class costs the engine (see classUnits).
+func writeClassItems(b rangeWriter, s runeSet, regexp2 bool) int {
 	if len(s) == 0 && !regexp2 {
 		// The empty set; Go's regexp refuses an empty class.
 		b.WriteString(`\P{Any}`)
-		return
+		return 0
 	}
 	names, rest := s.cover(engineNamedTables(regexp2))
-	writeNamesAndRanges(b, names, rest, regexp2)
+	return writeNamesAndRanges(b, names, rest, regexp2)
 }
 
-func writeNamesAndRanges(b rangeWriter, names []string, rest runeSet, regexp2 bool) {
+func writeNamesAndRanges(b rangeWriter, names []string, rest runeSet, regexp2 bool) int {
 	for _, name := range names {
 		b.WriteString(`\p{`)
 		b.WriteString(name)
@@ -658,11 +665,47 @@ func writeNamesAndRanges(b rangeWriter, names []string, rest runeSet, regexp2 bo
 	} else {
 		writeRanges(b, rest, `\x`)
 	}
+	return classUnits(names, rest, regexp2)
+}
+
+// classUnits is what a class of the named tables and the ranges costs an
+// engine to compile, in units of maxRegexpExpansion: Go's regexp copies a
+// named table's ranges into the class and sorts them with the others,
+// regexp2 keeps the name; a range written out costs Go's regexp
+// expansionTextRange to parse, and regexp2 regexp2TextUnits.
+func classUnits(names []string, rest runeSet, regexp2 bool) int {
+	if regexp2 {
+		return regexp2TextUnits(len(rest)/2) + len(names)
+	}
+	n := expansionTextRange * len(rest) / 2
+	for _, name := range names {
+		n += expansionClassTable * namedTableRanges(name)
+	}
+	return n
+}
+
+// regexp2TextUnits is what a class of n ranges written out costs regexp2,
+// which sorts the class's ranges again for each one it adds: about
+// 1 µs + n/200 µs per range (600 ranges take 1.8 ms).
+func regexp2TextUnits(n int) int {
+	return 20*n + n*n/11
+}
+
+// namedTableRanges returns the ranges of a table Go's regexp knows by name.
+func namedTableRanges(name string) int {
+	if t := unicode.Categories[name]; t != nil {
+		return len(tableSet(t)) / 2
+	}
+	if t := unicode.Scripts[name]; t != nil {
+		return len(tableSet(t)) / 2
+	}
+	return 0
 }
 
 // writeClass writes a class standing for s for an engine, as the items of s
-// or as the negation of those of its complement, whichever is smaller.
-func writeClass(b rangeWriter, s runeSet, regexp2 bool) {
+// or as the negation of those of its complement, whichever is smaller. It
+// returns what the class costs the engine (see classUnits).
+func writeClass(b rangeWriter, s runeSet, regexp2 bool) int {
 	if len(s) == 0 {
 		// The empty set.
 		if regexp2 {
@@ -670,7 +713,7 @@ func writeClass(b rangeWriter, s runeSet, regexp2 bool) {
 		} else {
 			b.WriteString(`\P{Any}`)
 		}
-		return
+		return 0
 	}
 	tables := engineNamedTables(regexp2)
 	names, rest := s.cover(tables)
@@ -684,8 +727,9 @@ func writeClass(b rangeWriter, s runeSet, regexp2 bool) {
 	if negated {
 		b.WriteByte('^')
 	}
-	writeNamesAndRanges(b, names, rest, regexp2)
+	n := writeNamesAndRanges(b, names, rest, regexp2)
 	b.WriteByte(']')
+	return n
 }
 
 // The classes of the properties, as written for the engines, are kept: a
@@ -697,11 +741,11 @@ type propertyClassKey struct {
 	items                       bool
 }
 
-// propertyClass is a property's escape written for an engine, and the set
-// it stands for.
+// propertyClass is a property's escape written for an engine, and what it
+// costs the engine (see classUnits).
 type propertyClass struct {
-	text string
-	set  runeSet
+	text  string
+	units int
 }
 
 var propertyClassCache sync.Map // propertyClassKey -> propertyClass
@@ -713,10 +757,9 @@ func (p regexpProperty) class(negate, ignoreCase, regexp2 bool) propertyClass {
 	if v, ok := propertyClassCache.Load(key); ok {
 		return v.(propertyClass)
 	}
-	set := p.charSet(negate, ignoreCase)
 	var b strings.Builder
-	writeClass(&b, set, regexp2)
-	v, _ := propertyClassCache.LoadOrStore(key, propertyClass{b.String(), set})
+	n := writeClass(&b, p.charSet(negate, ignoreCase), regexp2)
+	v, _ := propertyClassCache.LoadOrStore(key, propertyClass{b.String(), n})
 	return v.(propertyClass)
 }
 
@@ -727,10 +770,9 @@ func (p regexpProperty) classItems(negate bool) propertyClass {
 	if v, ok := propertyClassCache.Load(key); ok {
 		return v.(propertyClass)
 	}
-	set := p.charSet(negate, false)
 	var b strings.Builder
-	writeClassItems(&b, set, false)
-	v, _ := propertyClassCache.LoadOrStore(key, propertyClass{b.String(), set})
+	n := writeClassItems(&b, p.charSet(negate, false), false)
+	v, _ := propertyClassCache.LoadOrStore(key, propertyClass{b.String(), n})
 	return v.(propertyClass)
 }
 
