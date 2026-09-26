@@ -41,7 +41,7 @@ func TestGlobalMatch_IncrementalSameAsFindAll(t *testing.T) {
 							pos = r.indexes[1]
 						}
 					}
-					got := p.regexpWrapper.findAllIncremental(vm, in, limit, sticky)
+					got := p.regexpWrapper.findAllIncremental(vm, in, limit, sticky, false)
 					if len(got) != len(want) {
 						t.Fatalf("%q on %q (limit %d, sticky %v): %d matches, want %d", pat, in, limit, sticky, len(got), len(want))
 					}
