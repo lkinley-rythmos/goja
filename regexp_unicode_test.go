@@ -2,6 +2,7 @@ package goja
 
 import (
 	"errors"
+	"fmt"
 	"runtime"
 	"strings"
 	"testing"
@@ -595,7 +596,7 @@ func TestRegexpUnicodePropertiesLazyRegexp2(t *testing.T) {
 // regexp2Size is what regexp2 is charged for a pattern (see
 // regexp2Estimate).
 func regexp2Size(src string) int64 {
-	size, _ := regexp2Estimate(src, false)
+	size, _ := regexp2Estimate(src, false, true)
 	return size
 }
 
@@ -631,6 +632,28 @@ func TestRegexpTooLargeForGoRegexp(t *testing.T) {
 	}
 }
 
+func TestRegexpTooLargeForGoRegexpFolded(t *testing.T) {
+	// A pattern Go's regexp finds too large falls back to regexp2 only if
+	// regexp2 compiles it within the bound, counting the case variants it
+	// adds to each class ignoring case with the u flag: 300 classes of
+	// 65,000 characters take it about 700 ms.
+	var b strings.Builder
+	b.WriteString("(?:")
+	for i := 0; i < 300; i++ {
+		fmt.Fprintf(&b, `[\u{%x}-\u{%x}]`, 0x41+i, 0x41+i+64999)
+	}
+	b.WriteString(strings.Repeat("x", 4000) + "){1000}")
+	for _, tc := range []struct {
+		flags    string
+		tooLarge bool
+	}{{"iu", true}, {"u", false}} {
+		_, err := compileRegexp(b.String(), tc.flags)
+		if got := err != nil && strings.HasSuffix(err.Error(), "/: Regular expression too large"); got != tc.tooLarge {
+			t.Errorf("/%s: err %.100v", tc.flags, err)
+		}
+	}
+}
+
 func TestRegexpUnicodePropertiesRegexp2Only(t *testing.T) {
 	// A pattern with a construct Go's regexp lacks is compiled by regexp2
 	// alone, and bounded by what it costs regexp2: \p{Dia} is 3 KB of
@@ -649,6 +672,20 @@ func TestRegexpUnicodePropertiesRegexp2Only(t *testing.T) {
 	}
 	if _, err := vm.RunString(`new RegExp("\\p{Dia}".repeat(3000), "u")`); !regexpTooLarge(err) {
 		t.Errorf("Go's regexp: err %.200v", err)
+	}
+	// So is one with a count Go's regexp refuses (over 1,000).
+	for _, src := range []string{`"\\p{L}".repeat(6000) + "x{1001}"`, `"x{1001}" + "\\p{L}".repeat(6000)`} {
+		v, err := vm.RunString(`var re = new RegExp(` + src + `, "u"); var s = "a".repeat(6000); [re.test(s + "x".repeat(1001)), re.test(s + "x".repeat(1000)), re.test("x".repeat(1001) + s)].join()`)
+		want := "true,false,false"
+		if strings.HasPrefix(src, `"x`) {
+			want = "false,false,true"
+		}
+		if err != nil || v.String() != want {
+			t.Errorf("%s: %v %v", src, v, err)
+		}
+	}
+	if _, err := vm.RunString(`new RegExp("\\p{L}".repeat(6000) + "x{1000}", "u")`); !regexpTooLarge(err) {
+		t.Errorf("Go's regexp with x{1000}: err %.200v", err)
 	}
 }
 

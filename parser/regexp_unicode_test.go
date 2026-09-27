@@ -294,6 +294,15 @@ func TestTransformRegExpExpansionLimit(t *testing.T) {
 		{"", `\p{Dia}`, "(?=)", 3000, false, false},
 		{"(", `\p{Dia}`, `)\1`, 3000, false, false},
 		{"(?=)", `\p{Lu}`, "", 1000, true, true},
+		// So is one with a count Go's regexp refuses.
+		{"", `\p{L}`, "x{1001}", 6000, false, false},
+		{"x{1001}", `\p{L}`, "", 6000, false, false},
+		{"", `\p{L}`, "x{2,1001}", 6000, false, false},
+		{"", `\p{L}`, "x{1000}", 6000, false, true},
+		{"x{1001}", `\p{Changes_When_NFKC_Casefolded}`, "", 80, false, true},
+		// A class of a single named table costs its ranges (\p{Assigned} is
+		// [^\p{Cn}] for Go's regexp): 8,000 copies take about 250 ms.
+		{"", `\p{Assigned}`, "", 8000, false, true},
 		{"(?=)", `\p{Changes_When_NFKC_Casefolded}`, "", 80, false, true},
 	} {
 		pattern := tc.prefix + strings.Repeat(tc.escape, tc.n) + tc.suffix
@@ -307,7 +316,7 @@ func TestTransformRegExpExpansionRegexp2Only(t *testing.T) {
 	// A pattern with a construct Go's regexp lacks is compiled by regexp2
 	// alone: what its escapes would cost Go's regexp is neither counted nor
 	// written, before the construct or after it.
-	for _, tc := range []struct{ prefix, suffix string }{{"(?=)", ""}, {"", "(?=)"}, {"(?<=a)", ""}, {"(", `)\1`}} {
+	for _, tc := range []struct{ prefix, suffix string }{{"(?=)", ""}, {"", "(?=)"}, {"(?<=a)", ""}, {"(", `)\1`}, {"a{1001}", ""}, {"", "a{0,1001}"}} {
 		pattern := tc.prefix + strings.Repeat(`\p{Dia}`, 3000) + tc.suffix
 		p := parseUnicode(pattern, false)
 		if p.err != nil || p.incompat == nil {
@@ -323,6 +332,20 @@ func TestTransformRegExpExpansionRegexp2Only(t *testing.T) {
 		if p.regexp2Expansion < 3000*expansionEscape {
 			t.Errorf("%s...%s: regexp2 cost %d", tc.prefix, tc.suffix, p.regexp2Expansion)
 		}
+	}
+}
+
+func TestTransformRegExpExpansionGoPastBound(t *testing.T) {
+	// Past its bound nothing more is written for Go's regexp: with the i
+	// flag, a class of a property with no name Go's regexp knows would be
+	// rewritten as its closure under case folding, about 3 KB for \p{Dia}.
+	past := strings.Repeat(`\p{Dia}`, 3000)
+	base, classes := parseUnicode(past, true), parseUnicode(past+strings.Repeat(`[\p{Dia}a]`, 200), true)
+	if base.goExpansion <= maxRegexpExpansion {
+		t.Fatalf("Go's regexp costs %d units", base.goExpansion)
+	}
+	if n := classes.goRegexp.Len() - base.goRegexp.Len(); n > 200*16 {
+		t.Errorf("%d bytes written for Go's regexp past its bound", n)
 	}
 }
 

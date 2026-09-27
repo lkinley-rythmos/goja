@@ -1292,6 +1292,16 @@ func distinctClasses(n, k int) string {
 	return b.String()
 }
 
+// wideClasses returns n classes of one range of span characters each, all
+// different.
+func wideClasses(n, span int) string {
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&b, `[\u{%x}-\u{%x}]`, 0x41+i, 0x41+i+span-1)
+	}
+	return b.String()
+}
+
 func TestRegexpChargeTracksRetainedHeap(t *testing.T) {
 	// The memory charged for a compiled pattern, and for the copy anchored
 	// at its start, is an estimate made before the engines compile it (see
@@ -1316,13 +1326,23 @@ func TestRegexpChargeTracksRetainedHeap(t *testing.T) {
 		{strings.Repeat(`\P{Alphabetic}`, 100), "giu"},
 		{strings.Repeat(`[\p{L}\p{M}\s'-]`, 100), "iu"},
 		{strings.Repeat(`\p{Lu}`, 100), "iu"},
+		// Case folding grows the class's slice to 1,344 runes, of which Go's
+		// regexp keeps the two it needs, in a slice of that capacity.
+		{strings.Repeat(`[A-\uffef]`, 400), "i"},
+		{strings.Repeat(`[a-zA-Z0-9_\u00c0-\u024f]`, 2000), "gi"},
+		// regexp2 alone, with classes all different; ignoring case with the
+		// u flag, it adds each class's case variants (up to 27 KB).
+		{"(?=)" + distinctClasses(200, 300), "u"},
+		{"(?=)" + wideClasses(100, 65000), "iu"},
+		{"(?=)" + wideClasses(300, 1000), "iu"},
 	} {
 		// The first compile of a property fills the caches of its sets.
 		if _, err := compileRegexpUncached(nil, tc.src, tc.flags); err != nil {
 			t.Fatal(err)
 		}
 		v, retained := retainedHeap(func() any {
-			p, err := compileRegexpUncached(nil, tc.src, tc.flags)
+			// The template may hold its source, which is counted.
+			p, err := compileRegexpUncached(nil, strings.Clone(tc.src), tc.flags)
 			if err != nil {
 				t.Fatal(err)
 			}

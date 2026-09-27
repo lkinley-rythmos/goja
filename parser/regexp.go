@@ -125,6 +125,9 @@ const (
 	expansionClass      = 1500
 )
 
+// maxGoRepeat is the largest count Go's regexp takes in a repeat.
+const maxGoRepeat = 1000
+
 // TransformRegExp transforms a JavaScript pattern into  a Go "regexp" pattern.
 //
 // re2 (Go) cannot do backtracking, so the presence of a lookahead (?=) (?!) or
@@ -328,6 +331,11 @@ func (self *_RegExp_parser) scanUnicodeTermChar() {
 			return
 		}
 		self.passQuantifier(end)
+		if min > maxGoRepeat || max > maxGoRepeat {
+			// Go's regexp refuses the count, so regexp2 compiles the
+			// pattern (as for the constructs Go's regexp lacks).
+			self.error(false, "re2: invalid repeat count")
+		}
 	case '}', ']':
 		self.syntaxError("Lone quantifier brackets")
 	default:

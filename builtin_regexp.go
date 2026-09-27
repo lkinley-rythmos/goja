@@ -287,8 +287,9 @@ func compileRegexpFor(r *Runtime, patternStr, flags string) (*regexpPattern, err
 // program has an instruction per literal character, class or operator, in
 // a slice that append may have left slack in, and a capture is two. An
 // instruction for a class or literal points into the parsed pattern: to a
-// node, which it keeps, for up to two runes, or to the node's runes (in a
-// slice with slack too). A repeat is simplified into copies of its operand,
+// node, which it keeps, for up to two runes, or to the node's runes, in a
+// slice of the capacity parsing grew it to (case folding grows [A-\uffef]
+// to over a thousand runes, and keeps two). A repeat is simplified into copies of its operand,
 // which are walked as many times but kept once. The Regexp holds the source
 // and its literal prefix, twice. A program of under 1,000 instructions
 // anchored at its start is also compiled one-pass, which copies each
@@ -297,15 +298,15 @@ func goRegexpSize(re *syntax.Regexp, src string) (prog, anchored int64) {
 	const (
 		inst = int64(unsafe.Sizeof(syntax.Inst{}))
 		node = int64(unsafe.Sizeof(syntax.Regexp{}))
-		// A rune in a class or literal: 4 bytes, with slack.
-		runeBytes = 10
+		// A rune of a class's or literal's capacity: 4 bytes, and a margin.
+		runeBytes = 6
 		// A one-pass instruction: the instruction, its table and slack.
 		onePassInst = 100
 		// A rune one-pass copies, with its share of the table.
 		onePassRune = 8
 	)
 	seen := make(map[*syntax.Regexp]bool)
-	var insts, nodes, runes int64
+	var insts, nodes, runes, onePassRunes int64
 	var walk func(re *syntax.Regexp)
 	walk = func(re *syntax.Regexp) {
 		kept := false
@@ -324,10 +325,12 @@ func goRegexpSize(re *syntax.Regexp, src string) (prog, anchored int64) {
 		}
 		if kept && !seen[re] {
 			seen[re] = true
-			if len(re.Rune) <= len(re.Rune0) {
+			if cap(re.Rune) <= len(re.Rune0) {
 				nodes += node
 			} else {
-				runes += int64(len(re.Rune))
+				// The slice keeps what case folding grew it to.
+				runes += int64(cap(re.Rune))
+				onePassRunes += int64(len(re.Rune))
 			}
 		}
 		for _, sub := range re.Sub {
@@ -346,7 +349,7 @@ func goRegexpSize(re *syntax.Regexp, src string) (prog, anchored int64) {
 	prog = insts*inst*3/2 + nodes + runeBytes*runes + int64(len(src)) + 2*prefix + 1024
 	anchored = prog
 	if insts < 1000 {
-		anchored += onePassInst*insts + onePassRune*runes
+		anchored += onePassInst*insts + onePassRune*onePassRunes
 	}
 	return
 }
@@ -495,7 +498,7 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 				// Go's regexp expands repeats, which regexp2 does not: a
 				// pattern too large for Go's regexp may be small for
 				// regexp2, which then compiles it (see below), as V8 does.
-				if _, units := regexp2Estimate(regexp2Str, ignoreCase); units > maxRegexp2Units {
+				if _, units := regexp2Estimate(regexp2Str, ignoreCase, unicode); units > maxRegexp2Units {
 					err = errors.New("Invalid regular expression: /" + source + "/: Regular expression too large")
 					return
 				}
@@ -516,7 +519,7 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 		// regexp2 is the only engine for patterns Go's regexp rejects, and
 		// the engine used for any match starting at lastIndex > 0 (global or
 		// sticky). Build it once here, on the template, so clones share it.
-		size2, _ := regexp2Estimate(regexp2Str, ignoreCase)
+		size2, _ := regexp2Estimate(regexp2Str, ignoreCase, unicode)
 		chargeRegexp(r, size2)
 		size += size2
 		wrapper2, err = compileRegexp2(regexp2Str, multiline, dotAll, ignoreCase, unicode)
