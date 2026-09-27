@@ -66,7 +66,7 @@ func TestTransformRegExpUnicodeProperties(t *testing.T) {
 		{pattern: `\p{L}`, re2: `p{L}`},
 		{pattern: `[\P]`, re2: `[P]`},
 	} {
-		re2, r2, err := TransformRegExp2(tc.pattern, false, tc.unicode, tc.icase, false)
+		re2, r2, err := TransformRegExp2(tc.pattern, false, tc.unicode, tc.icase)
 		if tc.incompatibleWith != "" {
 			if _, ok := err.(RegexpErrorIncompatible); !ok || err.Error() != tc.incompatibleWith {
 				t.Errorf("%s: err %v", tc.pattern, err)
@@ -135,7 +135,7 @@ func TestTransformRegExpUnicodeSyntax(t *testing.T) {
 		{`[\u{5a}-\u{41}]`, "Range out of order in character class"},
 		{`\u{110000}`, "Invalid Unicode escape"},
 	} {
-		_, _, err := TransformRegExp2(tc.pattern, false, true, false, false)
+		_, _, err := TransformRegExp2(tc.pattern, false, true, false)
 		if tc.err == "" {
 			if _, ok := err.(RegexpSyntaxError); ok {
 				t.Errorf("%s: %v", tc.pattern, err)
@@ -147,7 +147,7 @@ func TestTransformRegExpUnicodeSyntax(t *testing.T) {
 			t.Errorf("%s: err %v, want %s", tc.pattern, err, want)
 		}
 		// Without the u flag, none of these is an error, except the ranges.
-		if _, _, err := TransformRegExp2(tc.pattern, false, false, false, false); err != nil && !strings.Contains(tc.err, "class") {
+		if _, _, err := TransformRegExp2(tc.pattern, false, false, false); err != nil && !strings.Contains(tc.err, "class") {
 			if _, ok := err.(RegexpSyntaxError); ok {
 				t.Errorf("%s without u: %v", tc.pattern, err)
 			}
@@ -213,48 +213,210 @@ func TestRegexpPropertyNames(t *testing.T) {
 	}
 }
 
+// transformUnicode transforms a pattern with the u flag, for both engines.
+func transformUnicode(pattern string, ignoreCase bool) (re2, regexp2 string, err error) {
+	return TransformRegExp2(pattern, false, true, ignoreCase)
+}
+
+// parseUnicode parses a pattern with the u flag, for what it costs and
+// writes.
+func parseUnicode(pattern string, ignoreCase bool) *_RegExp_parser {
+	p := &_RegExp_parser{str: pattern, length: len(pattern), unicode: true, ignoreCase: ignoreCase}
+	p.parse()
+	return p
+}
+
 func TestTransformRegExpExpansionLimit(t *testing.T) {
-	// A pattern whose property escapes cost an engine that compiles it more
-	// than maxRegexpExpansion is refused. \P{Alphabetic} is a large set with
-	// no name Go's regexp knows, written as \p{L} and ranges; \p{L} costs
-	// Go's regexp its table and regexp2 nothing; \p{Lu} with the i flag
-	// costs regexp2 its closure under case folding, written as ranges.
-	tooLarge := func(pattern string, ignoreCase, needRegexp2 bool) bool {
+	// A pattern whose property escapes cost either engine more than
+	// maxRegexpExpansion is refused, whatever its flags: regexp2 compiles
+	// any pattern a match needs it for (a split of a large input with \b,
+	// or of a string with a lone surrogate), and Go's text is written even
+	// when a construct it lacks makes the pattern regexp2's.
+	// \P{Alphabetic} is a large set with no name Go's regexp knows, written
+	// as \p{L} and ranges; \p{L} costs Go's regexp its table and regexp2
+	// nothing; \p{Dia} costs Go's regexp its ranges written out and regexp2
+	// nothing (it knows Diacritic by name); \p{Lu} with the i flag costs
+	// regexp2 its closure under case folding, written as ranges;
+	// \p{Changes_When_NFKC_Casefolded} is ranges for both, which cost
+	// regexp2 more per range the more a class has.
+	tooLarge := func(pattern string, ignoreCase bool) bool {
 		t.Helper()
-		_, _, err := TransformRegExp2(pattern, false, true, ignoreCase, needRegexp2)
+		_, _, err := transformUnicode(pattern, ignoreCase)
 		if err == nil {
 			return false
 		}
 		want := "Invalid regular expression: /" + pattern + "/: Regular expression too large"
 		if _, ok := err.(RegexpSyntaxError); !ok || err.Error() != want {
-			t.Fatalf("%.40s...: err %v", pattern, err)
+			t.Fatalf("%.40s...: err %.200v", pattern, err)
 		}
 		return true
 	}
 	for _, tc := range []struct {
-		escape              string
-		n                   int
-		ignoreCase, regexp2 bool
-		want                bool
+		escape     string
+		n          int
+		ignoreCase bool
+		want       bool
 	}{
-		{`\P{Alphabetic}`, 100, true, true, false},
-		{`\P{Alphabetic}`, 1000, true, true, true},
-		{`\P{Alphabetic}`, 1000, false, false, true},
-		{`[\P{L}\p{sc=Greek}]`, 2000, true, false, true},
-		{`\p{L}`, 1000, false, false, false},
-		{`\p{L}`, 2000, false, false, true},
-		{`\p{L}`, 2000, false, true, true},
-		{`\p{Lu}`, 400, true, false, false},
-		{`\p{Lu}`, 400, true, true, true},
-		{`(?=)\p{Lu}`, 400, true, false, true},
-		{`\p{Lu}`, 50, true, true, false},
+		{`\P{Alphabetic}`, 100, true, false},
+		{`\P{Alphabetic}`, 1000, true, true},
+		{`\P{Alphabetic}`, 1000, false, true},
+		{`[\P{L}\p{sc=Greek}]`, 2000, true, true},
+		{`\p{L}`, 1000, false, false},
+		{`\p{L}`, 2000, false, true},
+		{`\p{Dia}`, 1000, false, false},
+		{`\p{Dia}`, 2500, false, true},
+		{`(?=)\p{Dia}`, 2500, false, true},
+		{`\p{Lu}`, 50, true, false},
+		{`\p{Lu}`, 400, true, true},
+		{`(?=)\p{Lu}`, 400, true, true},
+		{`\p{Changes_When_NFKC_Casefolded}`, 8, false, false},
+		{`\p{Changes_When_NFKC_Casefolded}`, 20, false, true},
+		{`\b\p{Changes_When_NFKC_Casefolded}`, 20, false, true},
 	} {
 		pattern := strings.Repeat(tc.escape, tc.n)
 		if strings.HasPrefix(tc.escape, "(?=)") {
 			pattern = "(?=)" + strings.Repeat(tc.escape[4:], tc.n)
 		}
-		if got := tooLarge(pattern, tc.ignoreCase, tc.regexp2); got != tc.want {
-			t.Errorf("%s x%d (i: %v, regexp2: %v): too large %v", tc.escape, tc.n, tc.ignoreCase, tc.regexp2, got)
+		if got := tooLarge(pattern, tc.ignoreCase); got != tc.want {
+			t.Errorf("%s x%d (i: %v): too large %v", tc.escape, tc.n, tc.ignoreCase, got)
+		}
+	}
+}
+
+func TestTransformRegExpExpansionAbortsEarly(t *testing.T) {
+	// A pattern is refused at the escape that takes either engine past the
+	// bound, so what is written for the other stays small: \p{Dia} costs
+	// regexp2 nothing (it knows Diacritic by name), and Go's regexp a class
+	// of about 3 KB, which 100,000 copies would make 300 MB.
+	for _, tc := range []struct {
+		escape     string
+		ignoreCase bool
+	}{
+		{`\p{Dia}`, false},
+		{`[\p{Dia}]`, false},
+		{`\p{Term}`, true},
+		{`\p{L}`, false},
+	} {
+		p := parseUnicode(strings.Repeat(tc.escape, 100000), tc.ignoreCase)
+		if _, ok := p.err.(RegexpSyntaxError); !ok || !strings.HasSuffix(p.err.Error(), "Regular expression too large") {
+			t.Fatalf("%s: err %.100v", tc.escape, p.err)
+		}
+		if n, n2 := p.goRegexp.Len(), p.regexp2.Len(); n > 16<<20 || n2 > 16<<20 {
+			t.Errorf("%s: wrote %d bytes for Go's regexp and %d for regexp2 before refusing", tc.escape, n, n2)
+		}
+	}
+}
+
+// propertyEscapeForms returns an escape of every property in the forms a
+// pattern can have it, inside a class and out.
+func propertyEscapeForms() []string {
+	seen := map[string]bool{}
+	var names []string
+	add := func(name, canonical string) {
+		if !seen[canonical] {
+			seen[canonical] = true
+			names = append(names, name)
+		}
+	}
+	for k, v := range regexpGeneralCategoryValues {
+		add(k, "gc="+v)
+	}
+	for k, v := range regexpBinaryPropertyNames {
+		add(k, v)
+	}
+	for _, s := range []string{"Latin", "Greek", "Common", "Arabic", "Han", "Cyrillic", "Inherited", "Zzzz"} {
+		names = append(names, "sc="+s, "scx="+s)
+	}
+	var escapes []string
+	for _, n := range names {
+		for _, form := range []string{`\p{X}`, `\P{X}`, `[\p{X}]`, `[^\p{X}]`, `[\P{X}a]`, `[^\p{X}\p{Lu}]`, `[\p{X}\p{L}\p{N}]`} {
+			escapes = append(escapes, strings.Replace(form, "X", n, 1))
+		}
+	}
+	return escapes
+}
+
+func TestTransformRegExpExpansionBoundsText(t *testing.T) {
+	// What a property escape writes for an engine is bounded by what it
+	// costs the engine and the escape's length, so that bounding the cost
+	// bounds the text (see TestTransformRegExpExpansionAbortsEarly): Go's
+	// text is under 7 bytes a unit, regexp2's under 14 (a name costs it one
+	// unit), and an escape that costs nothing is written in a few times its
+	// length.
+	for _, escape := range propertyEscapeForms() {
+		for _, ignoreCase := range []bool{false, true} {
+			p := parseUnicode(escape, ignoreCase)
+			if p.err != nil {
+				t.Fatalf("%s: %v", escape, p.err)
+			}
+			in := len(escape)
+			if n := len(p.ResultString()); n > 8*p.goExpansion+8*in {
+				t.Errorf("/%s/ (i: %v): %d bytes for Go's regexp cost %d units", escape, ignoreCase, n, p.goExpansion)
+			}
+			if n := len(p.regexp2Pattern()); n > 16*p.regexp2Expansion+8*in {
+				t.Errorf("/%s/ (i: %v): %d bytes for regexp2 cost %d units", escape, ignoreCase, n, p.regexp2Expansion)
+			}
+		}
+	}
+}
+
+func TestTransformRegExpExpansionModel(t *testing.T) {
+	// The cost model's factors, as relations measured on the engines.
+
+	// Go's regexp sorts the ranges of a class's named tables together:
+	// [\p{L}\p{N}] takes about 7 times as long as \p{L}\p{N} to compile
+	// (about 120 µs against 17 µs), so a named table in a class costs at
+	// least twice its ranges, in an escape or in a property written as
+	// named tables and ranges (\p{Assigned} is [^\p{Cn}] for Go's regexp).
+	for _, tc := range []struct {
+		pattern string
+		names   []string
+	}{
+		{`[\p{L}\p{N}]`, []string{"L", "N"}},
+		{`[\p{Lu}\p{sc=Greek}\p{Nd}]`, []string{"Lu", "Greek", "Nd"}},
+		{`\p{Assigned}`, []string{"Cn"}},
+		{`\p{Uppercase}`, []string{"Lu"}},
+	} {
+		p := parseUnicode(tc.pattern, false)
+		ranges := 0
+		for _, name := range tc.names {
+			if !strings.Contains(p.ResultString(), `\p{`+name+`}`) && !strings.Contains(p.ResultString(), `\P{`+name+`}`) {
+				t.Fatalf("/%s/ is not written with %s: %.200s", tc.pattern, name, p.ResultString())
+			}
+			ranges += namedTableRanges(name)
+		}
+		if p.goExpansion < 2*ranges {
+			t.Errorf("/%s/ costs Go's regexp %d units for named tables of %d ranges", tc.pattern, p.goExpansion, ranges)
+		}
+	}
+
+	// regexp2 sorts a class's ranges again for each one it adds, so a class
+	// costs it more per range the more ranges it has.
+	class := func(n int) runeSet {
+		s := make(runeSet, 0, 2*n)
+		for i := 0; i < n; i++ {
+			s = append(s, rune(0x1000+2*i), rune(0x1000+2*i))
+		}
+		return s
+	}
+	var b strings.Builder
+	small, large := writeClass(&b, class(300), true), writeClass(&b, class(1200), true)
+	if large < 6*small {
+		t.Errorf("a class of 1200 ranges costs regexp2 %d units, one of 300 %d", large, small)
+	}
+
+	// A class rewritten as the set it stands for is computed by the parser
+	// whichever engine compiles it, so it costs both.
+	for _, pattern := range []string{`[\P{Any}]`, `[^\P{Any}]`} {
+		p := parseUnicode(pattern, false)
+		if p.goExpansion < expansionClass || p.regexp2Expansion < expansionClass {
+			t.Errorf("/%s/: Go's regexp %d units, regexp2 %d", pattern, p.goExpansion, p.regexp2Expansion)
+		}
+	}
+	for _, pattern := range []string{`[\p{Dia}a]`, `[\p{Dia}\P{Any}]`} {
+		p := parseUnicode(pattern, true)
+		if p.goExpansion < expansionClass || p.regexp2Expansion < expansionClass {
+			t.Errorf("/%s/i: Go's regexp %d units, regexp2 %d", pattern, p.goExpansion, p.regexp2Expansion)
 		}
 	}
 }

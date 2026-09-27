@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf16"
 	"unicode/utf8"
@@ -97,21 +98,30 @@ type regexpPattern struct {
 
 // anchoredRegexp is a Go regexp anchored at its start, compiled on first use
 // (once, shared by the clones of a pattern) from the pattern's source, and
-// charged then to the Runtime that first uses it. Its size is the same
+// charged then to the Runtime that compiles it. Its size is the same
 // estimate as the pattern's program.
 type anchoredRegexp struct {
-	once sync.Once
-	src  string
-	size int64
-	re   *regexp.Regexp
+	mu       sync.Mutex
+	compiled atomic.Bool
+	src      string
+	size     int64
+	re       *regexp.Regexp
 }
 
-// get returns the regexp, or nil if it cannot be compiled.
+// get returns the regexp, or nil if it cannot be compiled. A Runtime whose
+// allocation limit refuses the charge (which panics) leaves it uncompiled,
+// for the next Runtime to compile.
 func (a *anchoredRegexp) get(vm *vm) *regexp.Regexp {
-	a.once.Do(func() {
+	if a.compiled.Load() {
+		return a.re
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.compiled.Load() {
 		vm.r.countAlloc(a.size)
 		a.re, _ = regexp.Compile(`\A(?:` + a.src + `)`)
-	})
+		a.compiled.Store(true)
+	}
 	return a.re
 }
 
@@ -226,10 +236,16 @@ func compileRegexp2(src string, multiline, dotAll, ignoreCase, unicode bool) (*r
 	return &regexp2Wrapper{rx: regexp2Pattern}, nil
 }
 
-func (p *regexpPattern) createRegexp2() {
+// createRegexp2 compiles regexp2 for a match Go's regexp cannot make, for
+// a pattern that has Go's regexp. The parser bounds what regexp2's compile
+// costs for every pattern (see parser.TransformRegExp2), so it takes as
+// long as it would have when the pattern was made; the memory it holds is
+// charged to vm, as it is then (see compileRegexpUncached).
+func (p *regexpPattern) createRegexp2(vm *vm) {
 	if p.regexp2Wrapper != nil {
 		return
 	}
+	vm.r.countAlloc(regexp2SizePerByte * int64(len(p.src)))
 	rx, err := compileRegexp2(p.src, p.multiline, p.dotAll, p.ignoreCase, p.unicode)
 	if err != nil {
 		// At this point the regexp should have been successfully converted to re2, if it fails now, it's a bug.
@@ -268,7 +284,7 @@ func (p *regexpPattern) findSubmatchIndex(vm *vm, s String, start int) regexpRes
 		// Unfortunately Go's regexp library does not allow starting from an arbitrary position.
 		// If we just drop the first _start_ characters of the string the assertions (^, $, \b and \B) will not
 		// work correctly.
-		p.createRegexp2()
+		p.createRegexp2(vm)
 		return p.regexp2Wrapper.findSubmatchIndex(vm, s, start, p.unicode, p.global || p.sticky)
 	}
 	return p.regexpWrapper.findSubmatchIndex(vm, s, p.unicode, p.prefixSkip)
@@ -321,7 +337,7 @@ func (p *regexpPattern) findAllSubmatchIndex(vm *vm, s String, start int, limit 
 		}
 	}
 
-	p.createRegexp2()
+	p.createRegexp2(vm)
 	return p.regexp2Wrapper.findAllSubmatchIndex(vm, s, start, limit, sticky, p.unicode)
 }
 

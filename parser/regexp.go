@@ -87,10 +87,8 @@ type _RegExp_parser struct {
 	captureNames    []string
 	namesSeen       map[string]bool
 
-	// What the property escapes cost each engine (see maxRegexpExpansion),
-	// and whether regexp2 compiles the pattern whatever it has.
+	// What the property escapes cost each engine (see maxRegexpExpansion).
 	goExpansion, regexp2Expansion int
-	needRegexp2                   bool
 }
 
 // maxRegexpExpansion bounds what a pattern's property escapes cost an engine
@@ -104,9 +102,12 @@ type _RegExp_parser struct {
 // expansionClass units to compute, for both engines. A pattern made of
 // thousands of escapes would take seconds to compile, which cannot be
 // interrupted; the bound keeps an engine's share to about 100 ms, and its
-// program to a few megabytes. Each engine's cost is bounded on its own, and
-// only if it compiles the pattern. V8 refuses patterns of about 12,500
-// escapes with this message.
+// program to a few megabytes. Each engine's cost is bounded on its own, for
+// every pattern: regexp2 compiles one Go's regexp runs when a match needs it
+// (a split of a large input with \b, or of a string with a lone
+// surrogate). A pattern is refused at the escape that takes either engine
+// past the bound, so the text written for the other stays small as well.
+// V8 refuses patterns of about 12,500 escapes with this message.
 const (
 	maxRegexpExpansion  = 1 << 20
 	expansionTextRange  = 3
@@ -128,31 +129,30 @@ const (
 // If the pattern is invalid (not valid even in JavaScript), then this function
 // returns an empty string and a generic error.
 func TransformRegExp(pattern string, dotAll, unicode bool) (transformed string, err error) {
-	transformed, _, err = TransformRegExp2(pattern, dotAll, unicode, false, false)
+	transformed, _, err = TransformRegExp2(pattern, dotAll, unicode, false)
 	return
 }
 
 // TransformRegExp2 is TransformRegExp that also returns the pattern to give
 // regexp2 (github.com/dlclark/regexp2) in ECMAScript mode, for when the
 // result is an error of type RegexpErrorIncompatible or the caller needs
-// regexp2 for other reasons (needRegexp2 says it does whatever the pattern
-// has, so that the pattern is refused if regexp2 would take too long to
-// compile it; see maxRegexpExpansion). It is the input pattern, except that
-// Unicode property escapes (\p{...} and \P{...} with the u flag), which
-// regexp2 does not implement as ECMAScript specifies, are replaced by
-// character sets; ignoreCase is the i flag, which those sets depend on.
-func TransformRegExp2(pattern string, dotAll, unicode, ignoreCase, needRegexp2 bool) (transformed, regexp2Pattern string, err error) {
+// regexp2 for other reasons. It is the input pattern, except that Unicode
+// property escapes (\p{...} and \P{...} with the u flag), which regexp2
+// does not implement as ECMAScript specifies, are replaced by character
+// sets; ignoreCase is the i flag, which those sets depend on. A pattern
+// either engine would take too long to compile is refused (see
+// maxRegexpExpansion).
+func TransformRegExp2(pattern string, dotAll, unicode, ignoreCase bool) (transformed, regexp2Pattern string, err error) {
 	if pattern == "" {
 		return "", "", nil
 	}
 
 	parser := _RegExp_parser{
-		str:         pattern,
-		length:      len(pattern),
-		dotAll:      dotAll,
-		unicode:     unicode,
-		ignoreCase:  ignoreCase,
-		needRegexp2: needRegexp2,
+		str:        pattern,
+		length:     len(pattern),
+		dotAll:     dotAll,
+		unicode:    unicode,
+		ignoreCase: ignoreCase,
 	}
 	err = parser.parse()
 	if err != nil {
@@ -183,9 +183,6 @@ func (self *_RegExp_parser) regexp2Pattern() string {
 func (self *_RegExp_parser) parse() (err error) {
 	self.read() // Pull in the first character
 	self.scan()
-	if self.err == nil {
-		self.checkExpansion()
-	}
 	if self.err == nil {
 		return self.incompat
 	}
@@ -654,28 +651,19 @@ func (self *_RegExp_parser) scanBracket() {
 }
 
 // expandGo and expandRegexp2 count what a property escape costs an engine,
-// and refuse the pattern once it is past maxRegexpExpansion for both (see
-// checkExpansion for the end of the pattern).
+// and refuse the pattern as soon as it is past maxRegexpExpansion for
+// either, which stops the scan: the text written for each engine grows with
+// its cost (and the escapes' length), so it is bounded too.
 func (self *_RegExp_parser) expandGo(units int) {
 	self.goExpansion += units
-	if self.goExpansion > maxRegexpExpansion && self.regexp2Expansion > maxRegexpExpansion {
+	if self.goExpansion > maxRegexpExpansion {
 		self.syntaxError("Regular expression too large")
 	}
 }
 
 func (self *_RegExp_parser) expandRegexp2(units int) {
 	self.regexp2Expansion += units
-	if self.goExpansion > maxRegexpExpansion && self.regexp2Expansion > maxRegexpExpansion {
-		self.syntaxError("Regular expression too large")
-	}
-}
-
-// checkExpansion refuses the pattern at its end if it costs an engine that
-// compiles it more than maxRegexpExpansion: Go's regexp unless the pattern
-// has a construct it lacks, and regexp2 then or when the caller says so.
-func (self *_RegExp_parser) checkExpansion() {
-	if self.goExpansion > maxRegexpExpansion && self.incompat == nil ||
-		self.regexp2Expansion > maxRegexpExpansion && (self.needRegexp2 || self.incompat != nil) {
+	if self.regexp2Expansion > maxRegexpExpansion {
 		self.syntaxError("Regular expression too large")
 	}
 }

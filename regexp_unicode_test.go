@@ -5,6 +5,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Unicode property escapes (\p{...}, \P{...}) and the u flag's stricter
@@ -474,6 +475,137 @@ func TestRegexpUnicodePropertiesTooLarge(t *testing.T) {
 	vm.Set("p", strings.Repeat(`\P{Alphabetic}`, 50))
 	if v, err := vm.RunString(`new RegExp(p, "giu").test("a".repeat(50)) + " " + new RegExp(p, "giu").test("-".repeat(50))`); err != nil || v.String() != "false true" {
 		t.Errorf("under the bound: %v %v", v, err)
+	}
+}
+
+// regexpTooLarge reports whether err is the SyntaxError V8 gives for a
+// pattern too large to compile.
+func regexpTooLarge(err error) bool {
+	var ex *Exception
+	if !errors.As(err, &ex) {
+		return false
+	}
+	v := ex.Value().(*Object)
+	return v.Get("name").String() == "SyntaxError" && strings.HasSuffix(v.Get("message").String(), "/: Regular expression too large")
+}
+
+func TestRegexpUnicodePropertiesTooLargeRefusedEarly(t *testing.T) {
+	// A pattern is refused as soon as its escapes take either engine past
+	// the bound, before the text for the other grows with the pattern:
+	// \p{Dia} costs regexp2 nothing (it knows Diacritic by name) and Go's
+	// regexp a class of about 3 KB, so 300,000 copies (a 2 MB pattern) made
+	// 900 MB of text, uncharged, before they were refused.
+	for _, n := range []int{100000, 300000} {
+		vm := New()
+		vm.SetAllocationLimit(64 << 20)
+		vm.Set("n", n)
+		if _, err := vm.RunString(`var p = "\\p{Dia}".repeat(n)`); err != nil {
+			t.Fatal(err)
+		}
+		runtime.GC()
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		start := time.Now()
+		_, err := vm.RunString(`new RegExp(p, "u")`)
+		elapsed := time.Since(start)
+		runtime.ReadMemStats(&after)
+		if !regexpTooLarge(err) {
+			t.Fatalf("x%d: err %.200v", n, err)
+		}
+		if d := after.TotalAlloc - before.TotalAlloc; d > 64<<20 {
+			t.Errorf("x%d: allocated %d MB before refusing", n, d>>20)
+		}
+		if elapsed > time.Second && !raceDetectorEnabled {
+			t.Errorf("x%d: refused after %v", n, elapsed)
+		}
+	}
+}
+
+func TestRegexpUnicodePropertiesRegexp2Bound(t *testing.T) {
+	// regexp2's cost is bounded for every pattern, not only one with the g
+	// or y flag: a match compiles regexp2 on demand for a pattern Go's
+	// regexp runs otherwise (a split of a large input with \b, or of a
+	// string with a lone surrogate), which took 1.4 s for these patterns
+	// and could not be interrupted. \p{Changes_When_NFKC_Casefolded} is
+	// about 850 ranges, which cost regexp2 32 times what they cost Go's
+	// regexp.
+	vm := New()
+	for _, flags := range []string{"u", "iu", "gu", "mu"} {
+		for _, prefix := range []string{"", "\\b"} {
+			vm.Set("f", flags)
+			vm.Set("pre", prefix)
+			_, err := vm.RunString(`new RegExp(pre + "\\p{Changes_When_NFKC_Casefolded}".repeat(410), f)`)
+			if !regexpTooLarge(err) {
+				t.Errorf("%q x410 /%s: err %.200v", prefix, flags, err)
+			}
+		}
+	}
+}
+
+func TestRegexpUnicodePropertiesLazyRegexp2(t *testing.T) {
+	// The matches that compile regexp2 for a pattern Go's regexp runs
+	// otherwise charge the Runtime for it, as the compile of a pattern that
+	// needs regexp2 at once does, and are served by it.
+	pattern := `\b(?:` + strings.Repeat(`\p{Changes_When_NFKC_Casefolded}|`, 8) + `x)`
+	for _, tc := range []struct {
+		name, script, want string
+		start              int
+	}{
+		// Go's regexp cannot resume a pattern with \b in the middle of an
+		// input over 21,845 characters.
+		{name: "large split", script: `"a ".repeat(15000).split(re).length`, want: "1"},
+		{name: "large split with a match", script: `("a ".repeat(15000) + "x").split(re).length`, want: "2"},
+		// The input has a lone surrogate, which has no UTF-8 form.
+		{name: "lone surrogate", script: `"a\ud800 x a".split(re).map(function(s) { return s.length; }).join()`, want: "3,2"},
+		// A match from a position past the start.
+		{name: "start", start: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vm := New()
+			vm.Set("p", pattern)
+			if _, err := vm.RunString(`var re = new RegExp(p, "u")`); err != nil {
+				t.Fatal(err)
+			}
+			p := vm.Get("re").ToObject(vm).self.(*regexpObject).pattern
+			if p.regexp2Wrapper != nil || p.regexpWrapper == nil {
+				t.Fatal("the pattern is compiled with regexp2")
+			}
+			before := vm.AllocatedBytes()
+			if tc.script != "" {
+				v, err := vm.RunString(tc.script)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if v.String() != tc.want {
+					t.Errorf("got %q, want %q", v.String(), tc.want)
+				}
+			} else if m := p.findSubmatchIndex(vm.vm, asciiString("  x"), tc.start); len(m.indexes) == 0 || m.indexes[0] != 2 {
+				t.Errorf("match from %d: %v", tc.start, m.indexes)
+			}
+			if p.regexp2Wrapper == nil {
+				t.Fatal("regexp2 not compiled")
+			}
+			if n, want := vm.AllocatedBytes()-before, regexp2SizePerByte*int64(len(p.src)); n < want {
+				t.Errorf("charged %d bytes, regexp2's estimate is %d", n, want)
+			}
+		})
+	}
+}
+
+func TestRegexpTooLargeForGoRegexp(t *testing.T) {
+	// A pattern Go's regexp finds too large to compile gets V8's message for
+	// one too large, with the source as given.
+	vm := New()
+	src := "(?:" + strings.Repeat("x", 4000) + "){1000}"
+	vm.Set("p", src)
+	_, err := vm.RunString(`new RegExp(p)`)
+	var ex *Exception
+	if !errors.As(err, &ex) {
+		t.Fatalf("err %.200v", err)
+	}
+	v := ex.Value().(*Object)
+	if name, msg := v.Get("name").String(), v.Get("message").String(); name != "SyntaxError" || msg != "Invalid regular expression: /"+src+"/: Regular expression too large" {
+		t.Errorf("%s: %.100s", name, msg)
 	}
 }
 

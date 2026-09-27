@@ -408,7 +408,7 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 		patternStr = convertRegexpToUtf16(patternStr)
 	}
 
-	re2Str, regexp2Str, err := parser.TransformRegExp2(patternStr, dotAll, unicode, ignoreCase, global || sticky)
+	re2Str, regexp2Str, err := parser.TransformRegExp2(patternStr, dotAll, unicode, ignoreCase)
 	if err == nil {
 		re2flags := ""
 		if multiline {

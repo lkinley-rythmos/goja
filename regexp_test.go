@@ -2,10 +2,13 @@ package goja
 
 import (
 	"fmt"
+	"regexp/syntax"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"unsafe"
 )
 
 func TestRegexp1(t *testing.T) {
@@ -1213,6 +1216,86 @@ func TestRegexpCacheBytesBound(t *testing.T) {
 		t.Fatalf("after %d patterns: %d bytes, %d entries", n, bytes, entries)
 	}
 	resetRegexpCache()
+}
+
+func TestRegexpCacheBytesCountPrefixSkip(t *testing.T) {
+	// The anchored copy a template compiles for its prefix skip counts in
+	// the cache's bound, compiled or not: once compiled it is held as long
+	// as the template.
+	resetRegexpCache()
+	defer resetRegexpCache()
+	p, err := compileRegexp(`foo\d`, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.prefixSkip == nil || p.prefixSkip.size == 0 {
+		t.Fatal("no prefix skip")
+	}
+	regexpCache.Lock()
+	bytes := regexpCache.bytes
+	regexpCache.Unlock()
+	if bytes != p.size+p.prefixSkip.size {
+		t.Errorf("cache bytes %d, want %d + %d", bytes, p.size, p.prefixSkip.size)
+	}
+}
+
+func TestRegexpCacheSkipsOversizeTemplate(t *testing.T) {
+	// A template larger than the cache's byte bound is not cached: it would
+	// take the whole cache, and the memory would be nobody's to charge.
+	resetRegexpCache()
+	defer resetRegexpCache()
+	if _, err := compileRegexp("small", ""); err != nil {
+		t.Fatal(err)
+	}
+	// A thousand instructions a copy, as many as make the bound.
+	copies := int(regexpCacheMaxBytes/int64(unsafe.Sizeof(syntax.Inst{})))/1000 + 100
+	src := "^" + strings.Repeat("(?:a{1000})", copies)
+	p, err := compileRegexp(src, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.size <= regexpCacheMaxBytes {
+		t.Fatalf("size %d", p.size)
+	}
+	regexpCache.Lock()
+	_, cached := regexpCache.m[regexpCacheKey{src: src}]
+	bytes := regexpCache.bytes
+	regexpCache.Unlock()
+	if cached || regexpCacheLen() != 1 || bytes > regexpCacheMaxBytes {
+		t.Errorf("cached %v, %d entries, %d bytes", cached, regexpCacheLen(), bytes)
+	}
+}
+
+func TestRegexpChargeTracksRetainedHeap(t *testing.T) {
+	// The memory charged for a compiled pattern is an estimate made before
+	// the engines compile it (see goProgSize and regexp2SizePerByte), which
+	// stays within a small factor of the heap the compiled pattern holds.
+	for _, tc := range []struct{ src, flags string }{
+		{strings.Repeat("a", 100000), ""},
+		{"x" + strings.Repeat(`\p{L}`, 300) + "c", "u"},
+		{strings.Repeat(`[\p{L}\p{N}_]`, 100), "u"},
+		{strings.Repeat(`\P{Alphabetic}`, 100), "giu"},
+		{strings.Repeat(`[a-z]\d+`, 20000), "g"},
+		{strings.Repeat(`(?=a)b`, 20000), ""},
+	} {
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		p, err := compileRegexpUncached(nil, tc.src, tc.flags)
+		if err != nil {
+			t.Fatal(err)
+		}
+		runtime.GC()
+		runtime.ReadMemStats(&after)
+		retained := int64(after.HeapAlloc) - int64(before.HeapAlloc)
+		if retained < 512<<10 {
+			t.Fatalf("/%.20s.../%s: retained %d bytes", tc.src, tc.flags, retained)
+		}
+		if p.size < retained/3 || p.size > 5*retained {
+			t.Errorf("/%.20s.../%s: charged %d bytes, the compiled pattern holds %d", tc.src, tc.flags, p.size, retained)
+		}
+		runtime.KeepAlive(p)
+	}
 }
 
 func TestRegexpCacheInvalidNotCached(t *testing.T) {

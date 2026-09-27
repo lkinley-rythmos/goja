@@ -1,6 +1,7 @@
 package goja
 
 import (
+	"errors"
 	"io"
 	"regexp"
 	"slices"
@@ -291,10 +292,14 @@ func TestGoRegexpPrefixSkipBeginText(t *testing.T) {
 		"(?:^)(?:)foo", "(?:)^foo", "(?:(?:)|(?:))^foo", "(?:^){2}foo", "(?:^){1,}foo", "(?:^){0,1}foo", "(?:^\\b)foo", "(?:\\b^)foo", "(?:^)(?:^)foo", "(?:^$|^)foo",
 		"(?:^)?(?:^)foo", "(?:(^))foo", "(?<n>^)foo", "(?:^){1}(?:)foo", "(?:(?:^)+)foo", "(?:^)foo|(?:^)foo", "^foo|^foo", "(?:^fo)o", "(?:^f)(?:oo)", "a{0}^foo", "(?:a{0})^foo",
 		"x{0}(?:^)foo", "(?:^){1,1}foo", "(?:(?:^){1})foo", "(?:^|^){1}foo", "(?:^foo){1}", "(?:^f){1}oo", "(?:^){1}(?:^){1}foo", "(?:x{0}|x{0})^foo", "(?:x?){0}^foo",
-		"[]{0}^foo", "(?:a*){0}^foo", "(^){1}foo", "(?:x{0}^)foo", "foo(?:^){1}", "foo(?:^|x)", "(?:^){0}foo"}
-	inputs := []string{strings.Repeat("x", 70000) + "foo" + strings.Repeat("y", 100), "foo" + strings.Repeat("x", 70000) + "foo", strings.Repeat("x\n", 35000) + "foo"}
+		"[]{0}^foo", "(?:a*){0}^foo", "(^){1}foo", "(?:x{0}^)foo", "foo(?:^){1}", "foo(?:^|x)", "(?:^){0}foo",
+		"(?:^foo)+", "(?:(?:^){1}){1}foo", "(?:^){1}(?:foo|fob)", "(?:^(?:foo)){1}\\d?", "(?:(?:^)|(?:^)){1}foo", "(?:^){1,2}foo", "foo(?:^|x)?",
+		"(?:^|x){1}foo", "(?:^foo|^fob){1}", "(?:^){1}f(o)o", "(?:\\b^){1}foo", "(?:^\\B){1}foo", "(?:^$){0}foo", "(?:(?:^){0})foo", "(?:^){1}foo$",
+		"((?:^){1})foo", "(?:^){1}(?:)(?:)foo"}
+	inputs := []string{strings.Repeat("x", 70000) + "foo" + strings.Repeat("y", 100), "foo" + strings.Repeat("x", 70000) + "foo", strings.Repeat("x\n", 35000) + "foo",
+		strings.Repeat("foo ", 20000) + "\nfoo"}
 	vm := New().vm
-	for _, flags := range []string{"", "i", "s", "m", "u", "g"} {
+	for _, flags := range []string{"", "i", "s", "m", "u", "g", "mu", "y"} {
 		for _, pt := range pats {
 			p, err := compileRegexp(pt, flags)
 			if err != nil || p.regexpWrapper == nil {
@@ -309,6 +314,55 @@ func TestGoRegexpPrefixSkipBeginText(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestGoRegexpPrefixSkipCharged(t *testing.T) {
+	// The anchored copy of a pattern is compiled at its first match over a
+	// large input, and charged to the Runtime making it. A Runtime whose
+	// limit refuses the charge leaves the copy for the next to compile: the
+	// Runtimes sharing the cached template still skip to the prefix.
+	ResetRegexpCache()
+	defer ResetRegexpCache()
+	const script = `var re = new RegExp("x" + "\\p{L}".repeat(300) + "c", "u"); var big = "x1".repeat(40000);`
+	vm1 := New()
+	if _, err := vm1.RunString(script); err != nil {
+		t.Fatal(err)
+	}
+	skip := vm1.Get("re").ToObject(vm1).self.(*regexpObject).pattern.prefixSkip
+	if skip == nil || skip.size < 2*allocCheckInterval {
+		t.Fatalf("prefix skip %v", skip)
+	}
+	vm1.SetAllocationLimit(skip.size / 2)
+	if _, err := vm1.RunString(`re.test(big)`); !errors.Is(err, ErrAllocationLimitExceeded) {
+		t.Fatalf("err: %v", err)
+	}
+
+	vm2 := New()
+	if _, err := vm2.RunString(script); err != nil {
+		t.Fatal(err)
+	}
+	if vm2.Get("re").ToObject(vm2).self.(*regexpObject).pattern.prefixSkip != skip {
+		t.Fatal("the template is not shared")
+	}
+	before := vm2.AllocatedBytes()
+	v, err := vm2.RunString(`re.test(big) + " " + re.exec(big + "x" + "a".repeat(300) + "c").index`)
+	if err != nil || v.String() != "false 80000" {
+		t.Fatalf("%v %v", v, err)
+	}
+	if n := vm2.AllocatedBytes() - before; n < skip.size {
+		t.Errorf("charged %d bytes for an anchored copy of %d", n, skip.size)
+	}
+	if skip.get(vm2.vm) == nil {
+		t.Error("no anchored copy")
+	}
+	// Compiled, it is not charged again.
+	before = vm2.AllocatedBytes()
+	if _, err := vm2.RunString(`re.test(big)`); err != nil {
+		t.Fatal(err)
+	}
+	if n := vm2.AllocatedBytes() - before; n >= skip.size {
+		t.Errorf("charged %d bytes again", n)
 	}
 }
 
