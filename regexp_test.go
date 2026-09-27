@@ -2,6 +2,7 @@ package goja
 
 import (
 	"fmt"
+	"regexp"
 	"regexp/syntax"
 	"runtime"
 	"strconv"
@@ -1266,33 +1267,85 @@ func TestRegexpCacheSkipsOversizeTemplate(t *testing.T) {
 	}
 }
 
+// retainedHeap returns what f's result holds on the heap.
+func retainedHeap(f func() any) (any, int64) {
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	v := f()
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	return v, int64(after.HeapAlloc) - int64(before.HeapAlloc)
+}
+
+// distinctClasses returns n classes of k ranges each, all different.
+func distinctClasses(n, k int) string {
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		b.WriteByte('[')
+		base := 0x100 + (i*7919)%0x8000
+		for j := 0; j < k; j++ {
+			fmt.Fprintf(&b, `\u{%x}-\u{%x}`, base+4*j, base+4*j+1)
+		}
+		b.WriteByte(']')
+	}
+	return b.String()
+}
+
 func TestRegexpChargeTracksRetainedHeap(t *testing.T) {
-	// The memory charged for a compiled pattern is an estimate made before
-	// the engines compile it (see goProgSize and regexp2SizePerByte), which
-	// stays within a small factor of the heap the compiled pattern holds.
+	// The memory charged for a compiled pattern, and for the copy anchored
+	// at its start, is an estimate made before the engines compile it (see
+	// goRegexpSize and regexp2Estimate). It is an upper bound on the heap
+	// it holds, and within three times it for these kinds of pattern.
 	for _, tc := range []struct{ src, flags string }{
 		{strings.Repeat("a", 100000), ""},
+		{strings.Repeat("é😀", 20000), "u"},
+		{strings.Repeat(`[a-z]\d+`, 20000), "g"},
+		{strings.Repeat(`(?=a)b`, 20000), ""},
+		{strings.Repeat(`(?<=a)b`, 20000), ""},
+		{strings.Repeat(`(?=a)(?!b)(?<=c)(?<!d)`, 10000), ""},
+		{"(?=)" + strings.Repeat("abc", 30000), "i"},
+		{strings.Repeat(`(a)(b)`, 10000), ""},
+		{strings.Repeat(`(a)\1`, 10000), ""},
+		{strings.Repeat(`\bfoo\b`, 10000), ""},
+		{strings.Repeat(`(?:cat|dog|bird)`, 5000), "g"},
+		{strings.Repeat("abc", 30000), "gi"},
+		{distinctClasses(2000, 20), "gu"},
 		{"x" + strings.Repeat(`\p{L}`, 300) + "c", "u"},
 		{strings.Repeat(`[\p{L}\p{N}_]`, 100), "u"},
 		{strings.Repeat(`\P{Alphabetic}`, 100), "giu"},
-		{strings.Repeat(`[a-z]\d+`, 20000), "g"},
-		{strings.Repeat(`(?=a)b`, 20000), ""},
+		{strings.Repeat(`[\p{L}\p{M}\s'-]`, 100), "iu"},
+		{strings.Repeat(`\p{Lu}`, 100), "iu"},
 	} {
-		var before, after runtime.MemStats
-		runtime.GC()
-		runtime.ReadMemStats(&before)
-		p, err := compileRegexpUncached(nil, tc.src, tc.flags)
-		if err != nil {
+		// The first compile of a property fills the caches of its sets.
+		if _, err := compileRegexpUncached(nil, tc.src, tc.flags); err != nil {
 			t.Fatal(err)
 		}
-		runtime.GC()
-		runtime.ReadMemStats(&after)
-		retained := int64(after.HeapAlloc) - int64(before.HeapAlloc)
-		if retained < 512<<10 {
+		v, retained := retainedHeap(func() any {
+			p, err := compileRegexpUncached(nil, tc.src, tc.flags)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return p
+		})
+		p := v.(*regexpPattern)
+		if retained < 256<<10 {
 			t.Fatalf("/%.20s.../%s: retained %d bytes", tc.src, tc.flags, retained)
 		}
-		if p.size < retained/3 || p.size > 5*retained {
+		t.Logf("/%.20s.../%s: charged %d KB, holds %d KB (%.2f)", tc.src, tc.flags, p.size>>10, retained>>10, float64(p.size)/float64(retained))
+		if p.size < retained || p.size > 3*retained {
 			t.Errorf("/%.20s.../%s: charged %d bytes, the compiled pattern holds %d", tc.src, tc.flags, p.size, retained)
+		}
+		if p.prefixSkip != nil {
+			vm := New().vm
+			re, retained := retainedHeap(func() any { return p.prefixSkip.get(vm) })
+			if re.(*regexp.Regexp) == nil {
+				t.Fatal("no anchored copy")
+			}
+			t.Logf("  anchored copy: charged %d KB, holds %d KB (%.2f)", p.prefixSkip.size>>10, retained>>10, float64(p.prefixSkip.size)/float64(retained))
+			if n := p.prefixSkip.size; n < retained || n > 3*retained {
+				t.Errorf("/%.20s.../%s: charged %d bytes for the anchored copy, which holds %d", tc.src, tc.flags, n, retained)
+			}
 		}
 		runtime.KeepAlive(p)
 	}

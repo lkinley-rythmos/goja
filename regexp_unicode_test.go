@@ -585,27 +585,70 @@ func TestRegexpUnicodePropertiesLazyRegexp2(t *testing.T) {
 			if p.regexp2Wrapper == nil {
 				t.Fatal("regexp2 not compiled")
 			}
-			if n, want := vm.AllocatedBytes()-before, regexp2SizePerByte*int64(len(p.src)); n < want {
+			if n, want := vm.AllocatedBytes()-before, regexp2Size(p.src); n < want {
 				t.Errorf("charged %d bytes, regexp2's estimate is %d", n, want)
 			}
 		})
 	}
 }
 
+// regexp2Size is what regexp2 is charged for a pattern (see
+// regexp2Estimate).
+func regexp2Size(src string) int64 {
+	size, _ := regexp2Estimate(src, false)
+	return size
+}
+
 func TestRegexpTooLargeForGoRegexp(t *testing.T) {
-	// A pattern Go's regexp finds too large to compile gets V8's message for
-	// one too large, with the source as given.
+	// Go's regexp expands a repeat into copies of its operand, and refuses
+	// a pattern whose program would be too large; regexp2 compiles it
+	// instead (in about 0.1 ms, matching 4 MB in about 10 ms), as V8 does.
+	// One whose text would take regexp2 past the bound too is refused with
+	// V8's message, showing the source as given.
 	vm := New()
 	src := "(?:" + strings.Repeat("x", 4000) + "){1000}"
 	vm.Set("p", src)
-	_, err := vm.RunString(`new RegExp(p)`)
+	v, err := vm.RunString(`var re = new RegExp(p); var s = "x".repeat(4000000);
+		[re.test(s), re.test(s.slice(1)), re.exec("y" + s).index, s.split(re).length].join()`)
+	if err != nil || v.String() != "true,false,1,2" {
+		t.Fatalf("%v %v", v, err)
+	}
+	if p := vm.Get("re").ToObject(vm).self.(*regexpObject).pattern; p.regexpWrapper != nil || p.regexp2Wrapper == nil {
+		t.Error("not compiled with regexp2")
+	}
+	// Go's regexp would have 8 million instructions; regexp2 would parse
+	// 400 KB.
+	src = "(?:" + strings.Repeat("a.", 200000) + "){20}"
+	vm.Set("p", src)
+	_, err = vm.RunString(`new RegExp(p)`)
 	var ex *Exception
 	if !errors.As(err, &ex) {
 		t.Fatalf("err %.200v", err)
 	}
-	v := ex.Value().(*Object)
-	if name, msg := v.Get("name").String(), v.Get("message").String(); name != "SyntaxError" || msg != "Invalid regular expression: /"+src+"/: Regular expression too large" {
+	obj := ex.Value().(*Object)
+	if name, msg := obj.Get("name").String(), obj.Get("message").String(); name != "SyntaxError" || msg != "Invalid regular expression: /"+src+"/: Regular expression too large" {
 		t.Errorf("%s: %.100s", name, msg)
+	}
+}
+
+func TestRegexpUnicodePropertiesRegexp2Only(t *testing.T) {
+	// A pattern with a construct Go's regexp lacks is compiled by regexp2
+	// alone, and bounded by what it costs regexp2: \p{Dia} is 3 KB of
+	// ranges for Go's regexp, which 3,000 copies would take past its bound,
+	// but a name for regexp2. Node.js 18 compiles these in about 50 ms.
+	vm := New()
+	for _, src := range []string{
+		`new RegExp("(?=)" + "\\p{Dia}".repeat(3000), "u")`,
+		`new RegExp("\\p{Dia}".repeat(3000) + "(?=)", "u")`,
+		`new RegExp("(?!a)" + "\\p{Dia}".repeat(3000), "u")`,
+	} {
+		v, err := vm.RunString(`var re = ` + src + `; [re.test("́".repeat(3000)), re.test("́".repeat(2999) + "a")].join()`)
+		if err != nil || v.String() != "true,false" {
+			t.Errorf("%s: %v %v", src, v, err)
+		}
+	}
+	if _, err := vm.RunString(`new RegExp("\\p{Dia}".repeat(3000), "u")`); !regexpTooLarge(err) {
+		t.Errorf("Go's regexp: err %.200v", err)
 	}
 }
 

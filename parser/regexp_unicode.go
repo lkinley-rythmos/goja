@@ -641,19 +641,6 @@ func classCost(names []string, rest runeSet) int {
 	return 2*len(names) + len(rest)/2
 }
 
-// writeClassItems writes s as class items for an engine: the tables the
-// engine knows by name that it contains, and the rest as ranges. It returns
-// what the class costs the engine (see classUnits).
-func writeClassItems(b rangeWriter, s runeSet, regexp2 bool) int {
-	if len(s) == 0 && !regexp2 {
-		// The empty set; Go's regexp refuses an empty class.
-		b.WriteString(`\P{Any}`)
-		return 0
-	}
-	names, rest := s.cover(engineNamedTables(regexp2))
-	return writeNamesAndRanges(b, names, rest, regexp2)
-}
-
 func writeNamesAndRanges(b rangeWriter, names []string, rest runeSet, regexp2 bool) int {
 	for _, name := range names {
 		b.WriteString(`\p{`)
@@ -669,26 +656,38 @@ func writeNamesAndRanges(b rangeWriter, names []string, rest runeSet, regexp2 bo
 }
 
 // classUnits is what a class of the named tables and the ranges costs an
-// engine to compile, in units of maxRegexpExpansion: Go's regexp copies a
-// named table's ranges into the class and sorts them with the others,
-// regexp2 keeps the name; a range written out costs Go's regexp
-// expansionTextRange to parse, and regexp2 regexp2TextUnits.
+// engine to compile, in units of maxRegexpExpansion. regexp2 keeps a name
+// (expansionName), and parses the ranges written out (regexp2TextUnits).
+// Go's regexp parses a range written out in about 250 ns
+// (expansionTextRange), and copies a named table's ranges into the class;
+// unless the class is the one table, which is already sorted (about 60 ns
+// a range), it sorts the class's ranges, in about 300 ns a range of a table
+// and 450 ns a range written out. A table with a few ranges that sort after
+// it (as \p{Uppercase} is for Go's regexp) is overestimated: it takes about
+// 40 ns a range.
 func classUnits(names []string, rest runeSet, regexp2 bool) int {
 	if regexp2 {
-		return regexp2TextUnits(len(rest)/2) + len(names)
+		return regexp2TextUnits(len(rest)/2) + expansionName*len(names)
 	}
-	n := expansionTextRange * len(rest) / 2
+	if len(names) == 0 {
+		return expansionTextRange * len(rest) / 2
+	}
+	tables := 0
 	for _, name := range names {
-		n += expansionClassTable * namedTableRanges(name)
+		tables += namedTableRanges(name)
 	}
-	return n
+	if len(names) == 1 && len(rest) == 0 {
+		return 2 * tables / 3
+	}
+	return 3*tables + 9*len(rest)/4
 }
 
 // regexp2TextUnits is what a class of n ranges written out costs regexp2,
 // which sorts the class's ranges again for each one it adds: about
-// 1 µs + n/200 µs per range (600 ranges take 1.8 ms).
+// 1 µs + 0.5 µs a range + n/300 µs a range (600 ranges take 1.5 ms,
+// 2,000 ranges 10 ms).
 func regexp2TextUnits(n int) int {
-	return 20*n + n*n/11
+	return 10 + 5*n + n*n/30
 }
 
 // namedTableRanges returns the ranges of a table Go's regexp knows by name.
@@ -742,10 +741,12 @@ type propertyClassKey struct {
 }
 
 // propertyClass is a property's escape written for an engine, and what it
-// costs the engine (see classUnits).
+// costs the engine (see classUnits): for class items, the names and the
+// ranges written out, which the class costs regexp2 together.
 type propertyClass struct {
-	text  string
-	units int
+	text          string
+	units         int
+	names, ranges int
 }
 
 var propertyClassCache sync.Map // propertyClassKey -> propertyClass
@@ -759,20 +760,31 @@ func (p regexpProperty) class(negate, ignoreCase, regexp2 bool) propertyClass {
 	}
 	var b strings.Builder
 	n := writeClass(&b, p.charSet(negate, ignoreCase), regexp2)
-	v, _ := propertyClassCache.LoadOrStore(key, propertyClass{b.String(), n})
+	v, _ := propertyClassCache.LoadOrStore(key, propertyClass{text: b.String(), units: n})
 	return v.(propertyClass)
 }
 
-// classItems returns the property's escape as items of a class for Go's
-// regexp, matched case-sensitively (see writeClassItems).
-func (p regexpProperty) classItems(negate bool) propertyClass {
-	key := propertyClassKey{prop: p, negate: negate, items: true}
+// classItems returns the property's escape as items of a class for an
+// engine, matched case-sensitively: the tables the engine knows by name
+// that the set contains, and the rest as ranges.
+func (p regexpProperty) classItems(negate, regexp2 bool) propertyClass {
+	key := propertyClassKey{prop: p, negate: negate, regexp2: regexp2, items: true}
 	if v, ok := propertyClassCache.Load(key); ok {
 		return v.(propertyClass)
 	}
+	s := p.charSet(negate, false)
 	var b strings.Builder
-	n := writeClassItems(&b, p.charSet(negate, false), false)
-	v, _ := propertyClassCache.LoadOrStore(key, propertyClass{b.String(), n})
+	c := propertyClass{}
+	if len(s) == 0 && !regexp2 {
+		// The empty set; Go's regexp refuses an empty class.
+		b.WriteString(`\P{Any}`)
+	} else {
+		names, rest := s.cover(engineNamedTables(regexp2))
+		c.units = writeNamesAndRanges(&b, names, rest, regexp2)
+		c.names, c.ranges = len(names), len(rest)/2
+	}
+	c.text = b.String()
+	v, _ := propertyClassCache.LoadOrStore(key, c)
 	return v.(propertyClass)
 }
 

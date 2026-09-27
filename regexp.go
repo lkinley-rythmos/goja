@@ -236,6 +236,127 @@ func compileRegexp2(src string, multiline, dotAll, ignoreCase, unicode bool) (*r
 	return &regexp2Wrapper{rx: regexp2Pattern}, nil
 }
 
+// maxRegexp2Units bounds regexp2's compile time for a pattern whose cost
+// the parser has not bounded (see regexp2Estimate), in units of 100 ns:
+// about 100 ms, as the parser's bound (parser.TransformRegExp2).
+const maxRegexp2Units = 1 << 20
+
+// regexp2Estimate estimates, as upper bounds, the memory regexp2 holds for a
+// pattern, from its text, and its compile time in units of about 100 ns.
+// Measured on a 64-bit platform (a 32-bit one holds about half as much,
+// but for runs of literal runes): a literal character in a run holds about
+// 5 bytes (17 ignoring case), a node (an escape, an operator, the first literal of a run) 30 to
+// 60, a lookaround 64, a capturing group 125; a class is stored once
+// however often it is used, in under 2 bytes of its text. Compiling takes
+// under 0.5 µs a byte (0.9 µs ignoring case), and a class's ranges more
+// (see parser.regexp2TextUnits).
+func regexp2Estimate(src string, ignoreCase bool) (size int64, units int) {
+	const (
+		word      = int64(unsafe.Sizeof(uintptr(0)))
+		base      = 512 * word
+		node      = 5 * word / 2 // an operator, the first literal of a run
+		escape    = 5 * word     // an escape
+		capture   = 25 * word    // a capturing group
+		group     = 5 * word / 2 // a non-capturing group
+		around    = 8 * word     // a lookaround
+		classUse  = 5 * word     // a class where it is used
+		classByte = 2            // a byte of each distinct class's text
+	)
+	run := int64(10) // a further literal in a run
+	unitsByte := 5   // compile time, a byte outside classes
+	if ignoreCase {
+		run, unitsByte = 25*word/8, 10
+	}
+	size = base
+	var classes map[string]bool
+	inRun := false
+	for i := 0; i < len(src); {
+		c := src[i]
+		switch {
+		case c == '\\':
+			size += escape
+			units += 2 * unitsByte
+			inRun = false
+			i += 2
+			if i < len(src) && src[i] == '{' && strings.IndexByte("pPu", src[i-1]) >= 0 {
+				if j := strings.IndexByte(src[i:], '}'); j >= 0 {
+					units += (j + 1) * unitsByte
+					i += j + 1
+				}
+			}
+			continue
+		case c == '[':
+			// The class's items: an escape or a character, a range
+			// joining two.
+			j, items := i+1, 0
+			for j < len(src) && src[j] != ']' {
+				if src[j] == '\\' {
+					j++
+					if j+1 < len(src) && src[j+1] == '{' {
+						if k := strings.IndexByte(src[j:], '}'); k >= 0 {
+							j += k
+						}
+					}
+				} else if src[j] == '-' {
+					items--
+				}
+				items++
+				j++
+			}
+			cls := src[i:min(j+1, len(src))]
+			size += classUse
+			if classes == nil {
+				classes = make(map[string]bool)
+			}
+			if !classes[cls] {
+				classes[cls] = true
+				size += classByte * int64(len(cls))
+			}
+			n := max(items, 0)
+			units += 10 + 5*n + n*n/30
+			inRun = false
+			i = j + 1
+			continue
+		case c == '(':
+			// The group, and its syntax up to its contents.
+			k := 1
+			switch rest := src[i:]; {
+			case strings.HasPrefix(rest, "(?=") || strings.HasPrefix(rest, "(?!"):
+				size, k = size+around, 3
+			case strings.HasPrefix(rest, "(?<=") || strings.HasPrefix(rest, "(?<!"):
+				size, k = size+around, 4
+			case strings.HasPrefix(rest, "(?<"):
+				size, k = size+capture, max(strings.IndexByte(rest, '>')+1, 1)
+			case strings.HasPrefix(rest, "(?"):
+				size, k = size+group, max(strings.IndexByte(rest, ':')+1, 1)
+			default:
+				size += capture
+			}
+			units += k * unitsByte
+			inRun = false
+			i += k
+			continue
+		case strings.IndexByte("|)*+?{}.^$", c) >= 0:
+			size += node
+			inRun = false
+		default:
+			if inRun {
+				size += run
+			} else {
+				size += node
+			}
+			inRun = true
+			_, w := utf8.DecodeRuneInString(src[i:])
+			units += w * unitsByte
+			i += w
+			continue
+		}
+		units += unitsByte
+		i++
+	}
+	return
+}
+
 // createRegexp2 compiles regexp2 for a match Go's regexp cannot make, for
 // a pattern that has Go's regexp. The parser bounds what regexp2's compile
 // costs for every pattern (see parser.TransformRegExp2), so it takes as
@@ -245,7 +366,8 @@ func (p *regexpPattern) createRegexp2(vm *vm) {
 	if p.regexp2Wrapper != nil {
 		return
 	}
-	vm.r.countAlloc(regexp2SizePerByte * int64(len(p.src)))
+	size, _ := regexp2Estimate(p.src, p.ignoreCase)
+	vm.r.countAlloc(size)
 	rx, err := compileRegexp2(p.src, p.multiline, p.dotAll, p.ignoreCase, p.unicode)
 	if err != nil {
 		// At this point the regexp should have been successfully converted to re2, if it fails now, it's a bug.

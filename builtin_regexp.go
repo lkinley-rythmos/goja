@@ -281,24 +281,74 @@ func compileRegexpFor(r *Runtime, patternStr, flags string) (*regexpPattern, err
 	return template.clone(), nil
 }
 
-// goProgSize estimates the memory of Go's program for a simplified parsed
-// pattern (what regexp.Compile builds from): an instruction per literal
-// character, class or operator, and a class's ranges (in a slice that append
-// may have left slack in). A repeat is simplified into copies of its
-// operand, which are walked as many times.
-func goProgSize(re *syntax.Regexp) int64 {
-	const inst = int64(unsafe.Sizeof(syntax.Inst{}))
-	n := inst
-	switch re.Op {
-	case syntax.OpLiteral:
-		n = int64(len(re.Rune)) * inst
-	case syntax.OpCharClass:
-		n += 2 * int64(len(re.Rune)) * int64(unsafe.Sizeof(rune(0)))
+// goRegexpSize estimates, as an upper bound, the memory Go's regexp holds
+// for a simplified parsed pattern (what regexp.Compile builds from) and its
+// source, and for the copy anchored at its start (see anchoredRegexp). The
+// program has an instruction per literal character, class or operator, in
+// a slice that append may have left slack in, and a capture is two. An
+// instruction for a class or literal points into the parsed pattern: to a
+// node, which it keeps, for up to two runes, or to the node's runes (in a
+// slice with slack too). A repeat is simplified into copies of its operand,
+// which are walked as many times but kept once. The Regexp holds the source
+// and its literal prefix, twice. A program of under 1,000 instructions
+// anchored at its start is also compiled one-pass, which copies each
+// instruction with a table and each class's runes.
+func goRegexpSize(re *syntax.Regexp, src string) (prog, anchored int64) {
+	const (
+		inst = int64(unsafe.Sizeof(syntax.Inst{}))
+		node = int64(unsafe.Sizeof(syntax.Regexp{}))
+		// A rune in a class or literal: 4 bytes, with slack.
+		runeBytes = 10
+		// A one-pass instruction: the instruction, its table and slack.
+		onePassInst = 100
+		// A rune one-pass copies, with its share of the table.
+		onePassRune = 8
+	)
+	seen := make(map[*syntax.Regexp]bool)
+	var insts, nodes, runes int64
+	var walk func(re *syntax.Regexp)
+	walk = func(re *syntax.Regexp) {
+		kept := false
+		switch re.Op {
+		case syntax.OpLiteral:
+			insts += int64(len(re.Rune))
+			kept = true
+		case syntax.OpCharClass:
+			insts++
+			kept = true
+		case syntax.OpCapture:
+			insts += 2
+			nodes += int64(unsafe.Sizeof("")) // its name
+		default:
+			insts++
+		}
+		if kept && !seen[re] {
+			seen[re] = true
+			if len(re.Rune) <= len(re.Rune0) {
+				nodes += node
+			} else {
+				runes += int64(len(re.Rune))
+			}
+		}
+		for _, sub := range re.Sub {
+			walk(sub)
+		}
 	}
-	for _, sub := range re.Sub {
-		n += goProgSize(sub)
+	walk(re)
+	first := re
+	for (first.Op == syntax.OpConcat || first.Op == syntax.OpCapture) && len(first.Sub) > 0 {
+		first = first.Sub[0]
 	}
-	return n
+	var prefix int64
+	if first.Op == syntax.OpLiteral {
+		prefix = int64(len(string(first.Rune)))
+	}
+	prog = insts*inst*3/2 + nodes + runeBytes*runes + int64(len(src)) + 2*prefix + 1024
+	anchored = prog
+	if insts < 1000 {
+		anchored += onePassInst*insts + onePassRune*runes
+	}
+	return
 }
 
 // hasBeginText reports whether a simplified pattern has ^ (BeginText, or
@@ -317,11 +367,6 @@ func hasBeginText(re *syntax.Regexp) bool {
 	}
 	return false
 }
-
-// regexp2SizePerByte estimates regexp2's code from its pattern: about five
-// bytes per literal character, and less for a class, whose ranges take a
-// fraction of their text (and which regexp2 stores once when repeated).
-const regexp2SizePerByte = 5
 
 // chargeRegexp charges r, if any, memory a pattern's compilation is about
 // to hold.
@@ -428,7 +473,8 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 		if err1 == nil {
 			// The program is charged before it is built.
 			simplified := parsed.Simplify()
-			size = goProgSize(simplified)
+			var anchoredSize int64
+			size, anchoredSize = goRegexpSize(simplified, re2Str)
 			chargeRegexp(r, size)
 			var pattern *regexp.Regexp
 			pattern, err1 = regexp.Compile(re2Str)
@@ -439,17 +485,21 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 				// a pattern with ^ cannot be tried at an occurrence of its
 				// prefix.
 				if prefix, _ := pattern.LiteralPrefix(); prefix != "" && !hasBeginText(simplified) {
-					prefixSkip = &anchoredRegexp{src: re2Str, size: size}
+					prefixSkip = &anchoredRegexp{src: re2Str, size: anchoredSize}
 				}
 			}
 		}
 		if err1 != nil {
 			var syntaxError *syntax.Error
 			if errors.As(err1, &syntaxError) && syntaxError.Code == syntax.ErrLarge {
-				err = errors.New("Invalid regular expression: /" + source + "/: Regular expression too large")
-				return
-			}
-			if !errors.As(err1, &syntaxError) || syntaxError.Code != syntax.ErrInvalidRepeatSize {
+				// Go's regexp expands repeats, which regexp2 does not: a
+				// pattern too large for Go's regexp may be small for
+				// regexp2, which then compiles it (see below), as V8 does.
+				if _, units := regexp2Estimate(regexp2Str, ignoreCase); units > maxRegexp2Units {
+					err = errors.New("Invalid regular expression: /" + source + "/: Regular expression too large")
+					return
+				}
+			} else if !errors.As(err1, &syntaxError) || syntaxError.Code != syntax.ErrInvalidRepeatSize {
 				err = fmt.Errorf("Invalid regular expression (re2): %s (%v)", re2Str, err1)
 				return
 			}
@@ -466,7 +516,7 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 		// regexp2 is the only engine for patterns Go's regexp rejects, and
 		// the engine used for any match starting at lastIndex > 0 (global or
 		// sticky). Build it once here, on the template, so clones share it.
-		size2 := regexp2SizePerByte * int64(len(regexp2Str))
+		size2, _ := regexp2Estimate(regexp2Str, ignoreCase)
 		chargeRegexp(r, size2)
 		size += size2
 		wrapper2, err = compileRegexp2(regexp2Str, multiline, dotAll, ignoreCase, unicode)
@@ -476,6 +526,9 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 		}
 	}
 
+	// The template holds regexp2's pattern.
+	size += int64(len(regexp2Str))
+	chargeRegexp(r, int64(len(regexp2Str)))
 	p = &regexpPattern{
 		src:            regexp2Str,
 		regexpWrapper:  wrapper,
