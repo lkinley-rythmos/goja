@@ -1550,6 +1550,9 @@ func (r *Runtime) RunProgram(p *Program) (result Value, err error) {
 		if x := recover(); x != nil {
 			if ex := asUncatchableException(x); ex != nil {
 				err = ex
+				if !recursive {
+					vm.resetAfterAbort()
+				}
 				if len(vm.callStack) == 0 {
 					r.leaveAbrupt()
 				}
@@ -2636,7 +2639,8 @@ func AssertConstructor(v Value) (Constructor, bool) {
 
 func (r *Runtime) runWrapped(f func()) (err error) {
 	depth := 0
-	if len(r.vm.callStack) > 0 {
+	outermost := len(r.vm.callStack) == 0
+	if !outermost {
 		depth = r.vm.nativeDepth
 	}
 	r.vm.nativeDepth = depth
@@ -2645,6 +2649,9 @@ func (r *Runtime) runWrapped(f func()) (err error) {
 		if x := recover(); x != nil {
 			if ex := asUncatchableException(x); ex != nil {
 				err = ex
+				if outermost {
+					r.vm.resetAfterAbort()
+				}
 				if len(r.vm.callStack) == 0 {
 					r.leaveAbrupt()
 				}

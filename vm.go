@@ -6112,3 +6112,25 @@ func (y *yieldMarker) String() string {
 		return "unknown"
 	}
 }
+
+// resetAfterAbort empties the VM's stacks after an uncatchable exception
+// (an interrupt, the allocation limit, a stack overflow) ended the
+// outermost run. Such an exception unwinds Go frames without the cleanup
+// the VM does for a JavaScript one, so a generator or an async function
+// it went through leaves its frames behind; a later run would then take
+// the recursive path, and the interrupt flag and job queue would stay.
+func (vm *vm) resetAfterAbort() {
+	clear(vm.callStack)
+	vm.callStack = vm.callStack[:0]
+	clear(vm.tryStack)
+	vm.tryStack = vm.tryStack[:0]
+	clear(vm.iterStack)
+	vm.iterStack = vm.iterStack[:0]
+	clear(vm.refStack)
+	vm.refStack = vm.refStack[:0]
+	clear(vm.stack)
+	vm.stack = vm.stack[:0]
+	vm.sp, vm.sb, vm.pc, vm.args = 0, -1, 0, 0
+	vm.prg, vm.stash, vm.privEnv, vm.newTarget, vm.result = nil, &vm.r.global.stash, nil, nil, nil
+	vm.nativeDepth = 0
+}

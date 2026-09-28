@@ -1,6 +1,7 @@
 package goja
 
 import (
+	"errors"
 	"runtime"
 	"testing"
 	"weak"
@@ -58,5 +59,50 @@ func TestNativeCallbackFrameNotRetained(t *testing.T) {
 			}
 			runtime.KeepAlive(vm)
 		})
+	}
+}
+
+// TestInterruptLeavesNoFrames: an interrupt inside a generator or an
+// async function body unwinds Go frames the VM does not clean up; after
+// it ends the outermost run, the runtime's stacks must be empty, the
+// interrupt cleared, and the next run must start afresh. (They kept one
+// to two frames of each kind, growing with every interrupted run, and the
+// next run was interrupted at once.)
+func TestInterruptLeavesNoFrames(t *testing.T) {
+	for _, src := range []string{
+		`function* g(){ stop(); while(true){} } g().next()`,
+		`async function f(){ await 1; stop(); while(true){} } f()`,
+		`function* g(){ stop(); while(true){} } [1].forEach(function(){ g().next() })`,
+		`function* g(){ try { stop(); while(true){} } finally { [1].map(function(){}) } } for (var x of g()) {}`,
+	} {
+		for _, viaCallable := range []bool{false, true} {
+			vm := New()
+			vm.Set("stop", func() { vm.Interrupt("stop") })
+			for i := 0; i < 5; i++ {
+				var err error
+				if viaCallable {
+					var fn Value
+					fn, err = vm.RunString(`(function () { ` + src + ` })`)
+					if err != nil {
+						t.Fatal(err)
+					}
+					call, _ := AssertFunction(fn)
+					_, err = call(nil)
+				} else {
+					_, err = vm.RunString(src)
+				}
+				var ie *InterruptedError
+				if !errors.As(err, &ie) || ie.Value() != "stop" {
+					t.Fatalf("%s: run %d: %v", src, i, err)
+				}
+				v := vm.vm
+				if len(v.callStack) != 0 || len(v.tryStack) != 0 || len(v.iterStack) != 0 || len(v.refStack) != 0 || v.sp != 0 {
+					t.Fatalf("%s (callable %v): run %d left call %d, try %d, iter %d, ref %d, sp %d", src, viaCallable, i, len(v.callStack), len(v.tryStack), len(v.iterStack), len(v.refStack), v.sp)
+				}
+			}
+			if v, err := vm.RunString(`[1, 2].map(function (x) { return x * 2 }).join()`); err != nil || v.String() != "2,4" {
+				t.Fatalf("%s: after the interrupts: %v, %v", src, v, err)
+			}
+		}
 	}
 }
