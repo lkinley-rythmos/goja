@@ -76,7 +76,7 @@ func TestTransformRegExpCostLimits(t *testing.T) {
 		{term: `\W`, flags: "i", limit: 30000, past: "too large"},
 		{term: `.`, limit: 104000, past: "too large"},
 		{term: `.`, flags: "i", limit: 104000, past: "too large"},
-		{term: `\b`, limit: 112000, past: "too large"},
+		{term: `\b`, limit: 16000, past: "too large"},
 		{term: `x{2,5}`, limit: 28000, past: "too large"},
 		{term: `\u0041`, limit: 310000, past: "too large"},
 		{term: `(?=x)`, limit: 87000, accepted: "regexp2", past: "too large"},

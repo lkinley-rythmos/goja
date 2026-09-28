@@ -43,6 +43,7 @@ var (
 	costSpaceEsc  = termCost{goUnits: 25, goInsts: 1, r2: 7, r2Fold: 45} // \s \S
 	costDot       = termCost{goUnits: 12, goInsts: 1, r2: 3, r2Fold: 15}
 	costAssertion = termCost{goUnits: 11, goInsts: 1, r2: 6, r2Fold: 6}
+	costBoundary  = termCost{goUnits: 11, goInsts: 1, r2: 90, r2Fold: 100} // \b \B (see regexp2Boundary)
 	costCapture   = termCost{goUnits: 13, goInsts: 2, r2: 15, r2Fold: 25}
 	costNamed     = termCost{goUnits: 13, goInsts: 2, r2: 45, r2Fold: 65}
 	costGroup     = termCost{goUnits: 20, r2: 12, r2Fold: 20}
@@ -298,6 +299,31 @@ const (
 	regexp2FoldNonWord = `(?-i:[^\w\u017f\u212a])`
 )
 
+// regexp2Boundary returns what regexp2 is given for \b (or \B, negated):
+// its own takes letters, marks, digits and connector punctuation of any
+// script for word characters, where ECMAScript takes those of \w, and with
+// the u and i flags U+017F and U+212A, whose case variants are.
+func (self *_RegExp_parser) regexp2Boundary(negated bool) string {
+	word := `[0-9A-Z_a-z]`
+	if self.unicode && self.ignoreCase {
+		word = `[0-9A-Z_a-z\u017f\u212a]`
+	}
+	var b strings.Builder
+	if self.ignoreCase {
+		b.WriteString(`(?-i:`)
+	}
+	b.WriteString(`(?:(?<=` + word + `)`)
+	if negated {
+		b.WriteString(`(?=` + word + `)|(?<!` + word + `)(?!` + word + `))`)
+	} else {
+		b.WriteString(`(?!` + word + `)|(?<!` + word + `)(?=` + word + `))`)
+	}
+	if self.ignoreCase {
+		b.WriteByte(')')
+	}
+	return b.String()
+}
+
 // nonUnicodeClassAtom returns the set a class atom stands for without the u
 // flag (with Annex B's escapes), and whether it is a class escape.
 func nonUnicodeClassAtom(atom string, ignoreCase bool) (set runeSet, isClass bool) {
@@ -342,7 +368,7 @@ func nonUnicodeClassAtom(atom string, ignoreCase bool) (set runeSet, isClass boo
 		if len(atom) > 2 {
 			return single(rune(atom[2] % 32))
 		}
-		return single('c')
+		return single('\\')
 	case 'x', 'u':
 		n := 2
 		if c == 'u' {

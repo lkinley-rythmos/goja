@@ -7,6 +7,48 @@ import (
 	"testing"
 )
 
+// ecmaFindAllSubmatchIndex is FindAllStringSubmatchIndex with the matches
+// ECMAScript's global match has and Go's drops: an empty match right after
+// a non-empty one. The pattern must not look before the position it
+// matches at (see hasStartContext).
+func ecmaFindAllSubmatchIndex(re *regexp.Regexp, s string, limit int) [][]int {
+	var all [][]int
+	for _, m := range re.FindAllStringSubmatchIndex(s, -1) {
+		if n := len(all); n > 0 {
+			prev := all[n-1]
+			if e := prev[1]; e > prev[0] && m[0] > e {
+				if loc := re.FindStringSubmatchIndex(s[e:]); loc != nil && loc[1] == 0 {
+					for i := range loc {
+						if loc[i] >= 0 {
+							loc[i] += e
+						}
+					}
+					all = append(all, loc)
+				}
+			}
+		}
+		all = append(all, m)
+	}
+	if n := len(all); n > 0 {
+		if prev := all[n-1]; prev[1] > prev[0] {
+			if e := prev[1]; e <= len(s) {
+				if loc := re.FindStringSubmatchIndex(s[e:]); loc != nil && loc[1] == 0 {
+					for i := range loc {
+						if loc[i] >= 0 {
+							loc[i] += e
+						}
+					}
+					all = append(all, loc)
+				}
+			}
+		}
+	}
+	if limit >= 0 && len(all) > limit {
+		all = all[:limit]
+	}
+	return all
+}
+
 func TestGlobalMatch_IncrementalSameAsFindAll(t *testing.T) {
 	inputs := []string{
 		"", "a", "aaa", "abcabc", "a,b,,c,", "héllo wörld ☃ x", "\xff\xfeab\xff", "aa\nbb\n\ncc",
@@ -30,7 +72,7 @@ func TestGlobalMatch_IncrementalSameAsFindAll(t *testing.T) {
 		for _, in := range inputs {
 			for _, limit := range []int{-1, 0, 1, 2, 5} {
 				for _, sticky := range []bool{false, true} {
-					want := submatchesToRegexpResults(wrapped.FindAllStringSubmatchIndex(in, limit), wrapped.SubexpNames())
+					want := submatchesToRegexpResults(ecmaFindAllSubmatchIndex(wrapped, in, limit), wrapped.SubexpNames())
 					if sticky {
 						pos := 0
 						for i, r := range want {
@@ -38,7 +80,7 @@ func TestGlobalMatch_IncrementalSameAsFindAll(t *testing.T) {
 								want = want[:i]
 								break
 							}
-							pos = r.indexes[1]
+							pos = nextStickyPos(in, r.indexes)
 						}
 					}
 					got := p.regexpWrapper.findAllIncremental(vm, in, limit, sticky, p.prefixSkip)

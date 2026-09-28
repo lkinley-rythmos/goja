@@ -103,13 +103,16 @@ func convertRegexpToUnicode(patternStr string) string {
 func convertRegexpToUtf16(patternStr string) string {
 	var sb strings.Builder
 	pos := 0
-	var prevRune rune
+	escaped := false
 	for i := 0; i < len(patternStr); {
 		r, size := utf8.DecodeRuneInString(patternStr[i:])
 		if r > 0xFFFF {
-			sb.WriteString(patternStr[pos:i])
-			if prevRune == '\\' {
-				sb.WriteRune('\\')
+			if escaped {
+				// An identity escape of the first surrogate: the character
+				// itself.
+				sb.WriteString(patternStr[pos : i-1])
+			} else {
+				sb.WriteString(patternStr[pos:i])
 			}
 			first, second := utf16.EncodeRune(r)
 			sb.WriteString(`\u`)
@@ -119,7 +122,7 @@ func convertRegexpToUtf16(patternStr string) string {
 			pos = i + size
 		}
 		i += size
-		prevRune = r
+		escaped = r == '\\' && !escaped
 	}
 	if pos > 0 {
 		sb.WriteString(patternStr[pos:])
@@ -371,6 +374,68 @@ func hasBeginText(re *syntax.Regexp) bool {
 	return false
 }
 
+// matchesEmpty reports whether a simplified pattern may match the empty
+// string (its assertions taken to hold).
+func matchesEmpty(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpNoMatch, syntax.OpCharClass, syntax.OpAnyCharNotNL, syntax.OpAnyChar:
+		return false
+	case syntax.OpLiteral:
+		return len(re.Rune) == 0
+	case syntax.OpCapture, syntax.OpPlus:
+		return matchesEmpty(re.Sub[0])
+	case syntax.OpStar, syntax.OpQuest:
+		return true
+	case syntax.OpRepeat:
+		return re.Min == 0 || matchesEmpty(re.Sub[0])
+	case syntax.OpConcat:
+		for _, sub := range re.Sub {
+			if !matchesEmpty(sub) {
+				return false
+			}
+		}
+		return true
+	case syntax.OpAlternate:
+		for _, sub := range re.Sub {
+			if matchesEmpty(sub) {
+				return true
+			}
+		}
+		return false
+	}
+	return true // the empty match and the assertions
+}
+
+// hasWordBoundary reports whether a simplified pattern has \b or \B.
+func hasWordBoundary(re *syntax.Regexp) bool {
+	if re.Op == syntax.OpWordBoundary || re.Op == syntax.OpNoWordBoundary {
+		return true
+	}
+	for _, sub := range re.Sub {
+		if hasWordBoundary(sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// onlyEmpty reports whether a simplified pattern matches only the empty
+// string.
+func onlyEmpty(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpCharClass, syntax.OpAnyCharNotNL, syntax.OpAnyChar:
+		return false
+	case syntax.OpLiteral:
+		return len(re.Rune) == 0
+	}
+	for _, sub := range re.Sub {
+		if !onlyEmpty(sub) {
+			return false
+		}
+	}
+	return true
+}
+
 // chargeRegexp charges r, if any, memory a pattern's compilation is about
 // to hold.
 func chargeRegexp(r *Runtime, n int64) {
@@ -397,7 +462,7 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 	var global, ignoreCase, multiline, dotAll, sticky, unicode bool
 	var wrapper *regexpWrapper
 	var wrapper2 *regexp2Wrapper
-	var goStartContext bool
+	var goStartContext, goEmptyAfterMatch, goFoldBoundary bool
 	var prefixSkip *anchoredRegexp
 	var size int64
 	source := patternStr
@@ -490,6 +555,8 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 			if err1 == nil {
 				wrapper = (*regexpWrapper)(pattern)
 				goStartContext = hasStartContext(parsed)
+				goEmptyAfterMatch = matchesEmpty(simplified) && !onlyEmpty(simplified)
+				goFoldBoundary = unicode && ignoreCase && hasWordBoundary(simplified)
 				// LiteralPrefix leaves out a ^ the pattern begins with, so
 				// a pattern with ^ cannot be tried at an occurrence of its
 				// prefix.
@@ -542,18 +609,20 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 	size += int64(len(regexp2Str))
 	chargeRegexp(r, int64(len(regexp2Str)))
 	p = &regexpPattern{
-		src:            regexp2Str,
-		regexpWrapper:  wrapper,
-		goStartContext: goStartContext,
-		prefixSkip:     prefixSkip,
-		regexp2Wrapper: wrapper2,
-		global:         global,
-		ignoreCase:     ignoreCase,
-		multiline:      multiline,
-		dotAll:         dotAll,
-		sticky:         sticky,
-		unicode:        unicode,
-		size:           size,
+		src:               regexp2Str,
+		regexpWrapper:     wrapper,
+		goStartContext:    goStartContext,
+		goEmptyAfterMatch: goEmptyAfterMatch,
+		goFoldBoundary:    goFoldBoundary,
+		prefixSkip:        prefixSkip,
+		regexp2Wrapper:    wrapper2,
+		global:            global,
+		ignoreCase:        ignoreCase,
+		multiline:         multiline,
+		dotAll:            dotAll,
+		sticky:            sticky,
+		unicode:           unicode,
+		size:              size,
 	}
 	return
 }
@@ -1315,23 +1384,15 @@ func (r *Runtime) regexpproto_stdSplitter(call FunctionCall) Value {
 	}
 
 	for _, result := range results {
-		if result.indexes[0] == result.indexes[1] {
-			// FIXME Ugh, this is a hack
-			if result.indexes[0] == 0 || result.indexes[0] == targetLength {
-				continue
-			}
+		// ECMAScript's split tries a match at each position before the end
+		// of the input, and takes none that ends where the last piece ended
+		// (an empty match there); the matches it takes are those of a global
+		// match.
+		if result.indexes[0] >= targetLength || result.indexes[1] == lastIndex {
+			continue
 		}
-
-		if lastIndex != result.indexes[0] {
-			valueArray = append(valueArray, s.Substring(lastIndex, result.indexes[0]))
-			found++
-		} else if lastIndex == result.indexes[0] {
-			if lastIndex != -1 {
-				valueArray = append(valueArray, stringEmpty)
-				found++
-			}
-		}
-
+		valueArray = append(valueArray, s.Substring(lastIndex, result.indexes[0]))
+		found++
 		lastIndex = result.indexes[1]
 		if found == limit {
 			goto RETURN
@@ -1355,11 +1416,7 @@ func (r *Runtime) regexpproto_stdSplitter(call FunctionCall) Value {
 	}
 
 	if found != limit {
-		if lastIndex != targetLength {
-			valueArray = append(valueArray, s.Substring(lastIndex, targetLength))
-		} else {
-			valueArray = append(valueArray, stringEmpty)
-		}
+		valueArray = append(valueArray, s.Substring(lastIndex, targetLength))
 	}
 
 RETURN:

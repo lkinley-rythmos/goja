@@ -345,7 +345,12 @@ func TestConvertRegexpToUtf16(t *testing.T) {
 	if s := convertRegexpToUtf16(`𐀀`); s != `\ud800\udc00` {
 		t.Fatal(s)
 	}
-	if s := convertRegexpToUtf16(`\𐀀`); s != `\\\ud800\udc00` {
+	// An identity escape of the first surrogate is the character itself
+	// (Node.js: /\𐀀/.test("𐀀")).
+	if s := convertRegexpToUtf16(`\𐀀`); s != `\ud800\udc00` {
+		t.Fatal(s)
+	}
+	if s := convertRegexpToUtf16(`\\𐀀`); s != `\\\ud800\udc00` {
 		t.Fatal(s)
 	}
 }
@@ -1323,7 +1328,7 @@ func TestRegexpChargeTracksRetainedHeap(t *testing.T) {
 		{"(?=)" + strings.Repeat("abc", 30000), "i"},
 		{strings.Repeat(`(a)(b)`, 10000), ""},
 		{strings.Repeat(`(a)\1`, 10000), ""},
-		{strings.Repeat(`\bfoo\b`, 10000), ""},
+		{strings.Repeat(`\bfoo\b`, 5000), ""},
 		{strings.Repeat(`(?:cat|dog|bird)`, 5000), "g"},
 		{strings.Repeat("abc", 30000), "gi"},
 		{distinctClasses(2000, 20), "gu"},

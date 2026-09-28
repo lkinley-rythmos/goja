@@ -62,9 +62,9 @@ func TestTransformRegExpUnicodeProperties(t *testing.T) {
 		{pattern: `\p{Any}`, unicode: true, re2: `[\x{0}-\x{10ffff}]`, regexp2: `[\u{0}-\u{10ffff}]`},
 		// With a construct Go's regexp lacks, only the regexp2 pattern is made.
 		{pattern: `(?=a)\p{Lu}\P{sc=Grek}`, unicode: true, regexp2: `(?=a)\p{Lu}[^\p{Greek}]`, incompatibleWith: "re2: Invalid (?=) <lookahead>"},
-		// Without the u flag, \p is the letter p.
-		{pattern: `\p{L}`, re2: `p{L}`},
-		{pattern: `[\P]`, re2: `[P]`},
+		// Without the u flag, \p is the letter p, for regexp2 too.
+		{pattern: `\p{L}`, re2: `p{L}`, regexp2: `p{L}`},
+		{pattern: `[\P]`, re2: `[P]`, regexp2: `[P]`},
 	} {
 		re2, r2, err := TransformRegExp2(tc.pattern, false, tc.unicode, tc.icase)
 		if tc.incompatibleWith != "" {
@@ -146,8 +146,9 @@ func TestTransformRegExpUnicodeSyntax(t *testing.T) {
 		if _, ok := err.(RegexpSyntaxError); !ok || err.Error() != want {
 			t.Errorf("%s: err %v, want %s", tc.pattern, err, want)
 		}
-		// Without the u flag, none of these is an error, except the ranges.
-		if _, _, err := TransformRegExp2(tc.pattern, false, false, false); err != nil && !strings.Contains(tc.err, "class") {
+		// Without the u flag, none of these is an error, except the ranges
+		// and the named references of a pattern with named groups.
+		if _, _, err := TransformRegExp2(tc.pattern, false, false, false); err != nil && !strings.Contains(tc.err, "class") && !strings.Contains(tc.err, "named") {
 			if _, ok := err.(RegexpSyntaxError); ok {
 				t.Errorf("%s without u: %v", tc.pattern, err)
 			}

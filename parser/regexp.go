@@ -295,6 +295,9 @@ func (self *_RegExp_parser) scanTerm() {
 		esc := self.chr
 		self.countEscape()
 		self.scanEscape(false)
+		if (esc == 'b' || esc == 'B') && self.err == nil {
+			self.writeRegexp2(start, self.chrOffset, self.regexp2Boundary(esc == 'B'))
+		}
 		if self.ignoreCase && self.err == nil {
 			// See termCost.
 			switch esc {
@@ -342,7 +345,7 @@ func (self *_RegExp_parser) scanTerm() {
 func (self *_RegExp_parser) countEscape() {
 	switch self.chr {
 	case 'b', 'B':
-		self.count(costAssertion)
+		self.count(costBoundary)
 	case 's', 'S':
 		self.count(costSpaceEsc)
 		if self.ignoreCase && self.goUsed() {
@@ -383,6 +386,9 @@ func (self *_RegExp_parser) scanNonUnicodeTermChar() {
 		self.pass()
 		self.prev = termNone
 	case '*', '+', '?':
+		if !self.checkQuantifiable(false) {
+			return
+		}
 		switch self.chr {
 		case '*':
 			self.countQuantifier(0, -1)
@@ -393,7 +399,11 @@ func (self *_RegExp_parser) scanNonUnicodeTermChar() {
 		}
 		self.passQuantifier(self.offset)
 	case '{':
+		// Annex B: a { that does not start a quantifier is itself.
 		if min, max, end, ok := self.intervalQuantifier(); ok {
+			if !self.checkQuantifiable(max >= 0 && max < min) {
+				return
+			}
 			self.countQuantifier(min, max)
 			self.passQuantifier(end)
 			return
@@ -470,7 +480,8 @@ func (self *_RegExp_parser) checkQuantifiable(outOfOrder bool) bool {
 		self.syntaxError("numbers out of order in {} quantifier")
 		return false
 	}
-	if self.prev != termAtom {
+	if self.prev != termAtom && !(self.prev == termLookahead && !self.unicode) {
+		// Annex B: without the u flag a lookahead may be repeated.
 		self.syntaxError("Invalid quantifier")
 		return false
 	}
@@ -558,7 +569,7 @@ func (self *_RegExp_parser) scanGroup() {
 				self.fatal("Invalid group")
 				return
 			}
-		} else if self.unicode && str[0] == '?' {
+		} else if str[0] == '?' {
 			self.fatal("Invalid group")
 			return
 		} else {
@@ -592,21 +603,23 @@ func (self *_RegExp_parser) scanGroupName() {
 		}
 		self.pass()
 	}
-	if self.unicode {
-		name, valid := decodeGroupName(self.str[start:self.chrOffset])
-		if self.chr != '>' || !valid {
-			self.syntaxError("Invalid capture group name")
-			return
-		}
-		if self.namesSeen[name] {
-			self.syntaxError("Duplicate capture group name")
-			return
-		}
-		if self.namesSeen == nil {
-			self.namesSeen = make(map[string]bool)
-		}
-		self.namesSeen[name] = true
+	name, valid := decodeGroupName(self.str[start:self.chrOffset])
+	if self.chr != '>' || !valid {
+		self.syntaxError("Invalid capture group name")
+		return
 	}
+	if strings.IndexByte(self.str[start:self.chrOffset], '\\') >= 0 {
+		// regexp2 takes no escapes in a name.
+		self.writeRegexp2(start, self.chrOffset, name)
+	}
+	if self.namesSeen[name] {
+		self.syntaxError("Duplicate capture group name")
+		return
+	}
+	if self.namesSeen == nil {
+		self.namesSeen = make(map[string]bool)
+	}
+	self.namesSeen[name] = true
 	if !supported {
 		self.error(false, "Unsupported group name")
 	}
@@ -708,14 +721,14 @@ func (self *_RegExp_parser) scanBracket() {
 	}
 	if strings.HasPrefix(str, "[]") {
 		// [] -- Empty character class
-		self.writeString("[^\u0000-\U0001FFFF]")
+		self.writeString(`[^\x00-\x{10FFFF}]`)
 		self.offset += 1
 		self.read()
 		return
 	}
 
 	if strings.HasPrefix(str, "[^]") {
-		self.writeString("[\u0000-\U0001FFFF]")
+		self.writeString(`[\x00-\x{10FFFF}]`)
 		self.offset += 2
 		self.read()
 		return
@@ -788,15 +801,16 @@ func (self *_RegExp_parser) scanBracket() {
 		self.pass()
 		rightStart := self.chrOffset
 		self.scanClassAtom()
-		if self.ignoreCase && self.err == nil {
-			lo, _ := nonUnicodeClassAtom(left, true)
-			hi, _ := nonUnicodeClassAtom(self.str[rightStart:self.chrOffset], true)
-			if lo[0] <= hi[0] {
-				self.classItem(runeSet{lo[0], hi[0]}, false, false)
-				continue
-			}
+		if self.err != nil {
+			return
 		}
-		self.classItems++
+		lo, _ := nonUnicodeClassAtom(left, true)
+		hi, _ := nonUnicodeClassAtom(self.str[rightStart:self.chrOffset], true)
+		if lo[0] > hi[0] {
+			self.syntaxError("Range out of order in character class")
+			return
+		}
+		self.classItem(runeSet{lo[0], hi[0]}, false, false)
 	}
 	if self.chr != ']' {
 		self.fatal("Unterminated character class")
@@ -1065,49 +1079,12 @@ func (self *_RegExp_parser) scanEscape(inClass bool) {
 	var length, base uint32
 	switch self.chr {
 
-	case '0', '1', '2', '3', '4', '5', '6', '7':
+	case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
 		if self.unicode {
 			self.scanUnicodeDecimalEscape(inClass)
 			return
 		}
-		var value int64
-		size := 0
-		for {
-			digit := int64(digitValue(self.chr))
-			if digit >= 8 {
-				// Not a valid digit
-				break
-			}
-			value = value*8 + digit
-			self.read()
-			size += 1
-		}
-		if size == 1 { // The number of characters read
-			if value != 0 {
-				// An invalid backreference
-				self.error(false, "re2: Invalid \\%d <backreference>", value)
-				return
-			}
-			self.passString(offset-1, self.chrOffset)
-			return
-		}
-		tmp := []byte{'\\', 'x', '0', 0}
-		if value >= 16 {
-			tmp = tmp[0:2]
-		} else {
-			tmp = tmp[0:3]
-		}
-		tmp = strconv.AppendInt(tmp, value, 16)
-		self.write(tmp)
-		return
-
-	case '8', '9':
-		if self.unicode {
-			self.scanUnicodeDecimalEscape(inClass)
-			return
-		}
-		self.read()
-		self.error(false, "re2: Invalid \\%s <backreference>", self.str[offset:self.chrOffset])
+		self.scanLegacyDecimalEscape(inClass)
 		return
 
 	case 'x':
@@ -1128,7 +1105,9 @@ func (self *_RegExp_parser) scanEscape(inClass bool) {
 			self.scanPropertyEscape(inClass)
 			return
 		}
+		// An identity escape (see the default case).
 		self.pass()
+		self.writeRegexp2(offset-1, self.chrOffset, self.str[offset:self.chrOffset])
 		return
 
 	case 'b':
@@ -1140,8 +1119,14 @@ func (self *_RegExp_parser) scanEscape(inClass bool) {
 		fallthrough
 
 	case 'B':
-		if inClass && self.unicode {
-			self.syntaxError("Invalid escape")
+		if inClass {
+			if self.unicode {
+				self.syntaxError("Invalid escape")
+				return
+			}
+			// An identity escape (see the default case).
+			self.pass()
+			self.writeRegexp2(offset-1, self.chrOffset, "B")
 			return
 		}
 		fallthrough
@@ -1171,7 +1156,16 @@ func (self *_RegExp_parser) scanEscape(inClass bool) {
 				self.syntaxError("Invalid Unicode escape")
 				return
 			}
-			self.writeByte('c')
+			if inClass && (self.chr >= '0' && self.chr <= '9' || self.chr == '_') {
+				// Annex B: in a class, a digit or _ is a control letter too.
+				self.writeLegacyChar(offset-1, self.offset, self.chr%32)
+				self.read()
+				return
+			}
+			// Annex B: the backslash is itself, and the c is read next.
+			self.writeString(`\\`)
+			self.writeRegexp2(offset-1, offset, `\\`)
+			self.seek(offset)
 			return
 		}
 		tmp := []byte{'\\', 'x', '0', 0}
@@ -1207,20 +1201,23 @@ func (self *_RegExp_parser) scanEscape(inClass bool) {
 			self.scanUnicodeNamedReference(inClass)
 			return
 		}
-		// The rules are too complicated to implement here, so we pass it on to regexp2
-		self.error(false, "named group back-reference")
-		self.read()
+		// Annex B: \k is a named reference if the pattern has named groups,
+		// and an identity escape if not.
+		if self.scanCaptures(); len(self.captureNames) > 0 {
+			self.scanUnicodeNamedReference(inClass)
+			return
+		}
+		self.pass()
+		self.writeRegexp2(offset-1, self.chrOffset, "k")
 		return
 	default:
-		if self.unicode {
-			if self.chr == -1 {
-				self.syntaxError("\\ at end of pattern")
-				return
-			}
-			if !isSyntaxCharacter(self.chr) && !(inClass && self.chr == '-') {
-				self.syntaxError("Invalid escape")
-				return
-			}
+		if self.chr == -1 {
+			self.syntaxError("\\ at end of pattern")
+			return
+		}
+		if self.unicode && !isSyntaxCharacter(self.chr) && !(inClass && self.chr == '-') {
+			self.syntaxError("Invalid escape")
+			return
 		}
 		// $ is an identifier character, so we have to have
 		// a special case for it here
@@ -1230,8 +1227,10 @@ func (self *_RegExp_parser) scanEscape(inClass bool) {
 			self.read()
 			return
 		}
-		// Unescape the character for re2
+		// Unescape the character for re2, and for regexp2, which takes
+		// some escaped letters for classes or assertions (\A, \Z, \G, \e).
 		self.pass()
+		self.writeRegexp2(offset-1, self.chrOffset, self.str[offset:self.chrOffset])
 		return
 	}
 
@@ -1299,7 +1298,52 @@ skip:
 		}
 		return
 	}
+	// Annex B: an identity escape of x or u.
 	self.passString(offset, self.chrOffset)
+	self.writeRegexp2(offset-1, self.chrOffset, self.str[offset:self.chrOffset])
+}
+
+// scanLegacyDecimalEscape scans \ and a digit without the u flag (Annex B):
+// outside a class, a backreference if its number is at most the number of
+// capturing groups; else an identity escape of 8 or 9, or a legacy octal
+// escape of up to three digits and at most 0377.
+func (self *_RegExp_parser) scanLegacyDecimalEscape(inClass bool) {
+	offset := self.chrOffset
+	if !inClass && self.chr != '0' {
+		value, i := 0, offset
+		for i < self.length && self.str[i] >= '0' && self.str[i] <= '9' {
+			if value < 1<<30 {
+				value = value*10 + int(self.str[i]-'0')
+			}
+			i++
+		}
+		self.scanCaptures()
+		if value <= self.captureCount {
+			self.seek(i)
+			self.error(false, "re2: Invalid \\%d <backreference>", value)
+			return
+		}
+	}
+	if self.chr >= '8' {
+		self.pass()
+		self.writeRegexp2(offset-1, self.chrOffset, self.str[offset:self.chrOffset])
+		return
+	}
+	first := self.chr - '0'
+	value := first
+	self.read()
+	for n := 1; n < 3 && self.chr >= '0' && self.chr <= '7' && (n == 1 || first <= 3); n++ {
+		value = value*8 + self.chr - '0'
+		self.read()
+	}
+	self.writeLegacyChar(offset-1, self.chrOffset, value)
+}
+
+// writeLegacyChar writes, for both engines, the character that the escape
+// from start to end stands for (without the u flag).
+func (self *_RegExp_parser) writeLegacyChar(start, end int, r rune) {
+	self.writeString(fmt.Sprintf(`\x{%x}`, r))
+	self.writeRegexp2(start, end, fmt.Sprintf(`\u%04x`, r))
 }
 
 // scanUnicodeDecimalEscape scans \0 and backreferences with the u flag.
@@ -1374,6 +1418,9 @@ func (self *_RegExp_parser) scanUnicodeNamedReference(inClass bool) {
 	if !found {
 		self.syntaxError("Invalid named capture referenced")
 		return
+	}
+	if strings.IndexByte(self.str[self.offset:self.offset+end], '\\') >= 0 {
+		self.writeRegexp2(self.offset, self.offset+end, name)
 	}
 	self.seek(self.offset + end + 1)
 	self.error(false, "named group back-reference")

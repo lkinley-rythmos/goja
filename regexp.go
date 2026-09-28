@@ -86,6 +86,20 @@ type regexpPattern struct {
 	// be run from the middle of the input.
 	goStartContext bool
 
+	// goEmptyAfterMatch is set when the Go regexp can match both the empty
+	// string and a non-empty one, so that a global match may have an empty
+	// match right after a non-empty one, which ECMAScript keeps and Go's
+	// FindAll drops.
+	goEmptyAfterMatch bool
+
+	// goFoldBoundary is set when the Go regexp has \b or \B, with the u and
+	// i flags, under which ECMAScript takes U+017F and U+212A for word
+	// characters (their case variants are), which Go's regexp does not: a
+	// match on an input with them is made with regexp2 (see
+	// hasFoldWordChars).
+	goFoldBoundary bool
+	foldScan       foldScan
+
 	// prefixSkip is the Go regexp anchored at its start, for a large input,
 	// which is searched for the pattern's literal prefix and tried at each
 	// occurrence (see findStringSubmatchIndex); nil when the pattern has no
@@ -499,11 +513,43 @@ func buildUTF8PosMap(s unicodeString) (positionMap, string) {
 	return pm, sb.String()
 }
 
+// foldScan is the last input hasFoldWordChars scanned, and what it found.
+type foldScan struct {
+	start *uint16
+	n     int
+	has   bool
+}
+
+// hasFoldWordChars reports whether a pattern with goFoldBoundary is to be
+// matched on s with regexp2: when s has U+017F or U+212A. The last input
+// scanned is remembered, for the matches of a loop over one input.
+func (p *regexpPattern) hasFoldWordChars(s String) bool {
+	if !p.goFoldBoundary {
+		return false
+	}
+	_, u := devirtualizeString(s)
+	if len(u) == 0 {
+		return false
+	}
+	if p.foldScan.start == &u[0] && p.foldScan.n == len(u) {
+		return p.foldScan.has
+	}
+	has := false
+	for _, c := range u[1:] {
+		if c == 0x17f || c == 0x212a {
+			has = true
+			break
+		}
+	}
+	p.foldScan = foldScan{start: &u[0], n: len(u), has: has}
+	return has
+}
+
 func (p *regexpPattern) findSubmatchIndex(vm *vm, s String, start int) regexpResult {
 	if p.regexpWrapper == nil {
 		return p.regexp2Wrapper.findSubmatchIndex(vm, s, start, p.unicode, p.global || p.sticky)
 	}
-	if start != 0 {
+	if start != 0 || p.hasFoldWordChars(s) {
 		// Unfortunately Go's regexp library does not allow starting from an arbitrary position.
 		// If we just drop the first _start_ characters of the string the assertions (^, $, \b and \B) will not
 		// work correctly.
@@ -528,10 +574,14 @@ func (p *regexpPattern) findAllSubmatchIndex(vm *vm, s String, start int, limit 
 	// A pattern that looks before its match position cannot be resumed
 	// mid-input with Go's regexp; for a large input, regexp2 (which resumes
 	// with the whole input as context) collects the matches instead.
-	if start == 0 && !(p.goStartContext && limit != 1 && s.Length() > goFindAllIncrementalAbove/3) {
+	//
+	// Matches are collected one at a time (see findAllIncremental) when an
+	// empty one may follow a non-empty one; with ^, \b or \B that cannot be
+	// done on Go's regexp, which regexp2 collects instead.
+	if start == 0 && !(p.goStartContext && limit != 1 && (s.Length() > goFindAllIncrementalAbove/3 || p.goEmptyAfterMatch)) && !p.hasFoldWordChars(s) {
 		a, u := devirtualizeString(s)
 		if u == nil {
-			return p.regexpWrapper.findAllSubmatchIndex(vm, string(a), limit, sticky, p.prefixSkip)
+			return p.regexpWrapper.findAllSubmatchIndex(vm, string(a), limit, sticky, p.prefixSkip, p.goEmptyAfterMatch)
 		}
 		if limit == 1 {
 			result := p.regexpWrapper.findSubmatchIndexUnicode(vm, u, p.unicode)
@@ -549,7 +599,7 @@ func (p *regexpPattern) findAllSubmatchIndex(vm *vm, s String, start int, limit 
 			vm.r.countAlloc(int64(u.Length()) * (int64(unsafe.Sizeof(positionMapItem{})) + 3))
 			pm, str := buildUTF8PosMap(u)
 			if pm != nil {
-				res := p.regexpWrapper.findAllSubmatchIndex(vm, str, limit, sticky, p.prefixSkip)
+				res := p.regexpWrapper.findAllSubmatchIndex(vm, str, limit, sticky, p.prefixSkip, p.goEmptyAfterMatch)
 				for _, result := range res {
 					for i, idx := range result.indexes {
 						result.indexes[i] = pm.get(idx)
@@ -586,6 +636,8 @@ func (p *regexpPattern) clone() *regexpPattern {
 		ret.regexp2Wrapper = p.regexp2Wrapper.clone()
 	}
 	ret.goStartContext = p.goStartContext
+	ret.goEmptyAfterMatch = p.goEmptyAfterMatch
+	ret.goFoldBoundary = p.goFoldBoundary
 	ret.prefixSkip = p.prefixSkip
 	ret.size = p.size
 	return ret
@@ -758,7 +810,10 @@ func (r *regexp2Wrapper) findAllSubmatchIndexUTF16(vm *vm, s String, start, limi
 			if result.indexes[0] != start {
 				break
 			}
-			start = result.indexes[1]
+			start = advanceStringIndex(s, result.indexes[1], false)
+			if result.indexes[1] != result.indexes[0] {
+				start = result.indexes[1]
+			}
 		}
 
 		vm.r.countAlloc(result.allocSize() - allocSizeRegexpResult)
@@ -849,7 +904,10 @@ func (r *regexp2Wrapper) findAllSubmatchIndexUnicode(vm *vm, s unicodeString, st
 			if result.indexes[0] != start {
 				break
 			}
-			start = result.indexes[1]
+			start = advanceStringIndex(s, result.indexes[1], true)
+			if result.indexes[1] != result.indexes[0] {
+				start = result.indexes[1]
+			}
 		}
 
 		vm.r.countAlloc(result.allocSize() - allocSizeRegexpResult)
@@ -946,9 +1004,13 @@ func (r *regexp2Wrapper) clone() *regexp2Wrapper {
 	}
 }
 
-func (r *regexpWrapper) findAllSubmatchIndex(vm *vm, s string, limit int, sticky bool, prefixSkip *anchoredRegexp) []regexpResult {
+// findAllSubmatchIndex collects the matches of a global match. Go's
+// FindAll collects the matches ECMAScript does, but for an empty match right
+// after a non-empty one, which it drops: when there may be one
+// (emptyAfterMatch), the matches are collected one at a time.
+func (r *regexpWrapper) findAllSubmatchIndex(vm *vm, s string, limit int, sticky bool, prefixSkip *anchoredRegexp, emptyAfterMatch bool) []regexpResult {
 	wrapped := (*regexp.Regexp)(r)
-	if len(s) > goFindAllIncrementalAbove {
+	if len(s) > goFindAllIncrementalAbove || emptyAfterMatch {
 		return r.findAllIncremental(vm, s, limit, sticky, prefixSkip)
 	}
 	results := chargeResults(vm, submatchesToRegexpResults(wrapped.FindAllStringSubmatchIndex(s, limit), wrapped.SubexpNames()))
@@ -959,25 +1021,39 @@ func (r *regexpWrapper) findAllSubmatchIndex(vm *vm, s string, limit int, sticky
 				if result.indexes[0] != pos {
 					return results[:i]
 				}
-				pos = result.indexes[1]
+				pos = nextStickyPos(s, result.indexes)
 			}
 		}
 	}
 	return results
 }
 
+// nextStickyPos returns where the next match of a sticky global match must
+// start, after the match m: where it ends, or the character after an empty
+// one.
+func nextStickyPos(s string, m []int) int {
+	if m[1] != m[0] {
+		return m[1]
+	}
+	if _, width := utf8.DecodeRuneInString(s[m[1]:]); width > 0 {
+		return m[1] + width
+	}
+	return m[1] + 1
+}
+
 // findAllIncremental returns what findAllSubmatchIndex returns for a pattern
 // without goStartContext, finding one match at a time: it is
 // FindAllStringSubmatchIndex's loop (regexp.(*Regexp).allMatches), with each
 // search run on the rest of the input, which for such a pattern matches
-// exactly as a search from that position in the whole input does.
+// exactly as a search from that position in the whole input does, and an
+// empty match right after a non-empty one kept, as ECMAScript keeps it.
 func (r *regexpWrapper) findAllIncremental(vm *vm, s string, limit int, sticky bool, prefixSkip *anchoredRegexp) []regexpResult {
 	wrapped := (*regexp.Regexp)(r)
 	names := wrapped.SubexpNames()
 	var results []regexpResult
 	end := len(s)
 	stickyPos := 0
-	for pos, prevMatchEnd, n := 0, -1, 1; pos <= end && limit != 0; n++ {
+	for pos, n := 0, 1; pos <= end && limit != 0; n++ {
 		if n%interruptCheckInterval == 0 {
 			vm.checkInterrupt()
 		}
@@ -990,13 +1066,9 @@ func (r *regexpWrapper) findAllIncremental(vm *vm, s string, limit int, sticky b
 				m[i] += pos
 			}
 		}
-		accept := true
-		if m[1] == pos {
-			// An empty match. One right after the previous match is not
-			// allowed; either way, move on by a character.
-			if m[0] == prevMatchEnd {
-				accept = false
-			}
+		if m[1] == m[0] {
+			// An empty match: move on by a character.
+			pos = m[1]
 			if _, width := utf8.DecodeRuneInString(s[pos:]); width > 0 {
 				pos += width
 			} else {
@@ -1005,15 +1077,11 @@ func (r *regexpWrapper) findAllIncremental(vm *vm, s string, limit int, sticky b
 		} else {
 			pos = m[1]
 		}
-		prevMatchEnd = m[1]
-		if !accept {
-			continue
-		}
 		if sticky {
 			if m[0] != stickyPos {
 				break
 			}
-			stickyPos = m[1]
+			stickyPos = nextStickyPos(s, m)
 		}
 		vm.r.countAlloc(int64(cap(m)) * int64(unsafe.Sizeof(0)))
 		results = appendResult(vm, results, regexpResult{indexes: m, groups: names})

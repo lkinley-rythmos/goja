@@ -167,23 +167,10 @@ var (
 		"test/language/literals/string/S7.8.4_A4.3_T2.js":             true,
 		"test/language/literals/string/S7.8.4_A4.3_T1.js":             true,
 
-		// Regexp
-		"test/language/literals/regexp/invalid-range-negative-lookbehind.js":    true,
-		"test/language/literals/regexp/invalid-range-lookbehind.js":             true,
-		"test/language/literals/regexp/invalid-optional-negative-lookbehind.js": true,
-		"test/language/literals/regexp/invalid-optional-lookbehind.js":          true,
-
-		// unicode full case folding
-		"test/built-ins/RegExp/unicode_full_case_folding.js": true,
-
 		// FIXME bugs
 
 		// Left-hand side as a CoverParenthesizedExpression
 		"test/language/expressions/assignment/fn-name-lhs-cover.js": true,
-
-		// Character \ missing from character class [\c]
-		"test/annexB/built-ins/RegExp/RegExp-invalid-control-escape-character-class.js": true,
-		"test/annexB/built-ins/RegExp/RegExp-control-escape-russian-letter.js":          true,
 
 		"test/built-ins/RegExp/nullable-quantifier.js":               true,
 		"test/built-ins/RegExp/lookahead-quantifier-match-groups.js": true,
@@ -318,16 +305,6 @@ var (
 		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Tifinagh.js":             true,
 		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Tirhuta.js":              true,
 		"test/built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Toto.js":                 true,
-
-		// Extended Unicode group names in non-unicode regexp
-		"test/built-ins/RegExp/named-groups/non-unicode-property-names-valid.js": true,
-
-		// \k without groups and Go regex engine
-		"test/annexB/built-ins/RegExp/named-groups/non-unicode-malformed.js": true,
-
-		// Duplicate group name and Go regex engine
-		"test/language/literals/regexp/named-groups/invalid-duplicate-groupspecifier.js":   true,
-		"test/language/literals/regexp/named-groups/invalid-duplicate-groupspecifier-2.js": true,
 	}
 
 	featuresBlackList = []string{

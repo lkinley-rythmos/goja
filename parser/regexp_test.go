@@ -45,9 +45,9 @@ func TestRegExp(t *testing.T) {
 
 			test(`(?!test)`, "re2: Invalid (?!) <lookahead>")
 
-			test(`\1`, "re2: Invalid \\1 <backreference>")
+			test(`(a)\1`, "re2: Invalid \\1 <backreference>")
 
-			test(`\8`, "re2: Invalid \\8 <backreference>")
+			test(`\8(a)(b)(c)(d)(e)(f)(g)(h)`, "re2: Invalid \\8 <backreference>")
 
 		}
 
@@ -69,11 +69,11 @@ func TestRegExp(t *testing.T) {
 
 			test(`\abc`, `abc`)
 
-			test(`\a\b\c`, `a\bc`)
+			test(`\a\b\c`, `a\b\\c`)
 
 			test(`\x`, `x`)
 
-			test(`\c`, `c`)
+			test(`\c`, `\\c`)
 
 			test(`\cA`, `\x01`)
 
@@ -105,17 +105,17 @@ func TestRegExp(t *testing.T) {
 
 			test("[[]", "[[]")
 
-			test("\\101", "\\x41")
+			test("\\101", "\\x{41}")
 
-			test("\\51", "\\x29")
+			test("\\51", "\\x{29}")
 
-			test("\\051", "\\x29")
+			test("\\051", "\\x{29}")
 
-			test("\\175", "\\x7d")
+			test("\\175", "\\x{7d}")
 
-			test("\\0", "\\0")
+			test("\\0", "\\x{0}")
 
-			test("\\04", "\\x04")
+			test("\\04", "\\x{4}")
 
 			test(`(.)^`, "("+Re2Dot+")^")
 
@@ -123,7 +123,7 @@ func TestRegExp(t *testing.T) {
 
 			test(`[G-b]`, `[G-b]`)
 
-			test(`[G-b\0]`, `[G-b\0]`)
+			test(`[G-b\0]`, `[G-b\x{0}]`)
 
 			test(`\x20`, `\x20`)
 
@@ -135,9 +135,9 @@ func TestRegExp(t *testing.T) {
 
 			test(`(a(bc))`, `(a(bc))`)
 
-			test(`[]`, "[^\u0000-\U0001FFFF]")
+			test(`[]`, `[^\x00-\x{10FFFF}]`)
 
-			test(`[^]`, "[\u0000-\U0001FFFF]")
+			test(`[^]`, `[\x00-\x{10FFFF}]`)
 
 			test(`\s+`, "["+WhitespaceChars+"]+")
 

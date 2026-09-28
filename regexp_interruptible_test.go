@@ -91,7 +91,7 @@ func TestGoRegexpLargeInputSameAsWhole(t *testing.T) {
 			}
 			// Every match, one at a time.
 			if !p.goStartContext {
-				want := wrapped.FindAllStringSubmatchIndex(in, 50)
+				want := ecmaFindAllSubmatchIndex(wrapped, in, 50)
 				got := p.regexpWrapper.findAllIncremental(vm, in, 50, false, p.prefixSkip)
 				if len(got) != len(want) {
 					t.Errorf("/%s/%s on input %d: %d matches, want %d", name, pt.flags, i, len(got), len(want))
