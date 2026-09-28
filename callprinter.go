@@ -113,6 +113,9 @@ func (p *callPrinter) visit(e ast.Expression) {
 			}
 			if v != nil {
 				p.find(v, true)
+			} else {
+				// A hole.
+				p.print("(intermediate value)")
 			}
 		}
 		p.print("]")

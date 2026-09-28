@@ -2239,6 +2239,46 @@ func (p getPropRefRecvStrict) exec(vm *vm) {
 	vm.pc++
 }
 
+// getPropRefSet and the like are the references of destructuring targets,
+// which are set without being read.
+type getPropRefSet unistring.String
+
+func (p getPropRefSet) exec(vm *vm) {
+	vm.refStack = append(vm.refStack, &objStrRef{
+		base: vm.toSetBaseName(vm.stack[vm.sp-1], unistring.String(p)),
+		name: unistring.String(p),
+	})
+	vm.sp--
+	vm.pc++
+}
+
+type getPropRefSetStrict unistring.String
+
+func (p getPropRefSetStrict) exec(vm *vm) {
+	vm.refStack = append(vm.refStack, &objStrRef{
+		base:   vm.toSetBaseName(vm.stack[vm.sp-1], unistring.String(p)),
+		name:   unistring.String(p),
+		strict: true,
+	})
+	vm.sp--
+	vm.pc++
+}
+
+type getElemRefSet struct {
+	strict bool
+}
+
+func (g getElemRefSet) exec(vm *vm) {
+	obj := vm.toSetBase(vm.stack[vm.sp-2], vm.stack[vm.sp-1])
+	vm.refStack = append(vm.refStack, &objRef{
+		base:   obj,
+		name:   vm.stack[vm.sp-1],
+		strict: g.strict,
+	})
+	vm.sp -= 2
+	vm.pc++
+}
+
 type setProp unistring.String
 
 func (p setProp) exec(vm *vm) {

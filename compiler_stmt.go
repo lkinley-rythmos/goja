@@ -836,7 +836,11 @@ func (c *compiler) emitPatternAssign(target, init compiledExpr) {
 			c.emit(putValueP)
 		}
 	} else {
+		// The target is only set, and V8's error for its base being null or
+		// undefined says so.
+		c.refForSet = true
 		target.emitRef()
+		c.refForSet = false
 		c.emitExpr(init, true)
 		c.emit(putValueP)
 	}

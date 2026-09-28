@@ -103,6 +103,9 @@ type compiledYieldExpression struct {
 	baseCompiledExpr
 	arg      compiledExpr
 	delegate bool
+	// opaque is set for a yield* operand V8's error does not name (not a
+	// name or a literal).
+	opaque bool
 }
 
 type funcType uint8
@@ -299,6 +302,12 @@ func (c *compiler) compileExpression(v ast.Expression) compiledExpr {
 		r := &compiledYieldExpression{
 			arg:      c.compileExpression(v.Argument),
 			delegate: v.Delegate,
+		}
+		switch v.Argument.(type) {
+		case nil, *ast.Identifier, *ast.NullLiteral, *ast.BooleanLiteral, *ast.NumberLiteral, *ast.StringLiteral,
+			*ast.TemplateLiteral, *ast.ObjectLiteral, *ast.ArrayLiteral, *ast.RegExpLiteral:
+		default:
+			r.opaque = true
 		}
 		r.init(c, v.Yield)
 		return r
@@ -932,10 +941,17 @@ func (e *compiledDotExpr) emitGetter(putOnStack bool) {
 }
 
 func (e *compiledDotExpr) emitRef() {
+	forSet := e.c.refForSet
+	e.c.refForSet = false
 	e.left.emitGetter(true)
-	if e.c.scope.strict {
+	switch {
+	case forSet && e.c.scope.strict:
+		e.c.emit(getPropRefSetStrict(e.name))
+	case forSet:
+		e.c.emit(getPropRefSet(e.name))
+	case e.c.scope.strict:
 		e.c.emit(getPropRefStrict(e.name))
-	} else {
+	default:
 		e.c.emit(getPropRef(e.name))
 	}
 }
@@ -1030,11 +1046,16 @@ func (e *compiledBracketExpr) emitGetter(putOnStack bool) {
 }
 
 func (e *compiledBracketExpr) emitRef() {
+	forSet := e.c.refForSet
+	e.c.refForSet = false
 	e.left.emitGetter(true)
 	e.member.emitGetter(true)
-	if e.c.scope.strict {
+	switch {
+	case forSet:
+		e.c.emit(getElemRefSet{strict: e.c.scope.strict})
+	case e.c.scope.strict:
 		e.c.emit(getElemRefStrict)
-	} else {
+	default:
 		e.c.emit(getElemRef)
 	}
 }
@@ -3671,13 +3692,18 @@ func (e *compiledYieldExpression) emitGetter(putOnStack bool) {
 		e.c.emit(loadUndef)
 	}
 	if putOnStack {
-		if e.delegate {
+		switch {
+		case e.delegate && e.opaque:
+			e.c.emit(yieldDelegateResOpaque)
+		case e.delegate:
 			e.c.emit(yieldDelegateRes)
-		} else {
+		default:
 			e.c.emit(yieldRes)
 		}
 	} else {
-		if e.delegate {
+		if e.delegate && e.opaque {
+			e.c.emit(yieldDelegateOpaque)
+		} else if e.delegate {
 			e.c.emit(yieldDelegate)
 		} else {
 			e.c.emit(yield)

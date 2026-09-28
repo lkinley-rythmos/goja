@@ -3035,7 +3035,10 @@ func (ir *iteratorRecord) returnIter() {
 	}
 	retMethod := toMethod(ir.iterator.self.getStr("return", nil))
 	if retMethod != nil {
-		ir.iterator.runtime.toObject(retMethod(FunctionCall{This: ir.iterator}))
+		r := ir.iterator.runtime
+		if v := retMethod(FunctionCall{This: ir.iterator}); !isObjectValue(v) {
+			panic(r.newTypeErrorString("Iterator result " + r.noSideEffectsToString(v) + " is not an object"))
+		}
 	}
 	ir.iterator = nil
 	ir.next = nil

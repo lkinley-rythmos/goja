@@ -33,33 +33,42 @@ func (r *Runtime) noSideEffectsToString(v Value) string {
 }
 
 func (r *Runtime) objectNoSideEffectsToString(o *Object) string {
+	if s, ok := r.objectNoSideEffectsToMaybeString(o); ok {
+		return s
+	}
+	return "[object " + o.self.className() + "]"
+}
+
+// objectNoSideEffectsToMaybeString is objectNoSideEffectsToString without
+// its last resort, [object Class] (V8's NoSideEffectsToMaybeString).
+func (r *Runtime) objectNoSideEffectsToMaybeString(o *Object) (string, bool) {
 	if _, ok := o.self.(*proxyObject); ok {
-		return "#<Object>"
+		return "#<Object>", true
 	}
 	if f, ok := o.self.(funcObjectImpl); ok {
-		return f.source().String()
+		return f.source().String(), true
 	}
 	if o.self.className() == classError {
 		name := dataPropertyString(o, "name", "Error")
 		msg := dataPropertyString(o, "message", "")
 		switch {
 		case name == "":
-			return msg
+			return msg, true
 		case msg == "":
-			return name
+			return name, true
 		}
-		return name + ": " + msg
+		return name + ": " + msg, true
 	}
 	if ts, ok := dataProperty(o, "toString").(*Object); ok && ts == r.objectProtoToString() {
 		if ctor, ok := dataProperty(o, "constructor").(*Object); ok {
 			if _, ok := ctor.self.assertCallable(); ok {
 				if name, ok := dataProperty(ctor, "name").(String); ok && name.Length() > 0 {
-					return "#<" + name.String() + ">"
+					return "#<" + name.String() + ">", true
 				}
 			}
 		}
 	}
-	return "[object " + o.self.className() + "]"
+	return "", false
 }
 
 // objectProtoToString is Object.prototype.toString as the runtime created
@@ -141,13 +150,33 @@ func nullishName(v Value) string {
 // readNullishError is V8's error for reading a property of null or
 // undefined.
 func (r *Runtime) readNullishError(base Value, key Value) *Object {
-	return r.newTypeErrorString("Cannot read properties of " + nullishName(base) + " (reading '" + r.noSideEffectsToString(key) + "')")
+	if key == SymIterator {
+		// V8 words reading Symbol.iterator as getting an iterator.
+		return r.newTypeErrorString(defaultCallSite(base) + " is not iterable (cannot read property Symbol(Symbol.iterator))")
+	}
+	return r.newTypeErrorString("Cannot read properties of " + nullishName(base) + r.keyClause(" (reading '", key))
+}
+
+// keyClause is V8's clause naming key in an error for null or undefined,
+// or nothing for an object it cannot render without running a script (an
+// array, a date, one with its own toString).
+func (r *Runtime) keyClause(prefix string, key Value) string {
+	s := ""
+	if o, ok := key.(*Object); ok {
+		var ok bool
+		if s, ok = r.objectNoSideEffectsToMaybeString(o); !ok {
+			return ""
+		}
+	} else {
+		s = r.noSideEffectsToString(key)
+	}
+	return prefix + s + "')"
 }
 
 // setNullishError is V8's error for setting a property of null or
 // undefined.
 func (r *Runtime) setNullishError(base Value, key Value) *Object {
-	return r.newTypeErrorString("Cannot set properties of " + nullishName(base) + " (setting '" + r.noSideEffectsToString(key) + "')")
+	return r.newTypeErrorString("Cannot set properties of " + nullishName(base) + r.keyClause(" (setting '", key))
 }
 
 // newTypeErrorString is a TypeError with msg as its message, which is not
@@ -579,4 +608,31 @@ func (r *Runtime) toEntryObject(item Value) *Object {
 // on v, which is not a function.
 func (r *Runtime) applyNonFunctionError(v Value) *Object {
 	return r.newTypeErrorString("Function.prototype.apply was called on " + r.noSideEffectsToString(v) + ", which is a " + typeOfString(v) + " and not a function")
+}
+
+// superNotConstructorError is V8's error for a derived class whose
+// prototype, super, is not a constructor: super is named as a function by
+// its name ("null" if it has none, as Function.prototype, which extends
+// null leaves), and the class by its name.
+func (r *Runtime) superNotConstructorError(super *Object, class *Object) *Object {
+	superName := "null"
+	if super != nil {
+		if _, ok := super.self.assertCallable(); ok {
+			if name := dataPropertyString(super, "name", ""); name != "" {
+				superName = name
+			}
+		} else {
+			superName = r.noSideEffectsToString(super)
+		}
+	}
+	className := "anonymous class"
+	if name := dataPropertyString(class, "name", ""); name != "" {
+		className = name
+	}
+	return r.newTypeErrorString("Super constructor " + superName + " of " + className + " is not a constructor")
+}
+
+func isObjectValue(v Value) bool {
+	_, ok := v.(*Object)
+	return ok
 }

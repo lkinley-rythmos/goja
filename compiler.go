@@ -117,6 +117,10 @@ type compiler struct {
 	// destructured name them.
 	patternSrc    ast.Expression
 	patternNested bool
+
+	// refForSet makes the next member reference emitted one that is only
+	// set (a destructuring target), not read first.
+	refForSet bool
 }
 
 // enterNesting counts one level of compiler recursion. The parser bounds the

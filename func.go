@@ -23,6 +23,9 @@ const (
 type yieldMarker struct {
 	valueNull
 	resultType resultType
+	// opaque is set on a yield* whose operand V8's error for a value that
+	// is not iterable calls "(intermediate value)".
+	opaque bool
 }
 
 var (
@@ -32,7 +35,10 @@ var (
 	yieldRes         = &yieldMarker{resultType: resultYieldRes}
 	yieldDelegate    = &yieldMarker{resultType: resultYieldDelegate}
 	yieldDelegateRes = &yieldMarker{resultType: resultYieldDelegateRes}
-	yieldEmpty       = &yieldMarker{resultType: resultYield}
+
+	yieldDelegateOpaque    = &yieldMarker{resultType: resultYieldDelegate, opaque: true}
+	yieldDelegateResOpaque = &yieldMarker{resultType: resultYieldDelegateRes, opaque: true}
+	yieldEmpty             = &yieldMarker{resultType: resultYield}
 )
 
 // AsyncContextTracker is a handler that allows to track an async execution context to ensure it remains
@@ -338,7 +344,7 @@ func (f *classFuncObject) createInstance(args []Value, newTarget *Object) (insta
 		if ctor := f.prototype.self.assertConstructor(); ctor != nil {
 			instance = ctor(args, newTarget)
 		} else {
-			panic(f.val.runtime.NewTypeError("Super constructor is not a constructor"))
+			panic(f.val.runtime.superNotConstructorError(f.prototype, f.val))
 		}
 	} else {
 		instance = f.baseFuncObject.createInstance(newTarget)
@@ -1026,6 +1032,8 @@ type generator struct {
 	ctx       execCtx
 	vm        *vm
 	returning Value
+	// delegateOpaque is the last yield*'s yieldMarker.opaque.
+	delegateOpaque bool
 
 	tryStackLen, iterStackLen, refStackLen uint32
 }
@@ -1121,6 +1129,7 @@ func (g *generator) step() (res Value, resultType resultType, ex *Exception) {
 
 	if ym, ok := res.(*yieldMarker); ok {
 		resultType = ym.resultType
+		g.delegateOpaque = ym.opaque
 		g.ctx = execCtx{}
 		vm.pc = -vm.pc + 1
 		if res != yieldEmpty {
@@ -1222,8 +1231,17 @@ func (g *generatorObject) step(res Value, resType resultType, ex *Exception) Val
 }
 
 func (g *generatorObject) delegate(v Value) Value {
-	ex := g.val.runtime.try(func() {
-		g.delegated = g.val.runtime.getIterator(v, nil)
+	r := g.val.runtime
+	ex := r.try(func() {
+		if !g.gen.delegateOpaque {
+			g.delegated = r.getIterator(v, nil)
+			return
+		}
+		method := toCallableOrNil(r.iteratorMethod(v))
+		if method == nil {
+			panic(r.newTypeErrorString("yield* (intermediate value) is not iterable"))
+		}
+		g.delegated = r.iteratorFrom(v, method)
 	})
 	if ex != nil {
 		g.delegated = nil
@@ -1300,7 +1318,7 @@ func (g *generatorObject) throw(v Value) Value {
 			}
 			g.delegated = nil
 			d.returnIter()
-			panic(g.val.runtime.NewTypeError("The iterator does not provide a 'throw' method"))
+			panic(g.val.runtime.NewTypeError("The iterator does not provide a 'throw' method."))
 		})
 		if !done {
 			return res
