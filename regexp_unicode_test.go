@@ -633,23 +633,28 @@ func TestRegexpTooLargeForGoRegexp(t *testing.T) {
 }
 
 func TestRegexpTooLargeForGoRegexpFolded(t *testing.T) {
-	// A pattern Go's regexp finds too large falls back to regexp2 only if
-	// regexp2 compiles it within the bound, counting the case variants it
-	// adds to each class ignoring case with the u flag: 300 classes of
-	// 65,000 characters take it about 700 ms.
+	// A pattern whose program Go's regexp would take too long to compile
+	// (here a repeat of 4 million instructions) is left to regexp2. Its
+	// classes whose case variants would take regexp2 long to add ignoring
+	// case (300 classes of 65,000 characters took it 700 ms) are given to it
+	// closed under case folding, so it compiles in milliseconds.
 	var b strings.Builder
 	b.WriteString("(?:")
 	for i := 0; i < 300; i++ {
 		fmt.Fprintf(&b, `[\u{%x}-\u{%x}]`, 0x41+i, 0x41+i+64999)
 	}
 	b.WriteString(strings.Repeat("x", 4000) + "){1000}")
-	for _, tc := range []struct {
-		flags    string
-		tooLarge bool
-	}{{"iu", true}, {"u", false}} {
-		_, err := compileRegexp(b.String(), tc.flags)
-		if got := err != nil && strings.HasSuffix(err.Error(), "/: Regular expression too large"); got != tc.tooLarge {
-			t.Errorf("/%s: err %.100v", tc.flags, err)
+	for _, flags := range []string{"iu", "u"} {
+		start := time.Now()
+		p, err := compileRegexp(b.String(), flags)
+		if err != nil {
+			t.Fatalf("/%s: %.100v", flags, err)
+		}
+		if elapsed := time.Since(start); elapsed > time.Second && !raceDetectorEnabled {
+			t.Errorf("/%s: took %v", flags, elapsed)
+		}
+		if p.regexpWrapper != nil || p.regexp2Wrapper == nil {
+			t.Errorf("/%s: not compiled with regexp2", flags)
 		}
 	}
 }

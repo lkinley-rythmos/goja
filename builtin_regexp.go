@@ -457,6 +457,12 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 	}
 
 	re2Str, regexp2Str, err := parser.TransformRegExp2(patternStr, dotAll, unicode, ignoreCase)
+	// Each step of a compile takes up to about 100 ms, which cannot be
+	// interrupted (see parser.TransformRegExp2); an Interrupt is raised
+	// between them.
+	if r != nil {
+		r.checkInterrupt()
+	}
 	if err == nil {
 		re2flags := ""
 		if multiline {
@@ -516,6 +522,9 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 	}
 
 	if wrapper == nil || global || sticky {
+		if r != nil {
+			r.checkInterrupt()
+		}
 		// regexp2 is the only engine for patterns Go's regexp rejects, and
 		// the engine used for any match starting at lastIndex > 0 (global or
 		// sticky). Build it once here, on the template, so clones share it.

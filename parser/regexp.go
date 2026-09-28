@@ -61,9 +61,9 @@ type _RegExp_parser struct {
 	unicode    bool
 	ignoreCase bool
 
-	// With the u flag the whole pattern is validated, so scanning goes on
-	// after a construct Go's regexp does not support; incompat keeps the first
-	// one.
+	// Scanning goes on after a construct Go's regexp does not support, to
+	// validate the whole pattern and write it for regexp2; incompat keeps the
+	// first one.
 	incompat error
 	prev     termKind
 
@@ -87,17 +87,29 @@ type _RegExp_parser struct {
 	captureNames    []string
 	namesSeen       map[string]bool
 
-	// What the property escapes cost each engine (see maxRegexpExpansion).
+	// What the pattern costs each engine (see maxRegexpExpansion and
+	// termCost): for Go's regexp, besides the instructions of its program
+	// (goInsts), with those of the last atom starting at atomInsts.
 	goExpansion, regexp2Expansion int
+	goInsts, atomInsts            int64
+
+	// The class being scanned ignoring case: its items, and what adding
+	// their case variants costs Go's regexp (in units) and regexp2 (in code
+	// points); and the classes rewritten as their sets, by their text.
+	classItems    int
+	classGoFold   int
+	classR2Span   int64
+	foldedClasses map[string]foldedClass
 }
 
-// maxRegexpExpansion bounds what a pattern's property escapes cost an engine
-// to compile, in units of about 100 ns of compile time, measured escape by
-// escape: a pattern made of thousands of escapes would take seconds to
-// compile, which cannot be interrupted, and the bound keeps an engine's
-// compile to about 100 ms (patterns at the bound compile in 60 to 105 ms:
-// many escapes compile faster together than one by one, and the model errs
-// high). Every escape costs expansionEscape. Go's regexp copies a named table into
+// maxRegexpExpansion bounds what a pattern costs an engine to compile, in
+// units of about 100 ns of compile time, measured term by term (see
+// termCost) and property escape by escape: a pattern of thousands of
+// escapes, or of a million other terms, would take seconds to compile,
+// which cannot be interrupted, and the bound keeps an engine's compile to
+// about 100 ms (patterns at the bound compile in 60 to 150 ms: many terms
+// compile faster together than one by one, and the model errs high). Every
+// property escape costs expansionEscape. Go's regexp copies a named table into
 // its program, a range in about 40 ns (\p{L} is about 680 ranges, 25 µs);
 // expansionClassTable units a range in a class, whose ranges it sorts
 // together (see classUnits), or when ignoring case, when it adds the case
@@ -112,10 +124,12 @@ type _RegExp_parser struct {
 // when a match needs it (a split of a large input with \b, or of a string
 // with a lone surrogate), and Go's unless the pattern has a construct Go's
 // regexp lacks, when nothing is written or counted for Go's regexp. A
-// pattern is refused at the escape that takes regexp2 past the bound, and
+// pattern is refused at the term that takes regexp2 past the bound, and
 // Go's regexp is written for no more once it is past it, so the text
-// written for each stays small. V8 refuses patterns of about 12,500
-// escapes with this message.
+// written for each stays small; one whose program, with its repeats
+// expanded, would take Go's regexp past it is left to regexp2 (see
+// countQuantifier). V8 refuses patterns of about 12,500 escapes, or of
+// over 32,767 terms in a row, with this message.
 const (
 	maxRegexpExpansion  = 3 << 19
 	expansionEscape     = 40
@@ -196,7 +210,7 @@ func (self *_RegExp_parser) regexp2Pattern() string {
 func (self *_RegExp_parser) parse() (err error) {
 	self.read() // Pull in the first character
 	self.scan()
-	if self.err == nil && self.incompat == nil && self.goExpansion > maxRegexpExpansion {
+	if self.err == nil && self.incompat == nil && self.goCost() > maxRegexpExpansion {
 		self.syntaxError("Regular expression too large")
 	}
 	if self.err == nil {
@@ -271,20 +285,43 @@ func (self *_RegExp_parser) scan() {
 func (self *_RegExp_parser) scanTerm() {
 	switch self.chr {
 	case '\\':
+		start := self.chrOffset
 		self.read()
 		kind := termAtom
 		if self.chr == 'b' || self.chr == 'B' {
 			kind = termAssertion
 		}
+		self.startAtom()
+		esc := self.chr
+		self.countEscape()
 		self.scanEscape(false)
+		if self.ignoreCase && self.err == nil {
+			// See termCost.
+			switch esc {
+			case 'w':
+				self.writeRegexp2(start, self.chrOffset, regexp2FoldWord)
+			case 'W':
+				self.writeRegexp2(start, self.chrOffset, regexp2FoldNonWord)
+			case 'S':
+				self.writeRegexp2(start, self.chrOffset, `(?-i:\S)`)
+			case 'D':
+				self.writeRegexp2(start, self.chrOffset, `(?-i:\D)`)
+			}
+		}
 		self.prev = kind
 	case '(':
 		self.pass()
 		self.scanGroup()
 	case '[':
+		self.startAtom()
 		self.scanBracket()
 		self.prev = termAtom
 	case '.':
+		self.startAtom()
+		self.count(costDot)
+		if self.ignoreCase {
+			self.writeRegexp2(self.chrOffset, self.offset, `(?-i:.)`)
+		}
 		if self.dotAll {
 			self.pass()
 		} else {
@@ -296,8 +333,77 @@ func (self *_RegExp_parser) scanTerm() {
 		if self.unicode {
 			self.scanUnicodeTermChar()
 		} else {
-			self.pass()
+			self.scanNonUnicodeTermChar()
 		}
+	}
+}
+
+// countEscape counts the escape whose letter is the current character.
+func (self *_RegExp_parser) countEscape() {
+	switch self.chr {
+	case 'b', 'B':
+		self.count(costAssertion)
+	case 's', 'S':
+		self.count(costSpaceEsc)
+		if self.ignoreCase && self.goUsed() {
+			self.goExpansion += goFoldSpaceUnits
+		}
+	case 'd', 'D', 'w', 'W':
+		self.count(costClassEsc)
+		if self.ignoreCase && (self.chr == 'w' || self.chr == 'W') && self.goUsed() {
+			self.goExpansion += goFoldWordUnits
+		}
+	case 'k':
+		self.count(costBackref)
+	case 'p', 'P':
+		if self.unicode {
+			// The property escape counts itself (see expandGo).
+			if self.goUsed() {
+				self.goInsts++
+			}
+			return
+		}
+		self.count(costLiteral)
+	case '1', '2', '3', '4', '5', '6', '7', '8', '9':
+		self.count(costBackref)
+	default:
+		self.count(costEscape)
+	}
+}
+
+// scanNonUnicodeTermChar scans a character outside atoms without the u flag.
+func (self *_RegExp_parser) scanNonUnicodeTermChar() {
+	switch self.chr {
+	case '^', '$':
+		self.count(costAssertion)
+		self.pass()
+		self.prev = termAssertion
+	case '|':
+		self.count(costAlternate)
+		self.pass()
+		self.prev = termNone
+	case '*', '+', '?':
+		switch self.chr {
+		case '*':
+			self.countQuantifier(0, -1)
+		case '+':
+			self.countQuantifier(1, -1)
+		default:
+			self.countQuantifier(0, 1)
+		}
+		self.passQuantifier(self.offset)
+	case '{':
+		if min, max, end, ok := self.intervalQuantifier(); ok {
+			self.countQuantifier(min, max)
+			self.passQuantifier(end)
+			return
+		}
+		fallthrough
+	default:
+		self.startAtom()
+		self.count(costLiteral)
+		self.pass()
+		self.prev = termAtom
 	}
 }
 
@@ -307,14 +413,24 @@ func (self *_RegExp_parser) scanTerm() {
 func (self *_RegExp_parser) scanUnicodeTermChar() {
 	switch self.chr {
 	case '^', '$':
+		self.count(costAssertion)
 		self.pass()
 		self.prev = termAssertion
 	case '|':
+		self.count(costAlternate)
 		self.pass()
 		self.prev = termNone
 	case '*', '+', '?':
 		if !self.checkQuantifiable(false) {
 			return
+		}
+		switch self.chr {
+		case '*':
+			self.countQuantifier(0, -1)
+		case '+':
+			self.countQuantifier(1, -1)
+		default:
+			self.countQuantifier(0, 1)
 		}
 		self.passQuantifier(self.offset)
 	case '{':
@@ -330,15 +446,13 @@ func (self *_RegExp_parser) scanUnicodeTermChar() {
 		if !self.checkQuantifiable(max >= 0 && max < min) {
 			return
 		}
+		self.countQuantifier(min, max)
 		self.passQuantifier(end)
-		if min > maxGoRepeat || max > maxGoRepeat {
-			// Go's regexp refuses the count, so regexp2 compiles the
-			// pattern (as for the constructs Go's regexp lacks).
-			self.error(false, "re2: invalid repeat count")
-		}
 	case '}', ']':
 		self.syntaxError("Lone quantifier brackets")
 	default:
+		self.startAtom()
+		self.count(costLiteral)
 		self.pass()
 		self.prev = termAtom
 	}
@@ -409,6 +523,7 @@ func (self *_RegExp_parser) intervalQuantifier() (min, max, end int, ok bool) {
 // (...)
 func (self *_RegExp_parser) scanGroup() {
 	kind := termAtom
+	start := self.goInsts
 	str := self.str[self.chrOffset:]
 	if len(str) > 0 { // A possibility of (?= or (?!
 		if str[0] == '?' && len(str) > 1 {
@@ -416,29 +531,27 @@ func (self *_RegExp_parser) scanGroup() {
 			switch {
 			case ch == '=' || ch == '!':
 				self.error(false, "re2: Invalid (%s) <lookahead>", self.str[self.chrOffset:self.chrOffset+2])
-				if !self.unicode {
-					return
-				}
+				self.count(costAround)
 				kind = termLookahead
 				self.pass()
 				self.pass()
 			case ch == '<':
 				if len(str) > 2 && (str[2] == '=' || str[2] == '!') {
 					self.error(false, "re2: Invalid (%s) <lookbehind>", self.str[self.chrOffset:self.chrOffset+2])
-					if !self.unicode {
-						return
-					}
+					self.count(costAround)
 					kind = termLookbehind
 					self.pass()
 					self.pass()
 					self.pass()
 					break
 				}
+				self.count(costNamed)
 				self.pass()         // ?
 				self.writeByte('P') // older Go versions compatibility
 				self.pass()         // <
 				self.scanGroupName()
 			case ch == ':':
+				self.count(costGroup)
 				self.pass()
 				self.pass()
 			default:
@@ -448,7 +561,11 @@ func (self *_RegExp_parser) scanGroup() {
 		} else if self.unicode && str[0] == '?' {
 			self.fatal("Invalid group")
 			return
+		} else {
+			self.count(costCapture)
 		}
+	} else {
+		self.count(costCapture)
 	}
 	self.prev = termNone
 	for self.chr != -1 && self.chr != ')' {
@@ -460,6 +577,7 @@ func (self *_RegExp_parser) scanGroup() {
 	}
 	self.pass()
 	self.prev = kind
+	self.atomInsts = start
 }
 
 func (self *_RegExp_parser) scanGroupName() {
@@ -491,9 +609,6 @@ func (self *_RegExp_parser) scanGroupName() {
 	}
 	if !supported {
 		self.error(false, "Unsupported group name")
-		if !self.unicode {
-			return
-		}
 	}
 	self.pass()
 }
@@ -588,6 +703,9 @@ func (self *_RegExp_parser) scanCaptures() {
 // [...]
 func (self *_RegExp_parser) scanBracket() {
 	str := self.str[self.chrOffset:]
+	if strings.HasPrefix(str, "[]") || strings.HasPrefix(str, "[^]") {
+		self.count(termCost{goUnits: goClassUnits, goInsts: 1, r2: 10, r2Fold: 10})
+	}
 	if strings.HasPrefix(str, "[]") {
 		// [] -- Empty character class
 		self.writeString("[^\u0000-\U0001FFFF]")
@@ -607,7 +725,8 @@ func (self *_RegExp_parser) scanBracket() {
 	self.classSet = nil
 	self.classProps = self.classProps[:0]
 	self.classGoStart = -1
-	if self.unicode && self.ignoreCase {
+	self.classItems, self.classGoFold, self.classR2Span = 0, 0, 0
+	if self.ignoreCase {
 		if self.passOffset != -1 {
 			self.stopPassing()
 		}
@@ -621,8 +740,8 @@ func (self *_RegExp_parser) scanBracket() {
 	for self.chr != -1 && self.chr != ']' {
 		leftStart := self.chrOffset
 		leftIsClass := self.scanClassAtom()
+		left := self.str[leftStart:self.chrOffset]
 		if self.unicode {
-			left := self.str[leftStart:self.chrOffset]
 			if self.chr == '-' && self.offset < self.length && self.str[self.offset] != ']' {
 				self.pass()
 				rightStart := self.chrOffset
@@ -640,35 +759,84 @@ func (self *_RegExp_parser) scanBracket() {
 					return
 				}
 				self.classSet = self.classSet.union(runeSet{lo, hi})
+				self.classItem(runeSet{lo, hi}, false, false)
 			} else if self.err == nil {
-				self.classSet = self.classSet.union(self.classAtomSet(left))
+				set := self.classAtomSet(left)
+				self.classSet = self.classSet.union(set)
+				self.classItem(set, isWideClassEscape(left), isWordClassEscape(left))
 			}
 			continue
 		}
-		if self.chr != '-' {
-			continue
+		if self.err != nil {
+			return
 		}
-		if self.offset >= self.length || self.str[self.offset] == ']' {
+		if self.chr != '-' || self.offset >= self.length || self.str[self.offset] == ']' {
+			self.nonUnicodeClassItem(left)
 			continue
 		}
 		if leftIsClass || self.nextIsCharacterClassEscape() {
 			// A '-' next to a class escape is a literal, not a range operator.
+			self.nonUnicodeClassItem(left)
 			self.writeString(`\-`)
 			self.read()
-		} else {
-			self.pass()
+			self.nonUnicodeClassItem("-")
+			rightStart := self.chrOffset
+			self.scanClassAtom()
+			self.nonUnicodeClassItem(self.str[rightStart:self.chrOffset])
+			continue
 		}
+		self.pass()
+		rightStart := self.chrOffset
 		self.scanClassAtom()
+		if self.ignoreCase && self.err == nil {
+			lo, _ := nonUnicodeClassAtom(left, true)
+			hi, _ := nonUnicodeClassAtom(self.str[rightStart:self.chrOffset], true)
+			if lo[0] <= hi[0] {
+				self.classItem(runeSet{lo[0], hi[0]}, false, false)
+				continue
+			}
+		}
+		self.classItems++
 	}
 	if self.chr != ']' {
 		self.fatal("Unterminated character class")
 		return
 	}
 	self.pass()
+	cost := termCost{goUnits: goClassUnits + goClassItemUnits*self.classItems, goInsts: 1}
+	if negated {
+		cost.goUnits += goNegatedUnits
+	}
+	self.count(cost)
+	self.expandRegexp2(regexp2TextUnits(self.classItems))
 	if len(self.classProps) > 0 {
 		self.writeGoClass(negated)
 		self.writeRegexp2Class(negated)
+	} else if self.ignoreCase {
+		self.foldClass(negated)
 	}
+}
+
+// nonUnicodeClassItem counts a class item without the u flag (see
+// classItem).
+func (self *_RegExp_parser) nonUnicodeClassItem(atom string) {
+	if !self.ignoreCase || atom == "" {
+		self.classItems++
+		return
+	}
+	set, isClass := nonUnicodeClassAtom(atom, true)
+	self.classItem(set, isClass && isWideClassEscape(atom), isClass && isWordClassEscape(atom))
+}
+
+// isWideClassEscape reports whether a class atom is a class escape standing
+// for most of Unicode.
+func isWideClassEscape(atom string) bool {
+	return len(atom) == 2 && atom[0] == '\\' && (atom[1] == 'W' || atom[1] == 'S' || atom[1] == 'D')
+}
+
+// isWordClassEscape reports whether a class atom is \w or \W.
+func isWordClassEscape(atom string) bool {
+	return len(atom) == 2 && atom[0] == '\\' && (atom[1] == 'w' || atom[1] == 'W')
 }
 
 // expandGo and expandRegexp2 count what a property escape costs an engine
@@ -686,7 +854,7 @@ func (self *_RegExp_parser) expandGo(units int) {
 
 // goUsed reports whether the pattern is still written for Go's regexp.
 func (self *_RegExp_parser) goUsed() bool {
-	return self.incompat == nil && self.goExpansion <= maxRegexpExpansion
+	return self.incompat == nil && self.goCost() <= maxRegexpExpansion
 }
 
 func (self *_RegExp_parser) expandRegexp2(units int) {
@@ -1027,9 +1195,7 @@ func (self *_RegExp_parser) scanEscape(inClass bool) {
 	case 'S':
 		if inClass {
 			self.error(false, "S in class")
-			if self.unicode {
-				self.read()
-			}
+			self.read()
 			return
 		} else {
 			self.writeString("[^" + WhitespaceChars + "]")
@@ -1043,6 +1209,7 @@ func (self *_RegExp_parser) scanEscape(inClass bool) {
 		}
 		// The rules are too complicated to implement here, so we pass it on to regexp2
 		self.error(false, "named group back-reference")
+		self.read()
 		return
 	default:
 		if self.unicode {
@@ -1452,18 +1619,15 @@ func (self *_RegExp_parser) error(fatal bool, msg string, msgValues ...interface
 		offset: self.offset,
 		err:    fmt.Sprintf(msg, msgValues...),
 	}
-	if fatal {
-		self.err = RegexpSyntaxError{e}
-	} else {
-		if self.unicode {
-			// Keep scanning to validate the rest of the pattern.
-			if self.incompat == nil {
-				self.incompat = RegexpErrorIncompatible{e}
-			}
-			return
+	if !fatal {
+		// Keep scanning, to validate the rest of the pattern and write it
+		// for regexp2.
+		if self.incompat == nil {
+			self.incompat = RegexpErrorIncompatible{e}
 		}
-		self.err = RegexpErrorIncompatible{e}
+		return
 	}
+	self.err = RegexpSyntaxError{e}
 	self.offset = self.length
 	self.chr = -1
 }

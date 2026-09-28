@@ -3,13 +3,11 @@ package goja
 import (
 	"fmt"
 	"regexp"
-	"regexp/syntax"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
-	"unsafe"
 )
 
 func TestRegexp1(t *testing.T) {
@@ -1248,10 +1246,9 @@ func TestRegexpCacheSkipsOversizeTemplate(t *testing.T) {
 	if _, err := compileRegexp("small", ""); err != nil {
 		t.Fatal(err)
 	}
-	// A thousand instructions a copy, as many as make the bound.
-	copies := int(regexpCacheMaxBytes/int64(unsafe.Sizeof(syntax.Inst{})))/1000 + 100
-	src := "^" + strings.Repeat("(?:a{1000})", copies)
-	p, err := compileRegexp(src, "")
+	// Go's regexp copies \p{L}'s ranges for each escape, 13 KB.
+	src := strings.Repeat(`\p{L}`, 4800)
+	p, err := compileRegexp(src, "u")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1259,7 +1256,7 @@ func TestRegexpCacheSkipsOversizeTemplate(t *testing.T) {
 		t.Fatalf("size %d", p.size)
 	}
 	regexpCache.Lock()
-	_, cached := regexpCache.m[regexpCacheKey{src: src}]
+	_, cached := regexpCache.m[regexpCacheKey{src: src, flags: "u"}]
 	bytes := regexpCache.bytes
 	regexpCache.Unlock()
 	if cached || regexpCacheLen() != 1 || bytes > regexpCacheMaxBytes {
@@ -1302,6 +1299,15 @@ func wideClasses(n, span int) string {
 	return b.String()
 }
 
+// wideClassesBMP is wideClasses without the u flag's escapes.
+func wideClassesBMP(n, span int) string {
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&b, `[\u%04x-\u%04x]`, 0x41+i, 0x41+i+span-1)
+	}
+	return b.String()
+}
+
 func TestRegexpChargeTracksRetainedHeap(t *testing.T) {
 	// The memory charged for a compiled pattern, and for the copy anchored
 	// at its start, is an estimate made before the engines compile it (see
@@ -1326,15 +1332,16 @@ func TestRegexpChargeTracksRetainedHeap(t *testing.T) {
 		{strings.Repeat(`\P{Alphabetic}`, 100), "giu"},
 		{strings.Repeat(`[\p{L}\p{M}\s'-]`, 100), "iu"},
 		{strings.Repeat(`\p{Lu}`, 100), "iu"},
-		// Case folding grows the class's slice to 1,344 runes, of which Go's
-		// regexp keeps the two it needs, in a slice of that capacity.
-		{strings.Repeat(`[A-\uffef]`, 400), "i"},
+		// Case folding grows the class's slice, which Go's regexp keeps.
+		{strings.Repeat(`[\u0100-\u01ff]`, 2000), "i"},
 		{strings.Repeat(`[a-zA-Z0-9_\u00c0-\u024f]`, 2000), "gi"},
 		// regexp2 alone, with classes all different; ignoring case with the
-		// u flag, it adds each class's case variants (up to 27 KB).
+		// u flag, it adds each class's case variants (a class whose variants
+		// would cost more is given to it closed under case folding).
 		{"(?=)" + distinctClasses(200, 300), "u"},
-		{"(?=)" + wideClasses(100, 65000), "iu"},
-		{"(?=)" + wideClasses(300, 1000), "iu"},
+		{"(?=)" + wideClasses(3000, 60), "iu"},
+		{"(?=)" + wideClassesBMP(3000, 60), "i"},
+		{"(?=)" + wideClasses(2000, 300), "iu"},
 	} {
 		// The first compile of a property fills the caches of its sets.
 		if _, err := compileRegexpUncached(nil, tc.src, tc.flags); err != nil {

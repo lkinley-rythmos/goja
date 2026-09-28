@@ -16,6 +16,7 @@ import (
 	"unsafe"
 
 	"github.com/dlclark/regexp2/v2"
+	"github.com/dop251/goja/parser"
 	"github.com/dop251/goja/unistring"
 )
 
@@ -250,9 +251,8 @@ const maxRegexp2Units = 1 << 20
 // 60, a lookaround 64, a capturing group 125; a class is stored once
 // however often it is used, in under 2 bytes of its text. Compiling takes
 // under 0.5 µs a byte (0.9 µs ignoring case), and a class's ranges more
-// (see parser.regexp2TextUnits). Ignoring case with the u flag, regexp2
-// adds the case variants of the characters each class lists (see
-// regexp2Fold).
+// (see parser.regexp2TextUnits). Ignoring case, regexp2 adds the case
+// variants of the characters each class lists (see regexp2Fold).
 func regexp2Estimate(src string, ignoreCase, unicode bool) (size int64, units int) {
 	const (
 		word      = int64(unsafe.Sizeof(uintptr(0)))
@@ -316,7 +316,7 @@ func regexp2Estimate(src string, ignoreCase, unicode bool) (size int64, units in
 				size += classByte * int64(len(cls))
 				// The parser's classes that ignoring case would change
 				// are matched case-sensitively.
-				if ignoreCase && unicode && !strings.HasSuffix(src[:i], "(?-i:") {
+				if ignoreCase && !strings.HasSuffix(src[:i], "(?-i:") {
 					bytes, foldUnits := regexp2Fold(cls)
 					size += bytes
 					units += foldUnits
@@ -368,40 +368,47 @@ func regexp2Estimate(src string, ignoreCase, unicode bool) (size int64, units in
 }
 
 // regexp2Fold bounds what regexp2 holds for the case variants of a class
-// ignoring case with the u flag, and the time it takes to add them, in
-// units of 100 ns. Measured: about 16 bytes a character the class lists
-// (negated or not), from 0.5 KB for a class of 26 to 27 KB for one of every
-// cased character, and from 5 µs to 2.4 ms.
+// ignoring case, and the time it takes to add them, in units of 100 ns (see
+// parser.TransformRegExp2, which gives it the classes that would take the
+// longest closed under case folding, matched case-sensitively). Measured:
+// about 16 bytes a character the class lists that has case variants
+// (negated or not), and 200 bytes a class; 4 µs a class, 30 ns a character
+// and 200 ns one with case variants.
 func regexp2Fold(cls string) (bytes int64, units int) {
-	span := regexp2ClassSpan(cls)
-	return min(32<<10, 512+16*int64(span)), min(30000, 50+2*span)
+	span, cased := regexp2ClassSpan(cls)
+	return min(32<<10, 200+16*int64(cased)), min(1<<20, 40+span/3+2*cased)
 }
 
-// regexp2ClassSpan returns how many characters a class's text lists: a
-// range's, a character's, and for a class escape, about its size (those
-// standing for most of Unicode count as all of it).
-func regexp2ClassSpan(cls string) int {
+// regexp2ClassSpan returns how many characters a class's text lists, and
+// how many of them have case variants: a range's, a character's, and for a
+// class escape, about its size (those standing for most of Unicode count
+// as all of it, and all of them as having case variants).
+func regexp2ClassSpan(cls string) (span, cased int) {
 	const all = 1 << 16
 	body := strings.TrimSuffix(strings.TrimPrefix(cls, "["), "]")
 	body = strings.TrimPrefix(body, "^")
-	span := 0
 	for i := 0; i < len(body); {
 		lo, n, single := regexp2ClassAtom(body[i:])
 		i += n
 		if !single {
 			span += lo
+			cased += lo
 			continue
 		}
 		if i+1 < len(body) && body[i] == '-' {
 			if hi, m, ok := regexp2ClassAtom(body[i+1:]); ok {
 				i += 1 + m
 				span += max(hi-lo+1, 1)
+				if hi >= lo {
+					cased += parser.CasedIn(rune(lo), rune(hi))
+				}
 				continue
 			}
 		}
 		span++
+		cased += parser.CasedIn(rune(lo), rune(lo))
 	}
-	return min(span, all)
+	return min(span, all), min(cased, all)
 }
 
 // regexp2ClassAtom decodes the class item that s starts with: a character

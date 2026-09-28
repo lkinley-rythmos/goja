@@ -341,8 +341,8 @@ func TestTransformRegExpExpansionGoPastBound(t *testing.T) {
 	// rewritten as its closure under case folding, about 3 KB for \p{Dia}.
 	past := strings.Repeat(`\p{Dia}`, 3000)
 	base, classes := parseUnicode(past, true), parseUnicode(past+strings.Repeat(`[\p{Dia}a]`, 200), true)
-	if base.goExpansion <= maxRegexpExpansion {
-		t.Fatalf("Go's regexp costs %d units", base.goExpansion)
+	if base.goCost() <= maxRegexpExpansion {
+		t.Fatalf("Go's regexp costs %d units", base.goCost())
 	}
 	if n := classes.goRegexp.Len() - base.goRegexp.Len(); n > 200*16 {
 		t.Errorf("%d bytes written for Go's regexp past its bound", n)

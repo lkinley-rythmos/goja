@@ -1,0 +1,191 @@
+package goja
+
+import (
+	"errors"
+	"strings"
+	"testing"
+	"time"
+)
+
+// foldChars are the characters foldedClassesNode18 tests classes on.
+const foldChars = `["k", "K", "\u212a", "s", "S", "\u017f", "\u00b5", "\u03bc", "\u039c", "\u00df", "\u1e9e", "\u0130", "\u0131", "i", "I", "\u01c5", "\u1f80", "\u1f88", "\u2126", "\u03c9", "a", "_", " ", "\u00e9", "\u0101", "\u4e00", "\n", "\u2028", "\ud801\udc00", "\ud801\udc28", "0"]`
+
+// foldedClassesNode18 is whether each of foldChars matches a class with the
+// iu flags in Node.js 18.20.3. The classes that ignoring case would cost the
+// engines the most are given to them closed under case folding.
+var foldedClassesNode18 = []struct{ class, want string }{
+	{`[A-\uffef]`, "1111111111111111111111011101000"},
+	{`[\u0080-\uffff]`, "1111111111111001111100011101000"},
+	{`[^\x00-\x7f]`, "0000001111111001111100011101110"},
+	{`[\u0100-\u01ff]`, "0001110000011001000000001000000"},
+	{`[\u0400-\u04ff]`, "0000000000000000000000000000000"},
+	{`[\u4e00-\u9fa5]`, "0000000000000000000000000100000"},
+	{`[\W\d]`, "0000001111111001111100111111111"},
+	{`[^\S\r\n]`, "0000000000000000000000100001000"},
+	{`[\w\u0100-\u0fff]`, "1111111110011111001111001000001"},
+	{`[^A-\uffef]`, "0000000000000000000000100010111"},
+	{`[\u0000-\u{10ffff}]`, "1111111111111111111111111111111"},
+}
+
+func TestRegexpFoldedClassesMatchNode18(t *testing.T) {
+	// With Go's regexp, and with regexp2 (through an empty lookahead), which
+	// matched some of these wrongly: [\W\d] matched every letter.
+	vm := New()
+	for _, tc := range foldedClassesNode18 {
+		for _, prefix := range []string{"", "(?=)"} {
+			for _, flags := range []string{"iu", "giu"} {
+				vm.Set("src", "^"+prefix+tc.class+"$")
+				vm.Set("f", flags)
+				v, err := vm.RunString(`var re = new RegExp(src, f); ` + foldChars + `.map(function(c) { re.lastIndex = 0; return re.test(c) ? 1 : 0; }).join("")`)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if v.String() != tc.want {
+					t.Errorf("/%s%s/%s: %s, want %s", prefix, tc.class, flags, v, tc.want)
+				}
+			}
+		}
+	}
+}
+
+func TestRegexpFoldedClassesEnginesAgree(t *testing.T) {
+	// Without the u flag Go's regexp matches ignoring case by simple case
+	// folding, which differs from ECMAScript's (U+212A and U+017F are not variants of
+	// k and s in Node.js); regexp2 matches as Go's regexp does, where it
+	// matched every letter with [\W\d].
+	vm := New()
+	for _, tc := range foldedClassesNode18 {
+		if strings.Contains(tc.class, `\u{`) {
+			continue
+		}
+		var results []string
+		for _, prefix := range []string{"", "(?=)"} {
+			for _, flags := range []string{"i", "gi"} {
+				vm.Set("src", "^"+prefix+tc.class+"$")
+				vm.Set("f", flags)
+				v, err := vm.RunString(`var re = new RegExp(src, f); ` + foldChars + `.map(function(c) { re.lastIndex = 0; return re.test(c) ? 1 : 0; }).join("")`)
+				if err != nil {
+					t.Fatal(err)
+				}
+				results = append(results, v.String())
+			}
+		}
+		for _, r := range results[1:] {
+			if r != results[0] {
+				t.Errorf("/%s/i: %v", tc.class, results)
+				break
+			}
+		}
+	}
+}
+
+func TestRegexpCaseInsensitiveEscapesMatchNode18(t *testing.T) {
+	// Ignoring case, regexp2 matched \W, [\W] and [^\w] with every
+	// character, and [^\W] with none; with the u flag they match as in
+	// Node.js 18.20.3, and without it as with Go's regexp.
+	vm := New()
+	const chars = `["s", "S", "\u017f", "k", "K", "\u212a", "\u00e9", " "]`
+	for _, tc := range []struct{ pattern, want string }{
+		{`\W`, "00000011"}, {`\w`, "11111100"}, {`[\W]`, "00000011"}, {`[\w]`, "11111100"},
+		{`[^\w]`, "00000011"}, {`[^\W]`, "11111100"}, {`\S`, "11111110"}, {`\D`, "11111111"}, {`.`, "11111111"},
+	} {
+		for _, prefix := range []string{"", "(?=)"} {
+			for _, flags := range []string{"iu", "i"} {
+				vm.Set("src", prefix+tc.pattern)
+				vm.Set("f", flags)
+				v, err := vm.RunString(`var re = new RegExp(src, f); ` + chars + `.map(function(c) { return re.test(c) ? 1 : 0; }).join("")`)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if v.String() != tc.want {
+					t.Errorf("/%s%s/%s: %s, want %s", prefix, tc.pattern, flags, v, tc.want)
+				}
+			}
+		}
+	}
+}
+
+func TestRegexpCompileTimeBounded(t *testing.T) {
+	// Compiling cannot be interrupted, so what a pattern costs the engines
+	// is bounded at about 100 ms each: before, [A-\uffef] with the i flag
+	// took Go's regexp 4 ms a copy to fold (1,000 copies 4 s), (?=)\W with
+	// the i flag regexp2 50 ms, 3.5 million literal characters Go's regexp
+	// 1 s, and 40 classes of 2,000 ranges regexp2 0.7 s. Node.js 18 compiles
+	// the first two in under 150 ms, and refuses the literal characters as
+	// too large when the pattern is first used.
+	for _, tc := range []struct {
+		name, pattern, flags string
+		tooLarge             bool
+	}{
+		{"wide classes", strings.Repeat(`[A-\uffef]`, 1000), "i", false},
+		{"wide classes g", strings.Repeat(`[A-\uffef]`, 1000), "gi", false},
+		{"wide classes u", strings.Repeat(`[A-\uffef]`, 1000), "giu", false},
+		{"negated wide classes", strings.Repeat(`[^\u0100-\uffff]`, 1000), "gi", false},
+		{"non-word", "(?=)" + strings.Repeat(`\W.\S\D`, 200), "i", false},
+		{"non-word u", "(?=)" + strings.Repeat(`\W.\S\D`, 200), "iu", false},
+		{"literal", strings.Repeat("x", 3500000), "", true},
+		{"repeated literal", "(?:" + strings.Repeat("x", 200000) + "){20}", "", false},
+		{"classes", distinctClasses(40, 2000), "u", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vm := New()
+			vm.Set("p", tc.pattern)
+			vm.Set("f", tc.flags)
+			start := time.Now()
+			_, err := vm.RunString(`new RegExp(p, f).test("x")`)
+			elapsed := time.Since(start)
+			if tc.tooLarge != regexpTooLarge(err) || !tc.tooLarge && err != nil {
+				t.Fatalf("err %.200v", err)
+			}
+			if elapsed > time.Second && !raceDetectorEnabled {
+				t.Errorf("took %v", elapsed)
+			}
+		})
+	}
+}
+
+func TestRegexpCompileInterrupt(t *testing.T) {
+	// A script compiling such patterns without end stops soon after
+	// Runtime.Interrupt. The patterns differ so that none is served from the
+	// cache.
+	for _, tc := range []struct{ name, script string }{
+		{"wide classes", `for (var i = 0; ; i++) new RegExp("[A-\\uffef]".repeat(1000) + i, "i")`},
+		{"non-word", `for (var i = 0; ; i++) new RegExp("(?=)" + "\\W".repeat(100) + i, "gi")`},
+		{"too large", `for (var i = 0; ; i++) { try { new RegExp("x".repeat(3500000) + i); } catch (e) { if (!(e instanceof SyntaxError)) throw e; } }`},
+	} {
+		t.Run(tc.name, func(t *testing.T) { runInterrupted(t, tc.script, nil) })
+	}
+}
+
+func TestRegexpCompileInterruptedBetweenSteps(t *testing.T) {
+	// An Interrupt during one step of a compile is raised before the next:
+	// the pattern is not compiled, and so not cached. Here it comes during
+	// the transform of the pattern (about 100 ms), or during Go's regexp's
+	// compile (about 100 ms, after a transform of about 5 ms), before
+	// regexp2's for the g flag.
+	for _, tc := range []struct{ name, src, flags string }{
+		{"transform", distinctClasses(10000, 20), "u"},
+		{"Go's regexp", strings.Repeat("[ab]", 70000), "g"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetRegexpCache()
+			defer resetRegexpCache()
+			vm := New()
+			vm.Set("p", tc.src)
+			vm.Set("f", tc.flags)
+			timer := time.AfterFunc(40*time.Millisecond, func() { vm.Interrupt("halt") })
+			defer timer.Stop()
+			_, err := vm.RunString(`new RegExp(p, f)`)
+			var ie *InterruptedError
+			if !errors.As(err, &ie) {
+				t.Fatalf("err %v", err)
+			}
+			regexpCache.Lock()
+			_, cached := regexpCache.m[regexpCacheKey{src: tc.src, flags: tc.flags}]
+			regexpCache.Unlock()
+			if cached {
+				t.Error("compiled after the Interrupt")
+			}
+		})
+	}
+}
