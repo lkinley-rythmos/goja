@@ -73,7 +73,7 @@ func (r *Runtime) weakMapProto_delete(call FunctionCall) Value {
 	thisObj := r.toObject(call.This)
 	wmo, ok := thisObj.self.(*weakMapObject)
 	if !ok {
-		panic(r.NewTypeError("Method WeakMap.prototype.delete called on incompatible receiver %s", r.objectproto_toString(FunctionCall{This: thisObj})))
+		panic(r.NewTypeError("Method WeakMap.prototype.delete called on incompatible receiver %s", r.noSideEffectsToString(thisObj)))
 	}
 	key, ok := call.Argument(0).(*Object)
 	if ok && wmo.m.remove(key) {
@@ -86,7 +86,7 @@ func (r *Runtime) weakMapProto_get(call FunctionCall) Value {
 	thisObj := r.toObject(call.This)
 	wmo, ok := thisObj.self.(*weakMapObject)
 	if !ok {
-		panic(r.NewTypeError("Method WeakMap.prototype.get called on incompatible receiver %s", r.objectproto_toString(FunctionCall{This: thisObj})))
+		panic(r.NewTypeError("Method WeakMap.prototype.get called on incompatible receiver %s", r.noSideEffectsToString(thisObj)))
 	}
 	var res Value
 	if key, ok := call.Argument(0).(*Object); ok {
@@ -102,7 +102,7 @@ func (r *Runtime) weakMapProto_has(call FunctionCall) Value {
 	thisObj := r.toObject(call.This)
 	wmo, ok := thisObj.self.(*weakMapObject)
 	if !ok {
-		panic(r.NewTypeError("Method WeakMap.prototype.has called on incompatible receiver %s", r.objectproto_toString(FunctionCall{This: thisObj})))
+		panic(r.NewTypeError("Method WeakMap.prototype.has called on incompatible receiver %s", r.noSideEffectsToString(thisObj)))
 	}
 	key, ok := call.Argument(0).(*Object)
 	if ok && wmo.m.has(key) {
@@ -115,7 +115,7 @@ func (r *Runtime) weakMapProto_set(call FunctionCall) Value {
 	thisObj := r.toObject(call.This)
 	wmo, ok := thisObj.self.(*weakMapObject)
 	if !ok {
-		panic(r.NewTypeError("Method WeakMap.prototype.set called on incompatible receiver %s", r.objectproto_toString(FunctionCall{This: thisObj})))
+		panic(r.NewTypeError("Method WeakMap.prototype.set called on incompatible receiver %s", r.noSideEffectsToString(thisObj)))
 	}
 	key := r.toObject(call.Argument(0))
 	wmo.m.set(key, call.Argument(1))
@@ -152,14 +152,14 @@ func (r *Runtime) builtin_newWeakMap(args []Value, newTarget *Object) *Object {
 			i1 := valueInt(1)
 			if adder == r.global.weakMapAdder {
 				iter.iterate(func(item Value) {
-					itemObj := r.toObject(item)
+					itemObj := r.toEntryObject(item)
 					k := itemObj.self.getIdx(i0, nil)
 					v := nilSafe(itemObj.self.getIdx(i1, nil))
 					wmo.m.set(r.toObject(k), v)
 				})
 			} else {
 				iter.iterate(func(item Value) {
-					itemObj := r.toObject(item)
+					itemObj := r.toEntryObject(item)
 					k := itemObj.self.getIdx(i0, nil)
 					v := itemObj.self.getIdx(i1, nil)
 					adderFn(FunctionCall{This: o, Arguments: []Value{k, v}})

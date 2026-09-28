@@ -935,6 +935,9 @@ func (p *proxyObject) assertCallable() (call func(FunctionCall) Value, ok bool) 
 }
 
 func (p *proxyObject) vmCall(vm *vm, n int) {
+	if p.call == nil {
+		panic(vm.notAFunctionError(p.val))
+	}
 	vm.pushCtx()
 	vm.prg = nil
 	vm.sb = vm.sp - n // so that [sb-1] points to the callee

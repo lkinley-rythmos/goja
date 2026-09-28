@@ -47,7 +47,7 @@ func TestDefineProperty(t *testing.T) {
 		t.Fatal("Expected an error")
 	}
 	if ex, ok := err.(*Exception); ok {
-		if msg := ex.Error(); msg != "TypeError: Cannot assign to read only property 'accessor_ro'" {
+		if msg := ex.Error(); msg != "TypeError: Cannot set property accessor_ro of #<Object> which has only a getter" {
 			t.Fatalf("Unexpected error: '%s'", msg)
 		}
 	} else {

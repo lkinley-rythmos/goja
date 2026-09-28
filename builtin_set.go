@@ -129,7 +129,7 @@ func (r *Runtime) setProto_add(call FunctionCall) Value {
 	thisObj := r.toObject(call.This)
 	so, ok := thisObj.self.(*setObject)
 	if !ok {
-		panic(r.NewTypeError("Method Set.prototype.add called on incompatible receiver %s", r.objectproto_toString(FunctionCall{This: thisObj})))
+		panic(r.NewTypeError("Method Set.prototype.add called on incompatible receiver %s", r.noSideEffectsToString(thisObj)))
 	}
 
 	so.m.set(call.Argument(0), nil)
@@ -140,7 +140,7 @@ func (r *Runtime) setProto_clear(call FunctionCall) Value {
 	thisObj := r.toObject(call.This)
 	so, ok := thisObj.self.(*setObject)
 	if !ok {
-		panic(r.NewTypeError("Method Set.prototype.clear called on incompatible receiver %s", r.objectproto_toString(FunctionCall{This: thisObj})))
+		panic(r.NewTypeError("Method Set.prototype.clear called on incompatible receiver %s", r.noSideEffectsToString(thisObj)))
 	}
 
 	so.m.clear()
@@ -151,7 +151,7 @@ func (r *Runtime) setProto_delete(call FunctionCall) Value {
 	thisObj := r.toObject(call.This)
 	so, ok := thisObj.self.(*setObject)
 	if !ok {
-		panic(r.NewTypeError("Method Set.prototype.delete called on incompatible receiver %s", r.objectproto_toString(FunctionCall{This: thisObj})))
+		panic(r.NewTypeError("Method Set.prototype.delete called on incompatible receiver %s", r.noSideEffectsToString(thisObj)))
 	}
 
 	return r.toBoolean(so.m.remove(call.Argument(0)))
@@ -165,7 +165,7 @@ func (r *Runtime) setProto_forEach(call FunctionCall) Value {
 	thisObj := r.toObject(call.This)
 	so, ok := thisObj.self.(*setObject)
 	if !ok {
-		panic(r.NewTypeError("Method Set.prototype.forEach called on incompatible receiver %s", r.objectproto_toString(FunctionCall{This: thisObj})))
+		panic(r.NewTypeError("Method Set.prototype.forEach called on incompatible receiver %s", r.noSideEffectsToString(thisObj)))
 	}
 	callbackFn, ok := r.toObject(call.Argument(0)).self.assertCallable()
 	if !ok {
@@ -188,7 +188,7 @@ func (r *Runtime) setProto_has(call FunctionCall) Value {
 	thisObj := r.toObject(call.This)
 	so, ok := thisObj.self.(*setObject)
 	if !ok {
-		panic(r.NewTypeError("Method Set.prototype.has called on incompatible receiver %s", r.objectproto_toString(FunctionCall{This: thisObj})))
+		panic(r.NewTypeError("Method Set.prototype.has called on incompatible receiver %s", r.noSideEffectsToString(thisObj)))
 	}
 
 	return r.toBoolean(so.m.has(call.Argument(0)))
@@ -198,7 +198,7 @@ func (r *Runtime) setProto_getSize(call FunctionCall) Value {
 	thisObj := r.toObject(call.This)
 	so, ok := thisObj.self.(*setObject)
 	if !ok {
-		panic(r.NewTypeError("Method get Set.prototype.size called on incompatible receiver %s", r.objectproto_toString(FunctionCall{This: thisObj})))
+		panic(r.NewTypeError("Method get Set.prototype.size called on incompatible receiver %s", r.noSideEffectsToString(thisObj)))
 	}
 
 	return intToValue(int64(so.m.size))
@@ -208,7 +208,7 @@ func (r *Runtime) setProto_difference(call FunctionCall) Value {
 	thisObj := r.toObject(call.This)
 	so, ok := thisObj.self.(*setObject)
 	if !ok {
-		panic(r.NewTypeError("Method Set.prototype.difference called on incompatible receiver %s", r.objectproto_toString(FunctionCall{This: thisObj})))
+		panic(r.NewTypeError("Method Set.prototype.difference called on incompatible receiver %s", r.noSideEffectsToString(thisObj)))
 	}
 	otherRecord := r.getSetRecord(call.Argument(0))
 	result := r.newSetObject()
@@ -256,7 +256,7 @@ func (r *Runtime) setProto_intersection(call FunctionCall) Value {
 	thisObj := r.toObject(call.This)
 	so, ok := thisObj.self.(*setObject)
 	if !ok {
-		panic(r.NewTypeError("Method Set.prototype.intersection called on incompatible receiver %s", r.objectproto_toString(FunctionCall{This: thisObj})))
+		panic(r.NewTypeError("Method Set.prototype.intersection called on incompatible receiver %s", r.noSideEffectsToString(thisObj)))
 	}
 	otherRecord := r.getSetRecord(call.Argument(0))
 	result := r.newSetObject()
@@ -287,7 +287,7 @@ func (r *Runtime) setProto_isDisjointFrom(call FunctionCall) Value {
 	thisObj := r.toObject(call.This)
 	so, ok := thisObj.self.(*setObject)
 	if !ok {
-		panic(r.NewTypeError("Method Set.prototype.isDisjointFrom called on incompatible receiver %s", r.objectproto_toString(FunctionCall{This: thisObj})))
+		panic(r.NewTypeError("Method Set.prototype.isDisjointFrom called on incompatible receiver %s", r.noSideEffectsToString(thisObj)))
 	}
 	otherRecord := r.getSetRecord(call.Argument(0))
 
@@ -320,7 +320,7 @@ func (r *Runtime) setProto_isSubsetOf(call FunctionCall) Value {
 	thisObj := r.toObject(call.This)
 	so, ok := thisObj.self.(*setObject)
 	if !ok {
-		panic(r.NewTypeError("Method Set.prototype.isSubsetOf called on incompatible receiver %s", r.objectproto_toString(FunctionCall{This: thisObj})))
+		panic(r.NewTypeError("Method Set.prototype.isSubsetOf called on incompatible receiver %s", r.noSideEffectsToString(thisObj)))
 	}
 	otherRecord := r.getSetRecord(call.Argument(0))
 
@@ -345,7 +345,7 @@ func (r *Runtime) setProto_isSupersetOf(call FunctionCall) Value {
 	thisObj := r.toObject(call.This)
 	so, ok := thisObj.self.(*setObject)
 	if !ok {
-		panic(r.NewTypeError("Method Set.prototype.isSupersetOf called on incompatible receiver %s", r.objectproto_toString(FunctionCall{This: thisObj})))
+		panic(r.NewTypeError("Method Set.prototype.isSupersetOf called on incompatible receiver %s", r.noSideEffectsToString(thisObj)))
 	}
 	otherRecord := r.getSetRecord(call.Argument(0))
 
@@ -368,7 +368,7 @@ func (r *Runtime) setProto_symmetricDifference(call FunctionCall) Value {
 	thisObj := r.toObject(call.This)
 	so, ok := thisObj.self.(*setObject)
 	if !ok {
-		panic(r.NewTypeError("Method Set.prototype.symmetricDifference called on incompatible receiver %s", r.objectproto_toString(FunctionCall{This: thisObj})))
+		panic(r.NewTypeError("Method Set.prototype.symmetricDifference called on incompatible receiver %s", r.noSideEffectsToString(thisObj)))
 	}
 	otherRecord := r.getSetRecord(call.Argument(0))
 	result := r.newSetObject()
@@ -400,7 +400,7 @@ func (r *Runtime) setProto_union(call FunctionCall) Value {
 	thisObj := r.toObject(call.This)
 	so, ok := thisObj.self.(*setObject)
 	if !ok {
-		panic(r.NewTypeError("Method Set.prototype.union called on incompatible receiver %s", r.objectproto_toString(FunctionCall{This: thisObj})))
+		panic(r.NewTypeError("Method Set.prototype.union called on incompatible receiver %s", r.noSideEffectsToString(thisObj)))
 	}
 	otherRecord := r.getSetRecord(call.Argument(0))
 	result := r.newSetObject()
@@ -486,7 +486,7 @@ func (r *Runtime) setIterProto_next(call FunctionCall) Value {
 	if iter, ok := thisObj.self.(*setIterObject); ok {
 		return iter.next()
 	}
-	panic(r.NewTypeError("Method Set Iterator.prototype.next called on incompatible receiver %s", r.objectproto_toString(FunctionCall{This: thisObj})))
+	panic(r.NewTypeError("Method Set Iterator.prototype.next called on incompatible receiver %s", r.noSideEffectsToString(thisObj)))
 }
 
 type setRecord struct {

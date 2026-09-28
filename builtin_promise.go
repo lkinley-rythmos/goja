@@ -252,7 +252,10 @@ func (r *Runtime) builtin_newPromise(args []Value, newTarget *Object) *Object {
 	if len(args) > 0 {
 		arg0 = args[0]
 	}
-	executor := r.toCallable(arg0)
+	executor := toCallableOrNil(arg0)
+	if executor == nil {
+		panic(r.newTypeErrorString("Promise resolver " + r.noSideEffectsToString(nilSafe(arg0)) + " is not a function"))
+	}
 
 	proto := r.getPrototypeFromCtor(newTarget, r.global.Promise, r.getPromisePrototype())
 	po := r.newPromise(proto)
@@ -276,7 +279,7 @@ func (r *Runtime) promiseProto_then(call FunctionCall) Value {
 		resultCapability := r.newPromiseCapability(c)
 		return r.performPromiseThen(p, call.Argument(0), call.Argument(1), resultCapability)
 	}
-	panic(r.NewTypeError("Method Promise.prototype.then called on incompatible receiver %s", r.objectproto_toString(FunctionCall{This: thisObj})))
+	panic(r.NewTypeError("Method Promise.prototype.then called on incompatible receiver %s", r.noSideEffectsToString(thisObj)))
 }
 
 func (r *Runtime) newPromiseCapability(c *Object) *promiseCapability {

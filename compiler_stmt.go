@@ -452,6 +452,7 @@ func (c *compiler) compileLabeledForInOfStatement(into ast.ForInto, source ast.E
 		c.popScope()
 	}
 	if iter {
+		c.p.addExprRange(source)
 		c.emit(iterateP)
 	} else {
 		c.emit(enumerate)
@@ -788,6 +789,7 @@ func (c *compiler) compileVarBinding(expr *ast.Binding) {
 		c.emitVarAssign(target.Name, int(target.Idx)-1, c.compileExpression(expr.Initializer))
 	case ast.Pattern:
 		c.compileExpression(expr.Initializer).emitGetter(true)
+		c.patternSrc = expr.Initializer
 		c.emitPattern(target, c.emitPatternVarAssign, false)
 	default:
 		c.throwSyntaxErrorf(int(target.Idx0()-1), "unsupported variable binding target: %T", target)
@@ -843,6 +845,7 @@ func (c *compiler) compileLexicalBinding(expr *ast.Binding) {
 		c.emitLexicalAssign(target.Name, int(target.Idx)-1, c.compileExpression(expr.Initializer))
 	case ast.Pattern:
 		c.compileExpression(expr.Initializer).emitGetter(true)
+		c.patternSrc = expr.Initializer
 		c.emitPattern(target, func(target, init compiledExpr) {
 			c.emitPatternLexicalAssign(target, init)
 		}, false)

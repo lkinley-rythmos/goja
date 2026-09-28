@@ -28,6 +28,9 @@ type compiledCallExpr struct {
 	baseCompiledExpr
 	args   []compiledExpr
 	callee compiledExpr
+	// calleeNode is the callee as written, named in the error if it is
+	// not a function.
+	calleeNode ast.Expression
 
 	isVariadic bool
 }
@@ -59,6 +62,7 @@ type compiledLiteral struct {
 type compiledTemplateLiteral struct {
 	baseCompiledExpr
 	tag         compiledExpr
+	tagNode     ast.Expression
 	elements    []*ast.TemplateElement
 	expressions []compiledExpr
 }
@@ -72,6 +76,7 @@ type compiledAssignExpr struct {
 type compiledObjectAssignmentPattern struct {
 	baseCompiledExpr
 	expr *ast.ObjectPattern
+	src  ast.Expression // the value assigned, as written
 }
 
 type compiledArrayAssignmentPattern struct {
@@ -190,6 +195,7 @@ type compiledEnumGetExpr struct {
 type compiledSpreadCallArgument struct {
 	baseCompiledExpr
 	expr compiledExpr
+	node ast.Expression
 }
 
 type compiledOptionalChain struct {
@@ -1289,6 +1295,7 @@ func (e *compiledTemplateLiteral) emitGetter(putOnStack bool) {
 		for _, expr := range e.expressions {
 			expr.emitGetter(true)
 		}
+		e.c.p.addExprRange(e.tagNode)
 		e.c.emit(call(len(e.expressions) + 1))
 	}
 	if !putOnStack {
@@ -1331,6 +1338,11 @@ func (e *compiledFunctionLiteral) compile() (prg *Program, name unistring.String
 	e.c.assert(e.typ != funcNone, e.offset, "compiledFunctionLiteral.typ is not set")
 
 	savedPrg := e.c.p
+	savedPatternSrc, savedPatternNested := e.c.patternSrc, e.c.patternNested
+	e.c.patternSrc, e.c.patternNested = nil, false
+	defer func() {
+		e.c.patternSrc, e.c.patternNested = savedPatternSrc, savedPatternNested
+	}()
 	preambleLen := 8 // enter, boxThis, loadStack(0), initThis, createArgs, set, loadCallee, init
 	e.c.p = &Program{
 		src:    e.c.p.src,
@@ -2324,6 +2336,7 @@ func (e *compiledNewExpr) emitGetter(putOnStack bool) {
 		expr.emitGetter(true)
 	}
 	e.addSrcMap()
+	e.c.p.addExprRange(e.calleeNode)
 	if e.isVariadic {
 		e.c.emit(newVariadic, endVariadic)
 	} else {
@@ -2352,6 +2365,7 @@ func (c *compiler) compileNewExpression(v *ast.NewExpression) compiledExpr {
 	r := &compiledNewExpr{
 		compiledCallExpr: compiledCallExpr{
 			callee:     c.compileExpression(v.Callee),
+			calleeNode: v.Callee,
 			args:       args,
 			isVariadic: isVariadic,
 		},
@@ -2465,6 +2479,7 @@ func (c *compiler) evalConst(expr compiledExpr) (Value, *Exception) {
 	} else {
 		c.evalVM.prg.code = c.evalVM.prg.code[:savedPc]
 		c.p.code = c.evalVM.prg.code
+		c.p.truncateExprMap(savedPc)
 	}
 	if ex == nil {
 		return c.evalVM.pop(), nil
@@ -2979,6 +2994,7 @@ func (e *compiledArrayLiteral) emitGetter(putOnStack bool) {
 		if spread, ok := v.(*ast.SpreadElement); ok {
 			hasSpread = true
 			e.c.compileExpression(spread.Expression).emitGetter(true)
+			e.c.p.addExprRange(spread.Expression)
 			e.c.emit(pushArraySpread)
 		} else {
 			if v != nil {
@@ -3097,7 +3113,7 @@ func (e *compiledCallExpr) emitGetter(putOnStack bool) {
 		} else {
 			e.c.emit(superCall(len(e.args)))
 		}
-	} else if calleeName == "eval" {
+	} else if e.c.p.addExprRange(e.calleeNode); calleeName == "eval" {
 		foundVar := false
 		for sc := e.c.scope; sc != nil; sc = sc.outer {
 			if !foundVar && (sc.variable || sc.isFunction()) {
@@ -3148,6 +3164,7 @@ func (e *compiledCallExpr) emitDelete(putOnStack bool) {
 func (c *compiler) compileSpreadCallArgument(spread *ast.SpreadElement) compiledExpr {
 	r := &compiledSpreadCallArgument{
 		expr: c.compileExpression(spread.Expression),
+		node: spread.Expression,
 	}
 	r.init(c, spread.Idx0())
 	return r
@@ -3182,6 +3199,7 @@ func (c *compiler) compileCallExpression(v *ast.CallExpression) compiledExpr {
 	r := &compiledCallExpr{
 		args:       args,
 		callee:     c.compileCallee(v.Callee),
+		calleeNode: v.Callee,
 		isVariadic: isVariadic,
 	}
 	r.init(c, v.LeftParenthesis)
@@ -3237,6 +3255,7 @@ func (c *compiler) compileTemplateLiteral(v *ast.TemplateLiteral) compiledExpr {
 	r := &compiledTemplateLiteral{}
 	if v.Tag != nil {
 		r.tag = c.compileExpression(v.Tag)
+		r.tagNode = v.Tag
 	}
 	ce := make([]compiledExpr, len(v.Expressions))
 	for i, expr := range v.Expressions {
@@ -3270,6 +3289,9 @@ func (c *compiler) compileAssignExpression(v *ast.AssignExpression) compiledExpr
 		left:     c.compileExpression(v.Left),
 		right:    c.compileExpression(v.Right),
 		operator: v.Operator,
+	}
+	if p, ok := r.left.(*compiledObjectAssignmentPattern); ok {
+		p.src = v.Right
 	}
 	r.init(c, v.Idx0())
 	return r
@@ -3371,11 +3393,37 @@ func (c *compiler) emitAssign(target ast.Expression, init compiledExpr, emitAssi
 }
 
 func (c *compiler) emitObjectPattern(pattern *ast.ObjectPattern, emitAssign func(target, init compiledExpr), putOnStack bool) {
-	if pattern.Rest != nil {
-		c.emit(createDestructSrc)
-	} else {
-		c.emit(checkObjectCoercible)
+	check := &destructCheck{
+		keyed:  pattern.Rest != nil,
+		nested: c.patternNested,
 	}
+	if len(pattern.Properties) > 0 {
+		switch prop := pattern.Properties[0].(type) {
+		case *ast.PropertyShort:
+			check.firstKey, check.hasFirstKey = prop.Name.Name.String(), true
+			check.firstDefault = prop.Initializer != nil
+		case *ast.PropertyKeyed:
+			if !prop.Computed {
+				switch key := prop.Key.(type) {
+				case *ast.Identifier:
+					check.firstKey, check.hasFirstKey = key.Name.String(), true
+				case *ast.StringLiteral:
+					check.firstKey, check.hasFirstKey = key.Value.String(), true
+				case *ast.NumberLiteral:
+					check.firstKey, check.hasFirstKey = numberLiteralText(key)
+				}
+			}
+			if _, ok := prop.Value.(*ast.AssignExpression); ok {
+				check.firstDefault = true
+			}
+		}
+	}
+	c.p.addExprRange(c.patternSrc)
+	c.patternSrc = nil
+	c.emit(check)
+	savedNested := c.patternNested
+	c.patternNested = true
+	defer func() { c.patternNested = savedNested }()
 	for _, prop := range pattern.Properties {
 		switch prop := prop.(type) {
 		case *ast.PropertyShort:
@@ -3414,7 +3462,12 @@ func (c *compiler) emitObjectPattern(pattern *ast.ObjectPattern, emitAssign func
 }
 
 func (c *compiler) emitArrayPattern(pattern *ast.ArrayPattern, emitAssign func(target, init compiledExpr), putOnStack bool) {
+	c.p.addExprRange(c.patternSrc)
+	c.patternSrc = nil
 	c.emit(iterate)
+	savedNested := c.patternNested
+	c.patternNested = true
+	defer func() { c.patternNested = savedNested }()
 	for _, elt := range pattern.Elements {
 		switch elt := elt.(type) {
 		case nil:
@@ -3444,6 +3497,7 @@ func (c *compiler) emitArrayPattern(pattern *ast.ArrayPattern, emitAssign func(t
 
 func (e *compiledObjectAssignmentPattern) emitSetter(valueExpr compiledExpr, putOnStack bool) {
 	valueExpr.emitGetter(true)
+	e.c.patternSrc = e.src
 	e.c.emitObjectPattern(e.expr, e.c.emitPatternAssign, putOnStack)
 }
 
@@ -3526,6 +3580,7 @@ func (c *compiler) compileEmitterExpr(emitter func(), idx file.Idx) *compiledEmi
 func (e *compiledSpreadCallArgument) emitGetter(putOnStack bool) {
 	e.expr.emitGetter(putOnStack)
 	if putOnStack {
+		e.c.p.addExprRange(e.node)
 		e.c.emit(pushSpread)
 	}
 }

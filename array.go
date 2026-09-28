@@ -260,7 +260,9 @@ func (a *arrayObject) _setOwnIdx(idx uint32, val Value, throw bool) bool {
 	} else {
 		if prop, ok := prop.(*valueProperty); ok {
 			if !prop.isWritable() {
-				a.val.runtime.typeErrorResult(throw)
+				if throw {
+					panic(a.val.runtime.readOnlyError(prop, intToValue(int64(idx)), a.val))
+				}
 				return false
 			}
 			prop.set(a.val, val)
@@ -522,7 +524,9 @@ func (a *arrayObject) _deleteIdxProp(idx uint32, throw bool) bool {
 		if v := a.values[idx]; v != nil {
 			if p, ok := v.(*valueProperty); ok {
 				if !p.configurable {
-					a.val.runtime.typeErrorResult(throw, "Cannot delete property '%d' of %s", idx, a.val.toString())
+					if throw {
+						panic(a.val.runtime.newTypeErrorString("Cannot delete property '" + strconv.FormatUint(uint64(idx), 10) + "' of " + a.val.runtime.noSideEffectsToString(a.val)))
+					}
 					return false
 				}
 				a.propValueCount--

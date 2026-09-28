@@ -553,7 +553,7 @@ func (r *Runtime) object_fromEntries(call FunctionCall) Value {
 		i0 := valueInt(0)
 		i1 := valueInt(1)
 
-		itemObj := r.toObject(nextValue)
+		itemObj := r.toEntryObject(nextValue)
 		k := itemObj.self.getIdx(i0, nil)
 		v := itemObj.self.getIdx(i1, nil)
 		key := toPropertyKey(k)

@@ -336,12 +336,12 @@ func TestStringPrimitiveLength(t *testing.T) {
 	try { undefined.length; } catch (e) { msg = e.message; }
 	r.push(msg);
 	try { null.length; } catch (e) { msg = e.message; }
-	r.push(msg);                                        // goja reports null as "undefined" here today; keep that
+	r.push(msg);                                        // V8's text, which names null
 	r.join("|");
 	`
 	r := New()
 	r.Set("goStr", "héllo")
-	r.testScript(SCRIPT, asciiString("0|5|5|4|5|3|42|3|Cannot read property 'length' of undefined|Cannot read property 'length' of undefined"), t)
+	r.testScript(SCRIPT, asciiString("0|5|5|4|5|3|42|3|Cannot read properties of undefined (reading 'length')|Cannot read properties of null (reading 'length')"), t)
 }
 
 func BenchmarkStringPrimitiveLength(b *testing.B) {

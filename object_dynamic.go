@@ -436,7 +436,7 @@ func (o *baseDynamicObject) assertCallable() (call func(FunctionCall) Value, ok 
 }
 
 func (o *baseDynamicObject) vmCall(vm *vm, n int) {
-	panic(vm.r.NewTypeError("Dynamic object is not callable"))
+	panic(vm.notAFunctionError(o.val))
 }
 
 func (*baseDynamicObject) assertConstructor() func(args []Value, newTarget *Object) *Object {

@@ -2,6 +2,7 @@ package goja
 
 import (
 	"fmt"
+	"math"
 	"sort"
 
 	"github.com/dop251/goja/token"
@@ -78,6 +79,16 @@ type Program struct {
 	funcName unistring.String
 	src      *file.File
 	srcMap   []srcMapItem
+
+	// exprMap holds, for the instructions whose errors name an expression
+	// (a callee that is not a function, a value that is not iterable, ...),
+	// where that expression is in src, sorted by pc.
+	exprMap []exprMapItem
+}
+
+type exprMapItem struct {
+	pc         int32
+	start, end int32 // offsets in src
 }
 
 type compiler struct {
@@ -99,6 +110,13 @@ type compiler struct {
 	// depth counts the nested expressions and statements being compiled;
 	// see maxNativeDepth.
 	depth int
+
+	// patternSrc is the initializer of the destructuring pattern about to
+	// be emitted, and patternNested is set while the patterns nested in
+	// one are emitted: V8's errors for a value that cannot be
+	// destructured name them.
+	patternSrc    ast.Expression
+	patternNested bool
 }
 
 // enterNesting counts one level of compiler recursion. The parser bounds the
@@ -495,6 +513,39 @@ func (p *Program) sourceOffset(pc int) int {
 	return 0
 }
 
+// addExprRange records that the next instruction's errors name the
+// expression node.
+func (p *Program) addExprRange(node ast.Node) {
+	if node == nil || p.src == nil {
+		return
+	}
+	start, end := int(node.Idx0())-1, int(node.Idx1())-1
+	if start < 0 || end <= start || end > len(p.src.Source()) || end > math.MaxInt32 || len(p.code) > math.MaxInt32 {
+		return
+	}
+	p.exprMap = append(p.exprMap, exprMapItem{pc: int32(len(p.code)), start: int32(start), end: int32(end)})
+}
+
+// exprRange returns where in src the expression recorded for the
+// instruction at pc is, if there is one.
+func (p *Program) exprRange(pc int) (start, end int, ok bool) {
+	i := sort.Search(len(p.exprMap), func(idx int) bool {
+		return int(p.exprMap[idx].pc) >= pc
+	})
+	if i < len(p.exprMap) && int(p.exprMap[i].pc) == pc {
+		return int(p.exprMap[i].start), int(p.exprMap[i].end), true
+	}
+	return 0, 0, false
+}
+
+// truncateExprMap drops the ranges recorded at pc and after, for code
+// that is discarded.
+func (p *Program) truncateExprMap(pc int) {
+	for len(p.exprMap) > 0 && int(p.exprMap[len(p.exprMap)-1].pc) >= pc {
+		p.exprMap = p.exprMap[:len(p.exprMap)-1]
+	}
+}
+
 func (p *Program) addSrcMap(srcPos int) {
 	if len(p.srcMap) > 0 && p.srcMap[len(p.srcMap)-1].srcPos == srcPos {
 		return
@@ -876,6 +927,10 @@ func (s *scope) trimCode(delta int) {
 		srcMap := s.c.p.srcMap
 		for i := range srcMap {
 			srcMap[i].pc -= delta
+		}
+		exprMap := s.c.p.exprMap
+		for i := range exprMap {
+			exprMap[i].pc -= int32(delta)
 		}
 		s.adjustBase(-delta)
 	}

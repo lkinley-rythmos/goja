@@ -304,7 +304,10 @@ func (f *baseJsFuncObject) construct(args []Value, newTarget *Object) *Object {
 }
 
 func (f *classFuncObject) Call(FunctionCall) Value {
-	panic(f.val.runtime.NewTypeError("Class constructor cannot be invoked without 'new'"))
+	if name := dataPropertyString(f.val, "name", ""); name != "" {
+		panic(f.val.runtime.newTypeErrorString("Class constructor " + name + " cannot be invoked without 'new'"))
+	}
+	panic(f.val.runtime.newTypeErrorString("Class constructors cannot be invoked without 'new'"))
 }
 
 func (f *classFuncObject) assertCallable() (func(FunctionCall) Value, bool) {
@@ -403,7 +406,7 @@ func (f *classFuncObject) construct(args []Value, newTarget *Object) *Object {
 			if v := r.vm.stack[r.vm.sp+1]; v != nil { // using residual 'this' value (a bit hacky)
 				instance = r.toObject(v)
 			} else {
-				panic(r.newError(r.getReferenceError(), "Must call super constructor in derived class before returning from derived constructor"))
+				panic(r.newError(r.getReferenceError(), errMsgDerivedThis))
 			}
 		}
 		return instance
@@ -620,7 +623,9 @@ func (f *baseFuncObject) setOwnStr(name unistring.String, val Value, throw bool)
 			f.materializeIntrinsics()
 			return f.baseObject.setOwnStr(name, val, throw)
 		}
-		f.val.runtime.typeErrorResult(throw, "Cannot assign to read only property '%s'", name)
+		if throw {
+			panic(f.val.runtime.readOnlyError(p, stringValueFromRaw(name), f.val))
+		}
 		return false
 	}
 	return f.baseObject.setOwnStr(name, val, throw)
@@ -1241,6 +1246,9 @@ func (g *generatorObject) tryCallDelegated(fn func() (Value, bool)) (ret Value, 
 }
 
 func (g *generatorObject) callDelegated(method func(FunctionCall) Value, v Value) (Value, bool) {
+	if method == nil {
+		panic(g.delegated.nextNotCallable())
+	}
 	res := g.val.runtime.toObject(method(FunctionCall{This: g.delegated.iterator, Arguments: []Value{v}}))
 	if iteratorComplete(res) {
 		g.delegated = nil

@@ -152,7 +152,7 @@ type thisRef struct {
 func (r *thisRef) get() Value {
 	v := (*r.v)[r.idx]
 	if v == nil {
-		panic(referenceError("Must call super constructor in derived class before accessing 'this'"))
+		panic(referenceError(errMsgDerivedThis))
 	}
 
 	return v
@@ -511,7 +511,7 @@ func (s *stash) getByName(name unistring.String) (v Value, exists bool) {
 		v := s.values[idx&^maskTyp]
 		if v == nil {
 			if idx&maskVar == 0 {
-				panic(errAccessBeforeInit)
+				panic(referenceError("Cannot access '" + name.String() + "' before initialization"))
 			} else {
 				v = _undefined
 			}
@@ -961,9 +961,9 @@ func (vm *vm) toCallee(v Value) *Object {
 		unresolved.throw()
 		panic("Unreachable")
 	case memberUnresolved:
-		panic(vm.r.NewTypeError("Object has no member '%s'", unresolved.ref))
+		panic(vm.notAFunctionError(_undefined))
 	}
-	panic(vm.r.NewTypeError("Value is not an object: %s", v.toString()))
+	panic(vm.notAFunctionError(v))
 }
 
 type loadVal struct {
@@ -1079,7 +1079,7 @@ func (l loadStackLex) exec(vm *vm) {
 		p = &vm.stack[vm.sb+vm.args+int(l)]
 	}
 	if *p == nil {
-		vm.throw(errAccessBeforeInit)
+		vm.throw(vm.accessBeforeInitError())
 		return
 	}
 	vm.push(*p)
@@ -1091,7 +1091,7 @@ type loadStack1Lex int
 func (l loadStack1Lex) exec(vm *vm) {
 	p := &vm.stack[vm.sb+int(l)]
 	if *p == nil {
-		vm.throw(errAccessBeforeInit)
+		vm.throw(vm.accessBeforeInitError())
 		return
 	}
 	vm.push(*p)
@@ -1143,7 +1143,7 @@ func (vm *vm) storeStackLex(s int) {
 	if *p != nil {
 		*p = vm.stack[vm.sp-1]
 	} else {
-		panic(errAccessBeforeInit)
+		panic(vm.accessBeforeInitError())
 	}
 	vm.pc++
 }
@@ -1158,7 +1158,7 @@ func (vm *vm) storeStack1Lex(s int) {
 	if *p != nil {
 		*p = vm.stack[vm.sp-1]
 	} else {
-		panic(errAccessBeforeInit)
+		panic(vm.accessBeforeInitError())
 	}
 	vm.pc++
 }
@@ -1865,7 +1865,7 @@ type _getElemRef struct{}
 var getElemRef _getElemRef
 
 func (_getElemRef) exec(vm *vm) {
-	obj := vm.stack[vm.sp-2].ToObject(vm.r)
+	obj := vm.toRefBase(vm.stack[vm.sp-2], vm.stack[vm.sp-1])
 	propName := vm.stack[vm.sp-1]
 	vm.refStack = append(vm.refStack, &objRef{
 		base: obj,
@@ -1880,7 +1880,7 @@ type _getElemRefRecv struct{}
 var getElemRefRecv _getElemRefRecv
 
 func (_getElemRefRecv) exec(vm *vm) {
-	obj := vm.stack[vm.sp-1].ToObject(vm.r)
+	obj := vm.toRefBase(vm.stack[vm.sp-1], vm.stack[vm.sp-2])
 	propName := vm.stack[vm.sp-2]
 	vm.refStack = append(vm.refStack, &objRef{
 		base: obj,
@@ -1896,7 +1896,7 @@ type _getElemRefStrict struct{}
 var getElemRefStrict _getElemRefStrict
 
 func (_getElemRefStrict) exec(vm *vm) {
-	obj := vm.stack[vm.sp-2].ToObject(vm.r)
+	obj := vm.toRefBase(vm.stack[vm.sp-2], vm.stack[vm.sp-1])
 	propName := vm.stack[vm.sp-1]
 	vm.refStack = append(vm.refStack, &objRef{
 		base:   obj,
@@ -1912,7 +1912,7 @@ type _getElemRefRecvStrict struct{}
 var getElemRefRecvStrict _getElemRefRecvStrict
 
 func (_getElemRefRecvStrict) exec(vm *vm) {
-	obj := vm.stack[vm.sp-1].ToObject(vm.r)
+	obj := vm.toRefBase(vm.stack[vm.sp-1], vm.stack[vm.sp-2])
 	propName := vm.stack[vm.sp-2]
 	vm.refStack = append(vm.refStack, &objRef{
 		base:   obj,
@@ -1929,7 +1929,7 @@ type _setElem struct{}
 var setElem _setElem
 
 func (_setElem) exec(vm *vm) {
-	obj := vm.stack[vm.sp-3].ToObject(vm.r)
+	obj := vm.toSetBase(vm.stack[vm.sp-3], vm.stack[vm.sp-2])
 	propName := toPropertyKey(vm.stack[vm.sp-2])
 	val := vm.stack[vm.sp-1]
 
@@ -1945,7 +1945,7 @@ type _setElem1 struct{}
 var setElem1 _setElem1
 
 func (_setElem1) exec(vm *vm) {
-	obj := vm.stack[vm.sp-3].ToObject(vm.r)
+	obj := vm.toSetBase(vm.stack[vm.sp-3], vm.stack[vm.sp-2])
 	propName := vm.stack[vm.sp-2]
 	val := vm.stack[vm.sp-1]
 
@@ -2002,7 +2002,7 @@ type _setElemP struct{}
 var setElemP _setElemP
 
 func (_setElemP) exec(vm *vm) {
-	obj := vm.stack[vm.sp-3].ToObject(vm.r)
+	obj := vm.toSetBase(vm.stack[vm.sp-3], vm.stack[vm.sp-2])
 	propName := toPropertyKey(vm.stack[vm.sp-2])
 	val := vm.stack[vm.sp-1]
 
@@ -2023,7 +2023,7 @@ func (_setElemStrict) exec(vm *vm) {
 	if receiverObj, ok := receiver.(*Object); ok {
 		receiverObj.setOwn(propName, val, true)
 	} else {
-		base := receiver.ToObject(vm.r)
+		base := vm.toSetBase(receiver, vm.stack[vm.sp-2])
 		base.set(propName, val, receiver, true)
 	}
 
@@ -2044,7 +2044,7 @@ func (_setElemRecv) exec(vm *vm) {
 	if obj, ok := o.(*Object); ok {
 		obj.set(propName, val, receiver, false)
 	} else {
-		base := o.ToObject(vm.r)
+		base := vm.toSetBase(o, vm.stack[vm.sp-3])
 		base.set(propName, val, receiver, false)
 	}
 
@@ -2065,7 +2065,7 @@ func (_setElemRecvStrict) exec(vm *vm) {
 	if obj, ok := o.(*Object); ok {
 		obj.set(propName, val, receiver, true)
 	} else {
-		base := o.ToObject(vm.r)
+		base := vm.toSetBase(o, vm.stack[vm.sp-3])
 		base.set(propName, val, receiver, true)
 	}
 
@@ -2085,7 +2085,7 @@ func (_setElemStrictP) exec(vm *vm) {
 	if receiverObj, ok := receiver.(*Object); ok {
 		receiverObj.setOwn(propName, val, true)
 	} else {
-		base := receiver.ToObject(vm.r)
+		base := vm.toSetBase(receiver, vm.stack[vm.sp-2])
 		base.set(propName, val, receiver, true)
 	}
 
@@ -2105,7 +2105,7 @@ func (_setElemRecvP) exec(vm *vm) {
 	if obj, ok := o.(*Object); ok {
 		obj.set(propName, val, receiver, false)
 	} else {
-		base := o.ToObject(vm.r)
+		base := vm.toSetBase(o, vm.stack[vm.sp-3])
 		base.set(propName, val, receiver, false)
 	}
 
@@ -2125,7 +2125,7 @@ func (_setElemRecvStrictP) exec(vm *vm) {
 	if obj, ok := o.(*Object); ok {
 		obj.set(propName, val, receiver, true)
 	} else {
-		base := o.ToObject(vm.r)
+		base := vm.toSetBase(o, vm.stack[vm.sp-3])
 		base.set(propName, val, receiver, true)
 	}
 
@@ -2187,7 +2187,7 @@ type getPropRef unistring.String
 
 func (p getPropRef) exec(vm *vm) {
 	vm.refStack = append(vm.refStack, &objStrRef{
-		base: vm.stack[vm.sp-1].ToObject(vm.r),
+		base: vm.toRefBaseName(vm.stack[vm.sp-1], unistring.String(p)),
 		name: unistring.String(p),
 	})
 	vm.sp--
@@ -2199,7 +2199,7 @@ type getPropRefRecv unistring.String
 func (p getPropRefRecv) exec(vm *vm) {
 	vm.refStack = append(vm.refStack, &objStrRef{
 		this: vm.stack[vm.sp-2],
-		base: vm.stack[vm.sp-1].ToObject(vm.r),
+		base: vm.toRefBaseName(vm.stack[vm.sp-1], unistring.String(p)),
 		name: unistring.String(p),
 	})
 	vm.sp -= 2
@@ -2210,7 +2210,7 @@ type getPropRefStrict unistring.String
 
 func (p getPropRefStrict) exec(vm *vm) {
 	vm.refStack = append(vm.refStack, &objStrRef{
-		base:   vm.stack[vm.sp-1].ToObject(vm.r),
+		base:   vm.toRefBaseName(vm.stack[vm.sp-1], unistring.String(p)),
 		name:   unistring.String(p),
 		strict: true,
 	})
@@ -2223,7 +2223,7 @@ type getPropRefRecvStrict unistring.String
 func (p getPropRefRecvStrict) exec(vm *vm) {
 	vm.refStack = append(vm.refStack, &objStrRef{
 		this:   vm.stack[vm.sp-2],
-		base:   vm.stack[vm.sp-1].ToObject(vm.r),
+		base:   vm.toRefBaseName(vm.stack[vm.sp-1], unistring.String(p)),
 		name:   unistring.String(p),
 		strict: true,
 	})
@@ -2235,7 +2235,7 @@ type setProp unistring.String
 
 func (p setProp) exec(vm *vm) {
 	val := vm.stack[vm.sp-1]
-	vm.stack[vm.sp-2].ToObject(vm.r).self.setOwnStr(unistring.String(p), val, false)
+	vm.toSetBaseName(vm.stack[vm.sp-2], unistring.String(p)).self.setOwnStr(unistring.String(p), val, false)
 	vm.stack[vm.sp-2] = val
 	vm.sp--
 	vm.pc++
@@ -2245,7 +2245,7 @@ type setPropP unistring.String
 
 func (p setPropP) exec(vm *vm) {
 	val := vm.stack[vm.sp-1]
-	vm.stack[vm.sp-2].ToObject(vm.r).self.setOwnStr(unistring.String(p), val, false)
+	vm.toSetBaseName(vm.stack[vm.sp-2], unistring.String(p)).self.setOwnStr(unistring.String(p), val, false)
 	vm.sp -= 2
 	vm.pc++
 }
@@ -2259,7 +2259,7 @@ func (p setPropStrict) exec(vm *vm) {
 	if receiverObj, ok := receiver.(*Object); ok {
 		receiverObj.self.setOwnStr(propName, val, true)
 	} else {
-		base := receiver.ToObject(vm.r)
+		base := vm.toSetBaseName(receiver, propName)
 		base.setStr(propName, val, receiver, true)
 	}
 
@@ -2278,7 +2278,7 @@ func (p setPropRecv) exec(vm *vm) {
 	if obj, ok := o.(*Object); ok {
 		obj.setStr(propName, val, receiver, false)
 	} else {
-		base := o.ToObject(vm.r)
+		base := vm.toSetBaseName(o, propName)
 		base.setStr(propName, val, receiver, false)
 	}
 
@@ -2297,7 +2297,7 @@ func (p setPropRecvStrict) exec(vm *vm) {
 	if obj, ok := o.(*Object); ok {
 		obj.setStr(propName, val, receiver, true)
 	} else {
-		base := o.ToObject(vm.r)
+		base := vm.toSetBaseName(o, propName)
 		base.setStr(propName, val, receiver, true)
 	}
 
@@ -2316,7 +2316,7 @@ func (p setPropRecvP) exec(vm *vm) {
 	if obj, ok := o.(*Object); ok {
 		obj.setStr(propName, val, receiver, false)
 	} else {
-		base := o.ToObject(vm.r)
+		base := vm.toSetBaseName(o, propName)
 		base.setStr(propName, val, receiver, false)
 	}
 
@@ -2334,7 +2334,7 @@ func (p setPropRecvStrictP) exec(vm *vm) {
 	if obj, ok := o.(*Object); ok {
 		obj.setStr(propName, val, receiver, true)
 	} else {
-		base := o.ToObject(vm.r)
+		base := vm.toSetBaseName(o, propName)
 		base.setStr(propName, val, receiver, true)
 	}
 
@@ -2351,7 +2351,7 @@ func (p setPropStrictP) exec(vm *vm) {
 	if receiverObj, ok := receiver.(*Object); ok {
 		receiverObj.self.setOwnStr(propName, val, true)
 	} else {
-		base := receiver.ToObject(vm.r)
+		base := vm.toSetBaseName(receiver, propName)
 		base.setStr(propName, val, receiver, true)
 	}
 
@@ -2538,7 +2538,7 @@ func (g getProp) exec(vm *vm) {
 	v := vm.stack[vm.sp-1]
 	obj := v.baseObject(vm.r)
 	if obj == nil {
-		vm.throw(vm.r.NewTypeError("Cannot read property '%s' of undefined", g))
+		vm.throw(vm.r.readNullishError(v, stringValueFromRaw(unistring.String(g))))
 		return
 	}
 	vm.stack[vm.sp-1] = nilSafe(obj.self.getStr(unistring.String(g), v))
@@ -2569,7 +2569,7 @@ func (g getPropRecv) exec(vm *vm) {
 	v := vm.stack[vm.sp-1]
 	obj := v.baseObject(vm.r)
 	if obj == nil {
-		vm.throw(vm.r.NewTypeError("Cannot read property '%s' of undefined", g))
+		vm.throw(vm.r.readNullishError(v, stringValueFromRaw(unistring.String(g))))
 		return
 	}
 	vm.stack[vm.sp-2] = nilSafe(obj.self.getStr(unistring.String(g), recv))
@@ -2584,7 +2584,7 @@ func (g getPropRecvCallee) exec(vm *vm) {
 	v := vm.stack[vm.sp-1]
 	obj := v.baseObject(vm.r)
 	if obj == nil {
-		vm.throw(vm.r.NewTypeError("Cannot read property '%s' of undefined", g))
+		vm.throw(vm.r.readNullishError(v, stringValueFromRaw(unistring.String(g))))
 		return
 	}
 
@@ -2605,7 +2605,7 @@ func (g getPropCallee) exec(vm *vm) {
 	obj := v.baseObject(vm.r)
 	n := unistring.String(g)
 	if obj == nil {
-		vm.throw(vm.r.NewTypeError("Cannot read property '%s' of undefined or null", n))
+		vm.throw(vm.r.readNullishError(v, stringValueFromRaw(n)))
 		return
 	}
 	prop := obj.self.getStr(n, v)
@@ -2625,7 +2625,7 @@ func (_getElem) exec(vm *vm) {
 	v := vm.stack[vm.sp-2]
 	obj := v.baseObject(vm.r)
 	if obj == nil {
-		vm.throw(vm.r.NewTypeError("Cannot read property '%s' of undefined", vm.stack[vm.sp-1]))
+		vm.throw(vm.r.readNullishError(v, vm.stack[vm.sp-1]))
 		return
 	}
 	propName := toPropertyKey(vm.stack[vm.sp-1])
@@ -2645,7 +2645,7 @@ func (_getElemRecv) exec(vm *vm) {
 	v := vm.stack[vm.sp-1]
 	obj := v.baseObject(vm.r)
 	if obj == nil {
-		vm.throw(vm.r.NewTypeError("Cannot read property '%s' of undefined", vm.stack[vm.sp-2]))
+		vm.throw(vm.r.readNullishError(v, vm.stack[vm.sp-2]))
 		return
 	}
 	propName := toPropertyKey(vm.stack[vm.sp-2])
@@ -2665,7 +2665,7 @@ func (_getKey) exec(vm *vm) {
 	obj := v.baseObject(vm.r)
 	propName := vm.stack[vm.sp-1]
 	if obj == nil {
-		vm.throw(vm.r.NewTypeError("Cannot read property '%s' of undefined", propName.String()))
+		vm.throw(vm.r.readNullishError(v, propName))
 		return
 	}
 
@@ -2683,7 +2683,7 @@ func (_getElemCallee) exec(vm *vm) {
 	v := vm.stack[vm.sp-2]
 	obj := v.baseObject(vm.r)
 	if obj == nil {
-		vm.throw(vm.r.NewTypeError("Cannot read property '%s' of undefined", vm.stack[vm.sp-1]))
+		vm.throw(vm.r.readNullishError(v, vm.stack[vm.sp-1]))
 		return
 	}
 
@@ -2706,7 +2706,7 @@ func (_getElemRecvCallee) exec(vm *vm) {
 	v := vm.stack[vm.sp-2]
 	obj := v.baseObject(vm.r)
 	if obj == nil {
-		vm.throw(vm.r.NewTypeError("Cannot read property '%s' of undefined", vm.stack[vm.sp-1]))
+		vm.throw(vm.r.readNullishError(v, vm.stack[vm.sp-1]))
 		return
 	}
 
@@ -2799,7 +2799,7 @@ var pushArraySpread _pushArraySpread
 
 func (_pushArraySpread) exec(vm *vm) {
 	arr := vm.stack[vm.sp-2].(*Object).self.(*arrayObject)
-	vm.r.getIterator(vm.stack[vm.sp-1], nil).iterate(func(val Value) {
+	vm.getIterator(vm.stack[vm.sp-1], iterSiteForOf).iterate(func(val Value) {
 		if arr.length < math.MaxUint32 {
 			arr.length++
 		} else {
@@ -2820,7 +2820,7 @@ var pushSpread _pushSpread
 func (_pushSpread) exec(vm *vm) {
 	vm.sp--
 	obj := vm.stack[vm.sp]
-	vm.r.getIterator(obj, nil).iterate(func(val Value) {
+	vm.getIterator(obj, iterSiteCallSpread).iterate(func(val Value) {
 		vm.push(val)
 	})
 	vm.pc++
@@ -2865,7 +2865,7 @@ func (vm *vm) setLocalLex(s int) {
 	}
 	p := &stash.values[idx]
 	if *p == nil {
-		panic(errAccessBeforeInit)
+		panic(vm.accessBeforeInitError())
 	}
 	*p = v
 	vm.pc++
@@ -3088,7 +3088,7 @@ func (g loadStashLex) exec(vm *vm) {
 
 	v := stash.getByIdx(idx)
 	if v == nil {
-		vm.throw(errAccessBeforeInit)
+		vm.throw(vm.accessBeforeInitError())
 		return
 	}
 	vm.push(v)
@@ -3161,7 +3161,7 @@ func (g *loadMixedLex) exec(vm *vm) {
 	if stash != nil {
 		v := stash.getByIdx(idx)
 		if v == nil {
-			vm.throw(errAccessBeforeInit)
+			vm.throw(vm.accessBeforeInitError())
 			return
 		}
 		vm.push(v)
@@ -4755,7 +4755,10 @@ var op_instanceof _op_instanceof
 
 func (_op_instanceof) exec(vm *vm) {
 	left := vm.stack[vm.sp-2]
-	right := vm.r.toObject(vm.stack[vm.sp-1])
+	right, ok := vm.stack[vm.sp-1].(*Object)
+	if !ok {
+		panic(vm.r.newTypeErrorString("Right-hand side of 'instanceof' is not an object"))
+	}
 
 	if instanceOfOperator(left, right) {
 		vm.stack[vm.sp-2] = valueTrue
@@ -4773,7 +4776,10 @@ var op_in _op_in
 
 func (_op_in) exec(vm *vm) {
 	left := vm.stack[vm.sp-2]
-	right := vm.r.toObject(vm.stack[vm.sp-1])
+	right, ok := vm.stack[vm.sp-1].(*Object)
+	if !ok {
+		panic(vm.r.newTypeErrorString("Cannot use 'in' operator to search for '" + vm.r.noSideEffectsToString(left) + "' in " + vm.r.noSideEffectsToString(vm.stack[vm.sp-1])))
+	}
 
 	if right.hasProperty(left) {
 		vm.stack[vm.sp-2] = valueTrue
@@ -4884,12 +4890,23 @@ func (_newVariadic) exec(vm *vm) {
 	_new(vm.countVariadicArgs() - 1).exec(vm)
 }
 
+// toConstructor is the constructor of v for new, or V8's error naming the
+// callee.
+func (vm *vm) toConstructor(v Value) func(args []Value, newTarget *Object) *Object {
+	if o, ok := v.(*Object); ok {
+		if ctor := o.self.assertConstructor(); ctor != nil {
+			return ctor
+		}
+	}
+	panic(vm.notAConstructorError(v))
+}
+
 type _new uint32
 
 func (n _new) exec(vm *vm) {
 	sp := vm.sp - int(n)
 	obj := vm.stack[sp-1]
-	ctor := vm.r.toConstructor(obj)
+	ctor := vm.toConstructor(obj)
 	depth := vm.nativeDepth
 	vm.stack[sp-1] = ctor(vm.stack[sp:vm.sp], nil)
 	// As in nativeFuncObject.vmCall: a Go constructor may have recovered a
@@ -5139,7 +5156,7 @@ type _iterateP struct{}
 var iterateP _iterateP
 
 func (_iterateP) exec(vm *vm) {
-	iter := vm.r.getIterator(vm.stack[vm.sp-1], nil)
+	iter := vm.getIterator(vm.stack[vm.sp-1], iterSiteForOf)
 	vm.iterStack = append(vm.iterStack, iterStackItem{iter: iter})
 	vm.sp--
 	vm.pc++
@@ -5150,7 +5167,7 @@ type _iterate struct{}
 var iterate _iterate
 
 func (_iterate) exec(vm *vm) {
-	iter := vm.r.getIterator(vm.stack[vm.sp-1], nil)
+	iter := vm.getIterator(vm.stack[vm.sp-1], iterSiteDestructure)
 	vm.iterStack = append(vm.iterStack, iterStackItem{iter: iter})
 	vm.pc++
 }
@@ -5251,23 +5268,29 @@ func (_copyRest) exec(vm *vm) {
 	vm.pc++
 }
 
-type _createDestructSrc struct{}
-
-var createDestructSrc _createDestructSrc
-
-func (_createDestructSrc) exec(vm *vm) {
-	v := vm.stack[vm.sp-1]
-	vm.r.checkObjectCoercible(v)
-	vm.push(vm.r.newDestructKeyedSource(v))
-	vm.pc++
+// destructCheck starts an object pattern: it requires the value to be an
+// object or a primitive other than null and undefined and, for a pattern
+// with a rest element, pushes the source that records the keys taken.
+type destructCheck struct {
+	keyed bool
+	// What V8's error names: the first property's key, if it is not
+	// computed, whether it has a default, and whether the pattern is
+	// nested in another.
+	firstKey     string
+	hasFirstKey  bool
+	firstDefault bool
+	nested       bool
 }
 
-type _checkObjectCoercible struct{}
-
-var checkObjectCoercible _checkObjectCoercible
-
-func (_checkObjectCoercible) exec(vm *vm) {
-	vm.r.checkObjectCoercible(vm.stack[vm.sp-1])
+func (d *destructCheck) exec(vm *vm) {
+	v := vm.stack[vm.sp-1]
+	switch v.(type) {
+	case valueUndefined, valueNull:
+		panic(vm.destructureError(v, d))
+	}
+	if d.keyed {
+		vm.push(vm.r.newDestructKeyedSource(v))
+	}
 	vm.pc++
 }
 
@@ -5501,7 +5524,7 @@ func (c *newDerivedClass) exec(vm *vm) {
 	var superClass *Object
 	if o := vm.stack[vm.sp-1]; o != _null {
 		if sc, ok := o.(*Object); !ok || sc.self.assertConstructor() == nil {
-			vm.throw(vm.r.NewTypeError("Class extends value is not a constructor or null"))
+			vm.throw(vm.r.newTypeErrorString("Class extends value " + vm.r.noSideEffectsToString(o) + " is not a constructor or null"))
 			return
 		} else {
 			v := sc.self.getStr("prototype", nil)
@@ -5509,7 +5532,7 @@ func (c *newDerivedClass) exec(vm *vm) {
 				if o, ok := v.(*Object); ok {
 					protoParent = o
 				} else {
-					vm.throw(vm.r.NewTypeError("Class extends value does not have valid prototype property"))
+					vm.throw(vm.r.newTypeErrorString("Class extends value does not have valid prototype property " + vm.r.noSideEffectsToString(v)))
 					return
 				}
 			}
@@ -5547,7 +5570,7 @@ func (vm *vm) loadThis(v Value) {
 	if v != nil {
 		vm.push(v)
 	} else {
-		vm.throw(vm.r.newError(vm.r.getReferenceError(), "Must call super constructor in derived class before accessing 'this'"))
+		vm.throw(vm.r.newError(vm.r.getReferenceError(), errMsgDerivedThis))
 		return
 	}
 	vm.pc++

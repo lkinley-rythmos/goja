@@ -160,13 +160,13 @@ func numberToBigInt(v Value) *valueBigInt {
 		return (*valueBigInt)(big.NewInt(v.ToInteger()))
 	case valueFloat:
 		if IsInfinity(v) || math.IsNaN(float64(v)) {
-			panic(rangeError(fmt.Sprintf("Cannot convert %s to a BigInt", v)))
+			panic(rangeError(fmt.Sprintf("The number %s cannot be converted to a BigInt because it is not an integer", v)))
 		}
 		if f := big.NewFloat(float64(v)); f.IsInt() {
 			n, _ := f.Int(nil)
 			return (*valueBigInt)(n)
 		}
-		panic(rangeError(fmt.Sprintf("Cannot convert %s to a BigInt", v)))
+		panic(rangeError(fmt.Sprintf("The number %s cannot be converted to a BigInt because it is not an integer", v)))
 	case *Object:
 		prim := v.toPrimitiveNumber()
 		switch prim.(type) {

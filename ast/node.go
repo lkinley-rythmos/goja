@@ -743,7 +743,8 @@ func (self *ClassLiteral) Idx1() file.Idx          { return self.RightBrace + 1 
 func (self *ArrowFunctionLiteral) Idx1() file.Idx  { return self.Body.Idx1() }
 func (self *Identifier) Idx1() file.Idx            { return file.Idx(int(self.Idx) + len(self.Name)) }
 func (self *NewExpression) Idx1() file.Idx {
-	if self.ArgumentList != nil {
+	// new X() has parentheses and no arguments.
+	if self.RightParenthesis > 0 {
 		return self.RightParenthesis + 1
 	} else {
 		return self.Callee.Idx1()

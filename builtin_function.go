@@ -76,7 +76,10 @@ func (r *Runtime) functionproto_hasInstance(call FunctionCall) Value {
 }
 
 func (r *Runtime) createListFromArrayLike(a Value) []Value {
-	o := r.toObject(a)
+	o, ok := a.(*Object)
+	if !ok {
+		panic(r.newTypeErrorString("CreateListFromArrayLike called on non-object"))
+	}
 	if arr := r.checkStdArrayObj(o); arr != nil {
 		return arr.values
 	}
@@ -134,6 +137,10 @@ type funcProtoCallObject struct {
 func (f *funcProtoCallObject) vmCall(vm *vm, n int) {
 	target := vmCallTarget(vm.stack[vm.sp-n-2])
 	if target == nil {
+		if toCallableOrNil(vm.stack[vm.sp-n-2]) == nil {
+			// V8 names the call site: f.call is not a function.
+			panic(vm.notAFunctionError(vm.stack[vm.sp-n-2]))
+		}
 		f.nativeFuncObject.vmCall(vm, n)
 		return
 	}
@@ -163,6 +170,9 @@ type funcProtoApplyObject struct {
 func (f *funcProtoApplyObject) vmCall(vm *vm, n int) {
 	target := vmCallTarget(vm.stack[vm.sp-n-2])
 	if target == nil {
+		if toCallableOrNil(vm.stack[vm.sp-n-2]) == nil {
+			panic(vm.r.applyNonFunctionError(vm.stack[vm.sp-n-2]))
+		}
 		f.nativeFuncObject.vmCall(vm, n)
 		return
 	}
@@ -233,14 +243,17 @@ func (r *Runtime) newFuncProtoApply() *Object {
 }
 
 func (r *Runtime) functionproto_apply(call FunctionCall) Value {
-	var args []Value
+	f := toCallableOrNil(call.This)
+	if f == nil {
+		panic(r.applyNonFunctionError(call.This))
+	}
 
+	var args []Value
 	argArray := call.Argument(1)
 	if !IsUndefined(argArray) && !IsNull(argArray) {
 		args = r.createListFromArrayLike(argArray)
 	}
 
-	f := r.toCallable(call.This)
 	return f(FunctionCall{
 		This:      call.Argument(0),
 		Arguments: args,
@@ -303,9 +316,11 @@ func (r *Runtime) boundConstruct(f *Object, target func([]Value, *Object) *Objec
 }
 
 func (r *Runtime) functionproto_bind(call FunctionCall) Value {
-	obj := r.toObject(call.This)
-
-	fcall := r.toCallable(call.This)
+	fcall := toCallableOrNil(call.This)
+	if fcall == nil {
+		panic(r.newTypeErrorString("Bind must be called on a function"))
+	}
+	obj := call.This.(*Object)
 	construct := obj.self.assertConstructor()
 
 	var l = _positiveZero

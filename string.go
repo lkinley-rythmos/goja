@@ -207,7 +207,9 @@ func (s *stringObject) _getIdx(idx int) Value {
 
 func (s *stringObject) setOwnStr(name unistring.String, val Value, throw bool) bool {
 	if i := strToGoIdx(name); i >= 0 && i < s.length {
-		s.val.runtime.typeErrorResult(throw, "Cannot assign to read only property '%d' of a String", i)
+		if throw {
+			panic(s.val.runtime.readOnlyError(nil, intToValue(int64(i)), s.value))
+		}
 		return false
 	}
 
@@ -217,7 +219,9 @@ func (s *stringObject) setOwnStr(name unistring.String, val Value, throw bool) b
 func (s *stringObject) setOwnIdx(idx valueInt, val Value, throw bool) bool {
 	i := int64(idx)
 	if i >= 0 && i < int64(s.length) {
-		s.val.runtime.typeErrorResult(throw, "Cannot assign to read only property '%d' of a String", i)
+		if throw {
+			panic(s.val.runtime.readOnlyError(nil, intToValue(int64(i)), s.value))
+		}
 		return false
 	}
 

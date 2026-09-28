@@ -394,7 +394,7 @@ func (o *baseObject) checkDeleteProp(name unistring.String, prop *valueProperty,
 	if !prop.configurable {
 		if throw {
 			r := o.val.runtime
-			panic(r.NewTypeError("Cannot delete property '%s' of %s", name, r.objectproto_toString(FunctionCall{This: o.val})))
+			panic(r.newTypeErrorString("Cannot delete property '" + name.String() + "' of " + r.noSideEffectsToString(o.val)))
 		}
 		return false
 	}
@@ -472,7 +472,9 @@ func (o *baseObject) setProto(proto *Object, throw bool) bool {
 		return false
 	}
 	if !o.extensible {
-		o.val.runtime.typeErrorResult(throw, "%s is not extensible", o.val)
+		if throw {
+			panic(o.val.runtime.newTypeErrorString(o.val.runtime.noSideEffectsToString(o.val) + " is not extensible"))
+		}
 		return false
 	}
 	for p := proto; p != nil; p = p.self.proto() {
@@ -511,7 +513,9 @@ func (o *baseObject) setOwnStr(name unistring.String, val Value, throw bool) boo
 	}
 	if prop, ok := ownDesc.(*valueProperty); ok {
 		if !prop.isWritable() {
-			o.val.runtime.typeErrorResult(throw, "Cannot assign to read only property '%s'", name)
+			if throw {
+				panic(o.val.runtime.readOnlyError(prop, stringValueFromRaw(name), o.val))
+			}
 			return false
 		} else {
 			prop.set(o.val, val)
@@ -553,7 +557,9 @@ func (o *baseObject) setOwnSym(name *Symbol, val Value, throw bool) bool {
 	}
 	if prop, ok := ownDesc.(*valueProperty); ok {
 		if !prop.isWritable() {
-			o.val.runtime.typeErrorResult(throw, "Cannot assign to read only property '%s'", name)
+			if throw {
+				panic(o.val.runtime.readOnlyError(prop, name, o.val))
+			}
 			return false
 		} else {
 			prop.set(o.val, val)
@@ -568,7 +574,9 @@ func (o *baseObject) _setForeignStr(name unistring.String, prop, val, receiver V
 	if prop != nil {
 		if prop, ok := prop.(*valueProperty); ok {
 			if !prop.isWritable() {
-				o.val.runtime.typeErrorResult(throw, "Cannot assign to read only property '%s'", name)
+				if throw {
+					panic(o.val.runtime.readOnlyError(prop, stringValueFromRaw(name), receiver))
+				}
 				return false, true
 			}
 			if prop.setterFunc != nil {
@@ -591,7 +599,9 @@ func (o *baseObject) _setForeignIdx(idx valueInt, prop, val, receiver Value, thr
 	if prop != nil {
 		if prop, ok := prop.(*valueProperty); ok {
 			if !prop.isWritable() {
-				o.val.runtime.typeErrorResult(throw, "Cannot assign to read only property '%d'", idx)
+				if throw {
+					panic(o.val.runtime.readOnlyError(prop, idx, receiver))
+				}
 				return false, true
 			}
 			if prop.setterFunc != nil {
@@ -632,7 +642,9 @@ func (o *baseObject) setForeignSym(name *Symbol, val, receiver Value, throw bool
 	if prop != nil {
 		if prop, ok := prop.(*valueProperty); ok {
 			if !prop.isWritable() {
-				o.val.runtime.typeErrorResult(throw, "Cannot assign to read only property '%s'", name)
+				if throw {
+					panic(o.val.runtime.readOnlyError(prop, name, receiver))
+				}
 				return false, true
 			}
 			if prop.setterFunc != nil {
@@ -884,7 +896,7 @@ func (o *Object) ordinaryToPrimitiveNumber() Value {
 		return v
 	}
 
-	panic(o.runtime.NewTypeError("Could not convert %v to primitive", o.self))
+	panic(o.runtime.NewTypeError("Cannot convert object to primitive value"))
 }
 
 func (o *Object) ordinaryToPrimitiveString() Value {
@@ -896,7 +908,7 @@ func (o *Object) ordinaryToPrimitiveString() Value {
 		return v
 	}
 
-	panic(o.runtime.NewTypeError("Could not convert %v (%T) to primitive", o.self, o.self))
+	panic(o.runtime.NewTypeError("Cannot convert object to primitive value"))
 }
 
 func (o *Object) tryExoticToPrimitive(hint Value) Value {
@@ -942,7 +954,7 @@ func (o *baseObject) assertCallable() (func(FunctionCall) Value, bool) {
 }
 
 func (o *baseObject) vmCall(vm *vm, _ int) {
-	panic(vm.r.NewTypeError("Not a function: %s", o.val.toString()))
+	panic(vm.notAFunctionError(o.val))
 }
 
 func (o *baseObject) assertConstructor() func(args []Value, newTarget *Object) *Object {
@@ -1451,7 +1463,7 @@ func (o *baseObject) keys(all bool, accum []Value) []Value {
 }
 
 func (o *baseObject) hasInstance(Value) bool {
-	panic(o.val.runtime.NewTypeError("Expecting a function in instanceof check, but got %s", o.val.toString()))
+	panic(o.val.runtime.newTypeErrorString("Right-hand side of 'instanceof' is not callable"))
 }
 
 func toMethod(v Value) func(FunctionCall) Value {
@@ -1463,7 +1475,7 @@ func toMethod(v Value) func(FunctionCall) Value {
 			return call
 		}
 	}
-	panic(newTypeError("%s is not a method", v.String()))
+	panic(newTypeError("%s is not a function", defaultCallSite(v)))
 }
 
 func instanceOfOperator(o Value, c *Object) bool {
@@ -1535,7 +1547,9 @@ func (o *Object) setStr(name unistring.String, val, receiver Value, throw bool) 
 						return false
 					}
 					if !desc.writable {
-						o.runtime.typeErrorResult(throw, "Cannot assign to read only property '%s'", name)
+						if throw {
+							panic(o.runtime.readOnlyError(desc, stringValueFromRaw(name), receiver))
+						}
 						return false
 					}
 				}
@@ -1550,7 +1564,9 @@ func (o *Object) setStr(name unistring.String, val, receiver Value, throw bool) 
 			}, throw)
 		}
 
-		o.runtime.typeErrorResult(throw, "Receiver is not an object: %v", receiver)
+		if throw {
+			panic(o.runtime.cannotCreatePropertyError(stringValueFromRaw(name), receiver))
+		}
 		return false
 	} else {
 		return res
@@ -1593,7 +1609,9 @@ func (o *Object) setIdx(name valueInt, val, receiver Value, throw bool) bool {
 						return false
 					}
 					if !desc.writable {
-						o.runtime.typeErrorResult(throw, "Cannot assign to read only property '%s'", name)
+						if throw {
+							panic(o.runtime.readOnlyError(desc, name, receiver))
+						}
 						return false
 					}
 				}
@@ -1608,7 +1626,9 @@ func (o *Object) setIdx(name valueInt, val, receiver Value, throw bool) bool {
 			}, throw)
 		}
 
-		o.runtime.typeErrorResult(throw, "Receiver is not an object: %v", receiver)
+		if throw {
+			panic(o.runtime.cannotCreatePropertyError(name, receiver))
+		}
 		return false
 	} else {
 		return res
@@ -1629,7 +1649,9 @@ func (o *Object) setSym(name *Symbol, val, receiver Value, throw bool) bool {
 						return false
 					}
 					if !desc.writable {
-						o.runtime.typeErrorResult(throw, "Cannot assign to read only property '%s'", name)
+						if throw {
+							panic(o.runtime.readOnlyError(desc, name, receiver))
+						}
 						return false
 					}
 				}
@@ -1644,7 +1666,9 @@ func (o *Object) setSym(name *Symbol, val, receiver Value, throw bool) bool {
 			}, throw)
 		}
 
-		o.runtime.typeErrorResult(throw, "Receiver is not an object: %v", receiver)
+		if throw {
+			panic(o.runtime.cannotCreatePropertyError(name, receiver))
+		}
 		return false
 	} else {
 		return res

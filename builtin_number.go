@@ -94,7 +94,7 @@ func (r *Runtime) numberproto_toFixed(call FunctionCall) Value {
 	prec := call.Argument(0).ToInteger()
 
 	if prec < 0 || prec > 100 {
-		panic(r.newError(r.getRangeError(), "toFixed() precision must be between 0 and 100"))
+		panic(r.newError(r.getRangeError(), "toFixed() digits argument must be between 0 and 100"))
 	}
 	if math.IsNaN(num) {
 		return stringNaN
@@ -123,7 +123,7 @@ func (r *Runtime) numberproto_toExponential(call FunctionCall) Value {
 	}
 
 	if prec < 0 || prec > 100 {
-		panic(r.newError(r.getRangeError(), "toExponential() precision must be between 0 and 100"))
+		panic(r.newError(r.getRangeError(), "toExponential() argument must be between 0 and 100"))
 	}
 
 	return asciiString(fToStr(num, ftoa.ModeExponential, int(prec+1)))
@@ -148,7 +148,7 @@ func (r *Runtime) numberproto_toPrecision(call FunctionCall) Value {
 		return stringNegInfinity
 	}
 	if prec < 1 || prec > 100 {
-		panic(r.newError(r.getRangeError(), "toPrecision() precision must be between 1 and 100"))
+		panic(r.newError(r.getRangeError(), "toPrecision() argument must be between 1 and 100"))
 	}
 
 	return asciiString(fToStr(num, ftoa.ModePrecision, int(prec)))

@@ -72,7 +72,7 @@ func (r *Runtime) _encode(uriString String, unescaped *[256]bool) String {
 		rn, _, err := reader.ReadRune()
 		if err != nil {
 			if err != io.EOF {
-				panic(r.newError(r.getURIError(), "Malformed URI"))
+				panic(r.newError(r.getURIError(), "URI malformed"))
 			}
 			break
 		}
@@ -130,7 +130,7 @@ func (r *Runtime) _decode(sv String, reservedSet *[256]bool) String {
 		switch s[i] {
 		case '%':
 			if i+2 >= len(s) || !ishex(s[i+1]) || !ishex(s[i+2]) {
-				panic(r.newError(r.getURIError(), "Malformed URI"))
+				panic(r.newError(r.getURIError(), "URI malformed"))
 			}
 			c := unhex(s[i+1])<<4 | unhex(s[i+2])
 			if !reservedSet[c] {
@@ -186,7 +186,7 @@ func (r *Runtime) _decode(sv String, reservedSet *[256]bool) String {
 		rn, size := utf8.DecodeRune(t)
 		if rn == utf8.RuneError {
 			if size != 3 || t[0] != 0xef || t[1] != 0xbf || t[2] != 0xbd {
-				panic(r.newError(r.getURIError(), "Malformed URI"))
+				panic(r.newError(r.getURIError(), "URI malformed"))
 			}
 		}
 		us = append(us, rn)

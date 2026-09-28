@@ -905,8 +905,7 @@ func (r *Runtime) arrayproto_map(call FunctionCall) Value {
 func (r *Runtime) arrayproto_filter(call FunctionCall) Value {
 	o := call.This.ToObject(r)
 	length := toLength(o.self.getStr("length", nil))
-	callbackFn := call.Argument(0).ToObject(r)
-	if callbackFn, ok := callbackFn.self.assertCallable(); ok {
+	if callbackFn := toCallableOrNil(call.Argument(0)); callbackFn != nil {
 		a := arraySpeciesCreate(o, 0)
 		fc := FunctionCall{
 			This:      call.Argument(1),
@@ -949,17 +948,14 @@ func (r *Runtime) arrayproto_filter(call FunctionCall) Value {
 			}
 		}
 		return a
-	} else {
-		r.typeErrorResult(true, "%s is not a function", call.Argument(0))
 	}
-	panic("unreachable")
+	panic(r.notAFunctionError(call.Argument(0)))
 }
 
 func (r *Runtime) arrayproto_reduce(call FunctionCall) Value {
 	o := call.This.ToObject(r)
 	length := toLength(o.self.getStr("length", nil))
-	callbackFn := call.Argument(0).ToObject(r)
-	if callbackFn, ok := callbackFn.self.assertCallable(); ok {
+	if callbackFn := toCallableOrNil(call.Argument(0)); callbackFn != nil {
 		fc := FunctionCall{
 			This:      _undefined,
 			Arguments: []Value{nil, nil, nil, o},
@@ -981,8 +977,7 @@ func (r *Runtime) arrayproto_reduce(call FunctionCall) Value {
 				}
 			}
 			if fc.Arguments[0] == nil {
-				r.typeErrorResult(true, "No initial value")
-				panic("unreachable")
+				panic(r.newTypeErrorString("Reduce of empty array with no initial value"))
 			}
 			k++
 		}
@@ -999,17 +994,14 @@ func (r *Runtime) arrayproto_reduce(call FunctionCall) Value {
 			}
 		}
 		return fc.Arguments[0]
-	} else {
-		r.typeErrorResult(true, "%s is not a function", call.Argument(0))
 	}
-	panic("unreachable")
+	panic(r.notAFunctionError(call.Argument(0)))
 }
 
 func (r *Runtime) arrayproto_reduceRight(call FunctionCall) Value {
 	o := call.This.ToObject(r)
 	length := toLength(o.self.getStr("length", nil))
-	callbackFn := call.Argument(0).ToObject(r)
-	if callbackFn, ok := callbackFn.self.assertCallable(); ok {
+	if callbackFn := toCallableOrNil(call.Argument(0)); callbackFn != nil {
 		fc := FunctionCall{
 			This:      _undefined,
 			Arguments: []Value{nil, nil, nil, o},
@@ -1031,8 +1023,7 @@ func (r *Runtime) arrayproto_reduceRight(call FunctionCall) Value {
 				}
 			}
 			if fc.Arguments[0] == nil {
-				r.typeErrorResult(true, "No initial value")
-				panic("unreachable")
+				panic(r.newTypeErrorString("Reduce of empty array with no initial value"))
 			}
 			k--
 		}
@@ -1049,10 +1040,8 @@ func (r *Runtime) arrayproto_reduceRight(call FunctionCall) Value {
 			}
 		}
 		return fc.Arguments[0]
-	} else {
-		r.typeErrorResult(true, "%s is not a function", call.Argument(0))
 	}
-	panic("unreachable")
+	panic(r.notAFunctionError(call.Argument(0)))
 }
 
 func arrayproto_reverse_generic_step(o *Object, lower, upper int64) {
@@ -1637,7 +1626,7 @@ func (r *Runtime) array_from(call FunctionCall) Value {
 			}
 		}
 		if mapFn == nil {
-			panic(r.NewTypeError("%s is not a function", mapFnArg))
+			panic(r.notAFunctionError(mapFnArg))
 		}
 	}
 	t := call.Argument(2)
@@ -1659,7 +1648,21 @@ func (r *Runtime) array_from(call FunctionCall) Value {
 		}
 	}
 	var arr *Object
-	if usingIterator := toMethod(r.getV(items, SymIterator)); usingIterator != nil {
+	switch items.(type) {
+	case valueUndefined, valueNull:
+		panic(r.newTypeErrorString(defaultCallSite(items) + " is not iterable (cannot read property Symbol(Symbol.iterator))"))
+	}
+	usingIterator, isMethod := r.getV(items, SymIterator), false
+	switch usingIterator.(type) {
+	case nil, valueUndefined, valueNull:
+	default:
+		if toCallableOrNil(usingIterator) == nil {
+			panic(r.newTypeErrorString("Found non-callable @@iterator"))
+		}
+		isMethod = true
+	}
+	if isMethod {
+		usingIterator := toCallableOrNil(usingIterator)
 		if ctor != nil {
 			arr = ctor([]Value{}, nil)
 		} else {
@@ -1764,7 +1767,7 @@ func (r *Runtime) arrayIterProto_next(call FunctionCall) Value {
 	if iter, ok := thisObj.self.(*arrayIterObject); ok {
 		return iter.next()
 	}
-	panic(r.NewTypeError("Method Array Iterator.prototype.next called on incompatible receiver %s", r.objectproto_toString(FunctionCall{This: thisObj})))
+	panic(r.NewTypeError("Method Array Iterator.prototype.next called on incompatible receiver %s", r.noSideEffectsToString(thisObj)))
 }
 
 func createArrayProtoTemplate() *objectTemplate {

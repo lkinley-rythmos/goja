@@ -1072,11 +1072,18 @@ func (r *Runtime) wrapNativeConstruct(c func(args []Value, proto *Object) *Objec
 }
 
 func (r *Runtime) toCallable(v Value) func(FunctionCall) Value {
-	if call, ok := r.toObject(v).self.assertCallable(); ok {
-		return call
+	if o, ok := v.(*Object); ok {
+		if call, ok := o.self.assertCallable(); ok {
+			return call
+		}
 	}
-	r.typeErrorResult(true, "Value is not callable: %s", v.toString())
-	return nil
+	panic(r.notAFunctionError(v))
+}
+
+// notAFunctionError is V8's error for a built-in given v, which is not a
+// function, where it takes one.
+func (r *Runtime) notAFunctionError(v Value) *Object {
+	return r.newTypeErrorString(r.noSideEffectsToString(v) + " is not a function")
 }
 
 func (r *Runtime) checkObjectCoercible(v Value) {
@@ -2855,6 +2862,7 @@ type iterNexter interface {
 type iteratorRecord struct {
 	iterator *Object
 	next     func(FunctionCall) Value
+	nextVal  Value // the next property, for the error if it is not callable
 	// fast is non-nil only when getIterator verified that next is this
 	// runtime's own intrinsic next for the iterator's concrete type, so
 	// calling nextValue is indistinguishable from calling next.
@@ -2880,22 +2888,51 @@ func (r *Runtime) intrinsicIterNexter(iter, nextObj *Object) iterNexter {
 	return nil
 }
 
+// getIterator is GetIterator(obj) for the built-ins, which take their
+// iterable as an argument; the errors are V8's for them.
 func (r *Runtime) getIterator(obj Value, method func(FunctionCall) Value) *iteratorRecord {
 	if method == nil {
-		method = toMethod(r.getV(obj, SymIterator))
-		if method == nil {
-			panic(r.NewTypeError("object is not iterable"))
+		if method = toCallableOrNil(r.iteratorMethod(obj)); method == nil {
+			panic(r.newTypeErrorString(defaultCallSite(obj) + " is not iterable (cannot read property Symbol(Symbol.iterator))"))
 		}
 	}
+	return r.iteratorFrom(obj, method)
+}
 
-	iter := r.toObject(method(FunctionCall{
+// iteratorMethod is obj[Symbol.iterator], or nil if obj is null or
+// undefined.
+func (r *Runtime) iteratorMethod(obj Value) Value {
+	switch obj.(type) {
+	case nil, valueUndefined, valueNull:
+		return nil
+	}
+	return r.getV(obj, SymIterator)
+}
+
+func toCallableOrNil(v Value) func(FunctionCall) Value {
+	if o, ok := v.(*Object); ok {
+		if call, ok := o.self.assertCallable(); ok {
+			return call
+		}
+	}
+	return nil
+}
+
+// iteratorFrom calls the iterator method on obj and makes the record of
+// the iterator it returns.
+func (r *Runtime) iteratorFrom(obj Value, method func(FunctionCall) Value) *iteratorRecord {
+	iter, ok := method(FunctionCall{
 		This: obj,
-	}))
+	}).(*Object)
+	if !ok {
+		panic(r.newTypeErrorString("Result of the Symbol.iterator method is not an object"))
+	}
 
 	var next func(FunctionCall) Value
 	var fast iterNexter
 
-	if obj, ok := iter.self.getStr("next", nil).(*Object); ok {
+	nextVal := iter.self.getStr("next", nil)
+	if obj, ok := nextVal.(*Object); ok {
 		if call, ok := obj.self.assertCallable(); ok {
 			next = call
 			fast = r.intrinsicIterNexter(iter, obj)
@@ -2905,8 +2942,25 @@ func (r *Runtime) getIterator(obj Value, method func(FunctionCall) Value) *itera
 	return &iteratorRecord{
 		iterator: iter,
 		next:     next,
+		nextVal:  nextVal,
 		fast:     fast,
 	}
+}
+
+// nextNotCallable is V8's error for an iterator whose next is not a
+// function, which it names by its type and value.
+func (ir *iteratorRecord) nextNotCallable() *Object {
+	return ir.iterator.runtime.newTypeErrorString(defaultCallSite(ir.nextVal) + " is not a function")
+}
+
+// nextResult calls next, and requires an object of it.
+func (ir *iteratorRecord) nextResult() *Object {
+	r := ir.iterator.runtime
+	v := ir.next(FunctionCall{This: ir.iterator})
+	if res, ok := v.(*Object); ok {
+		return res
+	}
+	panic(r.newTypeErrorString("Iterator result " + r.noSideEffectsToString(v) + " is not an object"))
 }
 
 func iteratorComplete(iterResult *Object) bool {
@@ -2918,10 +2972,9 @@ func iteratorValue(iterResult *Object) Value {
 }
 
 func (ir *iteratorRecord) iterate(step func(Value)) {
-	r := ir.iterator.runtime
 	for {
 		if ir.next == nil {
-			panic(r.NewTypeError("iterator.next is missing or not a function"))
+			panic(ir.nextNotCallable())
 		}
 		var value Value
 		if ir.fast != nil {
@@ -2931,7 +2984,7 @@ func (ir *iteratorRecord) iterate(step func(Value)) {
 				break
 			}
 		} else {
-			res := r.toObject(ir.next(FunctionCall{This: ir.iterator}))
+			res := ir.nextResult()
 			if iteratorComplete(res) {
 				break
 			}
@@ -2960,7 +3013,10 @@ func (ir *iteratorRecord) step() (value Value, ex *Exception) {
 				value = v
 			}
 		} else {
-			res := r.toObject(ir.next(FunctionCall{This: ir.iterator}))
+			if ir.next == nil {
+				panic(ir.nextNotCallable())
+			}
+			res := ir.nextResult()
 			done = iteratorComplete(res)
 			if !done {
 				value = iteratorValue(res)

@@ -476,7 +476,7 @@ func (r *Runtime) stringproto_normalize(call FunctionCall) Value {
 	case "NFKD":
 		f = norm.NFKD
 	default:
-		panic(r.newError(r.getRangeError(), "The normalization form should be one of NFC, NFD, NFKC, NFKD"))
+		panic(r.newError(r.getRangeError(), "The normalization form should be one of NFC, NFD, NFKC, NFKD."))
 	}
 
 	var res String
@@ -1170,7 +1170,7 @@ func (r *Runtime) stringIterProto_next(call FunctionCall) Value {
 	if iter, ok := thisObj.self.(*stringIterObject); ok {
 		return iter.next()
 	}
-	panic(r.NewTypeError("Method String Iterator.prototype.next called on incompatible receiver %s", r.objectproto_toString(FunctionCall{This: thisObj})))
+	panic(r.NewTypeError("Method String Iterator.prototype.next called on incompatible receiver %s", r.noSideEffectsToString(thisObj)))
 }
 
 func (r *Runtime) createStringIterProto(val *Object) objectImpl {

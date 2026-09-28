@@ -1,16 +1,22 @@
 package goja
 
 func (r *Runtime) builtin_reflect_apply(call FunctionCall) Value {
-	return r.toCallable(call.Argument(0))(FunctionCall{
+	f := toCallableOrNil(call.Argument(0))
+	if f == nil {
+		panic(r.applyNonFunctionError(call.Argument(0)))
+	}
+	return f(FunctionCall{
 		This:      call.Argument(1),
 		Arguments: r.createListFromArrayLike(call.Argument(2))})
 }
 
 func (r *Runtime) toConstructor(v Value) func(args []Value, newTarget *Object) *Object {
-	if ctor := r.toObject(v).self.assertConstructor(); ctor != nil {
-		return ctor
+	if o, ok := v.(*Object); ok {
+		if ctor := o.self.assertConstructor(); ctor != nil {
+			return ctor
+		}
 	}
-	panic(r.NewTypeError("Value is not a constructor"))
+	panic(r.newTypeErrorString(r.noSideEffectsToString(v) + " is not a constructor"))
 }
 
 func (r *Runtime) builtin_reflect_construct(call FunctionCall) Value {
@@ -27,7 +33,7 @@ func (r *Runtime) builtin_reflect_construct(call FunctionCall) Value {
 }
 
 func (r *Runtime) builtin_reflect_defineProperty(call FunctionCall) Value {
-	target := r.toObject(call.Argument(0))
+	target := r.toObject(call.Argument(0), "Reflect.defineProperty called on non-object")
 	key := toPropertyKey(call.Argument(1))
 	desc := r.toPropertyDescriptor(call.Argument(2))
 
@@ -35,14 +41,14 @@ func (r *Runtime) builtin_reflect_defineProperty(call FunctionCall) Value {
 }
 
 func (r *Runtime) builtin_reflect_deleteProperty(call FunctionCall) Value {
-	target := r.toObject(call.Argument(0))
+	target := r.toObject(call.Argument(0), "Reflect.deleteProperty called on non-object")
 	key := toPropertyKey(call.Argument(1))
 
 	return r.toBoolean(target.delete(key, false))
 }
 
 func (r *Runtime) builtin_reflect_get(call FunctionCall) Value {
-	target := r.toObject(call.Argument(0))
+	target := r.toObject(call.Argument(0), "Reflect.get called on non-object")
 	key := toPropertyKey(call.Argument(1))
 	var receiver Value
 	if len(call.Arguments) > 2 {
@@ -52,13 +58,13 @@ func (r *Runtime) builtin_reflect_get(call FunctionCall) Value {
 }
 
 func (r *Runtime) builtin_reflect_getOwnPropertyDescriptor(call FunctionCall) Value {
-	target := r.toObject(call.Argument(0))
+	target := r.toObject(call.Argument(0), "Reflect.getOwnPropertyDescriptor called on non-object")
 	key := toPropertyKey(call.Argument(1))
 	return r.valuePropToDescriptorObject(target.getOwnProp(key))
 }
 
 func (r *Runtime) builtin_reflect_getPrototypeOf(call FunctionCall) Value {
-	target := r.toObject(call.Argument(0))
+	target := r.toObject(call.Argument(0), "Reflect.getPrototypeOf called on non-object")
 	if proto := target.self.proto(); proto != nil {
 		return proto
 	}
@@ -67,28 +73,28 @@ func (r *Runtime) builtin_reflect_getPrototypeOf(call FunctionCall) Value {
 }
 
 func (r *Runtime) builtin_reflect_has(call FunctionCall) Value {
-	target := r.toObject(call.Argument(0))
+	target := r.toObject(call.Argument(0), "Reflect.has called on non-object")
 	key := toPropertyKey(call.Argument(1))
 	return r.toBoolean(target.hasProperty(key))
 }
 
 func (r *Runtime) builtin_reflect_isExtensible(call FunctionCall) Value {
-	target := r.toObject(call.Argument(0))
+	target := r.toObject(call.Argument(0), "Reflect.isExtensible called on non-object")
 	return r.toBoolean(target.self.isExtensible())
 }
 
 func (r *Runtime) builtin_reflect_ownKeys(call FunctionCall) Value {
-	target := r.toObject(call.Argument(0))
+	target := r.toObject(call.Argument(0), "Reflect.ownKeys called on non-object")
 	return r.newArrayValues(target.self.keys(true, nil))
 }
 
 func (r *Runtime) builtin_reflect_preventExtensions(call FunctionCall) Value {
-	target := r.toObject(call.Argument(0))
+	target := r.toObject(call.Argument(0), "Reflect.preventExtensions called on non-object")
 	return r.toBoolean(target.self.preventExtensions(false))
 }
 
 func (r *Runtime) builtin_reflect_set(call FunctionCall) Value {
-	target := r.toObject(call.Argument(0))
+	target := r.toObject(call.Argument(0), "Reflect.set called on non-object")
 	var receiver Value
 	if len(call.Arguments) >= 4 {
 		receiver = call.Argument(3)
@@ -99,7 +105,7 @@ func (r *Runtime) builtin_reflect_set(call FunctionCall) Value {
 }
 
 func (r *Runtime) builtin_reflect_setPrototypeOf(call FunctionCall) Value {
-	target := r.toObject(call.Argument(0))
+	target := r.toObject(call.Argument(0), "Reflect.setPrototypeOf called on non-object")
 	var proto *Object
 	if arg := call.Argument(1); arg != _null {
 		proto = r.toObject(arg)
