@@ -94,6 +94,7 @@ type _parser struct {
 	scope             *_scope
 	insertSemicolon   bool // If we see a newline, then insert an implicit semicolon
 	implicitSemicolon bool // An implicit semicolon exists
+	lineStart         bool // Only white space and comments since the start of the input or a line terminator
 
 	errors ErrorList
 

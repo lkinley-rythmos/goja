@@ -1244,6 +1244,9 @@ func (c *compiler) createVarBindings(v *ast.VariableDeclaration, inFunc bool) {
 
 func (c *compiler) createLexicalIdBinding(name unistring.String, isConst bool, offset int) *binding {
 	if name == "let" {
+		if c.scope.strict {
+			c.throwSyntaxError(offset, "Unexpected strict mode reserved word")
+		}
 		c.throwSyntaxError(offset, "let is disallowed as a lexically bound name")
 	}
 	if c.scope.strict {
@@ -1259,6 +1262,9 @@ func (c *compiler) createLexicalIdBinding(name unistring.String, isConst bool, o
 
 func (c *compiler) createLexicalIdBindingFuncBody(name unistring.String, isConst bool, offset int, calleeBinding *binding) *binding {
 	if name == "let" {
+		if c.scope.strict {
+			c.throwSyntaxError(offset, "Unexpected strict mode reserved word")
+		}
 		c.throwSyntaxError(offset, "let is disallowed as a lexically bound name")
 	}
 	if c.scope.strict {
@@ -1304,6 +1310,7 @@ func (c *compiler) compileLexicalDeclarations(list []ast.Statement, scopeDeclare
 				c.newBlockScope()
 				scopeDeclared = true
 			}
+			c.checkClassName(cls.Class.Name)
 			c.createLexicalIdBinding(cls.Class.Name.Name, false, int(cls.Class.Name.Idx)-1)
 		}
 	}
@@ -1345,7 +1352,7 @@ func (c *compiler) compileStandaloneFunctionDecl(v *ast.FunctionDeclaration) {
 		c.throwSyntaxError(int(v.Idx0())-1, "Async functions can only be declared at top level or inside a block.")
 	}
 	if v.Function.Generator {
-		c.throwSyntaxError(int(v.Idx0())-1, "Generators can only be declared at top level or inside a block.")
+		c.throwSyntaxError(int(v.Idx0())-1, "Generators can only be declared at the top level or inside a block.")
 	}
 	if c.scope.strict {
 		c.throwSyntaxError(int(v.Idx0())-1, "In strict mode code, functions can only be declared at top level or inside a block.")
@@ -1408,10 +1415,17 @@ func (c *compiler) checkIdentifierName(name unistring.String, offset int) {
 	}
 }
 
+// checkClassName requires what a class name must be in strict mode code,
+// which a class is.
+func (c *compiler) checkClassName(name *ast.Identifier) {
+	c.checkIdentifierName(name.Name, int(name.Idx)-1)
+	c.checkIdentifierLName(name.Name, int(name.Idx)-1)
+}
+
 func (c *compiler) checkIdentifierLName(name unistring.String, offset int) {
 	switch name {
 	case "eval", "arguments":
-		c.throwSyntaxError(offset, "Assignment to eval or arguments is not allowed in strict mode")
+		c.throwSyntaxError(offset, "Unexpected eval or arguments in strict mode")
 	}
 }
 

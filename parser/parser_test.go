@@ -164,11 +164,11 @@ func TestParserErr(t *testing.T) {
 
 		test("(1 + 1) = 2", "(anonymous): Line 1:2 Invalid left-hand side in assignment")
 
-		test("1++", "(anonymous): Line 1:2 Invalid left-hand side in assignment")
+		test("1++", "(anonymous): Line 1:2 Invalid left-hand side expression in postfix operation")
 
-		test("1--", "(anonymous): Line 1:2 Invalid left-hand side in assignment")
+		test("1--", "(anonymous): Line 1:2 Invalid left-hand side expression in postfix operation")
 
-		test("--1", "(anonymous): Line 1:1 Invalid left-hand side in assignment")
+		test("--1", "(anonymous): Line 1:1 Invalid left-hand side expression in prefix operation")
 
 		test("for((1 + 1) in abc) def();", "(anonymous): Line 1:1 Invalid left-hand side in for-in or for-of")
 
@@ -246,7 +246,7 @@ func TestParserErr(t *testing.T) {
 
 		test("for (;;) { break 1; }", "(anonymous): Line 1:18 Unexpected number")
 
-		test("continue\n", "(anonymous): Line 1:1 Illegal continue statement")
+		test("continue\n", "(anonymous): Line 1:1 Illegal continue statement: no surrounding iteration statement")
 
 		test("continue 1;", "(anonymous): Line 1:10 Unexpected number")
 
@@ -258,7 +258,7 @@ func TestParserErr(t *testing.T) {
 
 		test("throw \n", "(anonymous): Line 1:1 Unexpected end of input")
 
-		test("for (var abc, def in {});", "(anonymous): Line 1:19 Unexpected token in")
+		test("for (var abc, def in {});", "(anonymous): Line 1:19 Invalid left-hand side in for-in loop: Must have a single binding.")
 
 		test("for ((abc in {});;);", nil)
 
@@ -341,11 +341,11 @@ func TestParserErr(t *testing.T) {
 
 		test("return", "(anonymous): Line 1:1 Illegal return statement")
 
-		test("continue", "(anonymous): Line 1:1 Illegal continue statement")
+		test("continue", "(anonymous): Line 1:1 Illegal continue statement: no surrounding iteration statement")
 
 		test("break", "(anonymous): Line 1:1 Illegal break statement")
 
-		test("switch (abc) { default: continue; }", "(anonymous): Line 1:25 Illegal continue statement")
+		test("switch (abc) { default: continue; }", "(anonymous): Line 1:25 Illegal continue statement: no surrounding iteration statement")
 
 		test("do { abc } *", "(anonymous): Line 1:12 Unexpected token *")
 
@@ -365,19 +365,19 @@ func TestParserErr(t *testing.T) {
 
 		test(`abc: if (0) { break abc } else {}`, nil)
 
-		test("abc: while (true) { abc: while (true) {} }", "(anonymous): Line 1:21 Label 'abc' already exists")
+		test("abc: while (true) { abc: while (true) {} }", "(anonymous): Line 1:21 Label 'abc' has already been declared")
 
 		test(`if(0) { do { } while(0) } else { do { } while(0) }`, nil)
 
 		test(`if(0) do { } while(0); else do { } while(0)`, nil)
 
-		test("_: _: while (true) {]", "(anonymous): Line 1:4 Label '_' already exists")
+		test("_: _: while (true) {]", "(anonymous): Line 1:4 Label '_' has already been declared")
 
-		test("_:\n_:\nwhile (true) {]", "(anonymous): Line 2:1 Label '_' already exists")
+		test("_:\n_:\nwhile (true) {]", "(anonymous): Line 2:1 Label '_' has already been declared")
 
-		test("_:\n   _:\nwhile (true) {]", "(anonymous): Line 2:4 Label '_' already exists")
+		test("_:\n   _:\nwhile (true) {]", "(anonymous): Line 2:4 Label '_' has already been declared")
 
-		test("function(){}", "(anonymous): Line 1:9 Unexpected token (")
+		test("function(){}", "(anonymous): Line 1:9 Function statements require a function name")
 
 		test("\n/*/", "(anonymous): Line 2:4 Unexpected end of input")
 
@@ -393,7 +393,7 @@ func TestParserErr(t *testing.T) {
 
 		test("\\u0xyz", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
 
-		test(`for (var abc, def in {}) {}`, "(anonymous): Line 1:19 Unexpected token in")
+		test(`for (var abc, def in {}) {}`, "(anonymous): Line 1:19 Invalid left-hand side in for-in loop: Must have a single binding.")
 
 		test(`for (abc, def in {}) {}`, "(anonymous): Line 1:1 Invalid left-hand side in for-in or for-of")
 
@@ -429,17 +429,17 @@ func TestParserErr(t *testing.T) {
 			test("abc.enum = 1", nil)
 			test("var enum;", "(anonymous): Line 1:5 Unexpected reserved word")
 
-			test("export", "(anonymous): Line 1:1 Unexpected reserved word")
+			test("export", "(anonymous): Line 1:1 Unexpected token export")
 			test("abc.export = 1", nil)
-			test("var export;", "(anonymous): Line 1:5 Unexpected reserved word")
+			test("var export;", "(anonymous): Line 1:5 Unexpected token export")
 
 			test("extends", "(anonymous): Line 1:1 Unexpected token extends")
 			test("abc.extends = 1", nil)
 			test("var extends;", "(anonymous): Line 1:5 Unexpected token extends")
 
-			test("import", "(anonymous): Line 1:1 Unexpected reserved word")
+			test("import", "(anonymous): Line 1:1 Cannot use import statement outside a module")
 			test("abc.import = 1", nil)
-			test("var import;", "(anonymous): Line 1:5 Unexpected reserved word")
+			test("var import;", "(anonymous): Line 1:5 Unexpected token import")
 
 			test("super", "(anonymous): Line 1:1 'super' keyword unexpected here")
 			test("abc.super = 1", nil)
@@ -454,7 +454,7 @@ func TestParserErr(t *testing.T) {
 			test("{a: 1,}", "(anonymous): Line 1:7 Unexpected token }")
 			test("{a: 1, b: 2}", "(anonymous): Line 1:9 Unexpected token :")
 			test("{a: 1, b: 2,}", "(anonymous): Line 1:9 Unexpected token :")
-			test(`let f = () => new import('');`, "(anonymous): Line 1:19 Unexpected reserved word")
+			test(`let f = () => new import('');`, "(anonymous): Line 1:19 Unexpected token import")
 
 		}
 
@@ -504,9 +504,9 @@ func TestParserErr(t *testing.T) {
 		test(`var{..(`, "(anonymous): Line 1:7 Unexpected token ILLEGAL")
 		test(`var{get..(`, "(anonymous): Line 1:10 Unexpected token ILLEGAL")
 		test(`var{set..(`, "(anonymous): Line 1:10 Unexpected token ILLEGAL")
-		test(`(0 ?? 0 || true)`, "(anonymous): Line 1:9 Logical expressions and coalesce expressions cannot be mixed. Wrap either by parentheses")
-		test(`(a || b ?? c)`, "(anonymous): Line 1:9 Logical expressions and coalesce expressions cannot be mixed. Wrap either by parentheses")
-		test(`2 ?? 2 && 3 + 3`, "(anonymous): Line 1:3 Logical expressions and coalesce expressions cannot be mixed. Wrap either by parentheses")
+		test(`(0 ?? 0 || true)`, "(anonymous): Line 1:9 Unexpected token ||")
+		test(`(a || b ?? c)`, "(anonymous): Line 1:9 Unexpected token ??")
+		test(`2 ?? 2 && 3 + 3`, "(anonymous): Line 1:3 Unexpected token &&")
 		test(`
 		class C {
             st\u0061tic m() {}
@@ -528,7 +528,7 @@ func TestParser(t *testing.T) {
             abc
             --
             []
-        `, "(anonymous): Line 3:13 Invalid left-hand side in assignment")
+        `, "(anonymous): Line 3:13 Invalid left-hand side expression in prefix operation")
 
 		test(`
             abc--

@@ -225,6 +225,9 @@ func (self *_parser) peek() token.Token {
 func (self *_parser) scan() (tkn token.Token, literal string, parsedLiteral unistring.String, idx file.Idx) {
 
 	self.implicitSemicolon = false
+	// At the start of the input, or after a line terminator, --> starts a
+	// comment.
+	self.lineStart = self.chrOffset == 0
 
 	for {
 		self.skipWhiteSpace()
@@ -308,6 +311,7 @@ func (self *_parser) scan() (tkn token.Token, literal string, parsedLiteral unis
 			case '\r', '\n', '\u2028', '\u2029':
 				self.insertSemicolon = false
 				self.implicitSemicolon = true
+				self.lineStart = true
 				continue
 			case ':':
 				tkn = token.COLON
@@ -353,6 +357,11 @@ func (self *_parser) scan() (tkn token.Token, literal string, parsedLiteral unis
 					insertSemicolon = true
 				}
 			case '-':
+				if self.lineStart && self.chr == '-' && self._peek() == '>' {
+					// A SingleLineHTMLCloseComment (Annex B.1.1).
+					self.skipSingleLineComment()
+					continue
+				}
 				tkn = self.switch3(token.MINUS, token.SUBTRACT_ASSIGN, '-', token.DECREMENT)
 				if tkn == token.DECREMENT {
 					insertSemicolon = true
@@ -372,6 +381,7 @@ func (self *_parser) scan() (tkn token.Token, literal string, parsedLiteral unis
 					if self.skipMultiLineComment() {
 						self.insertSemicolon = false
 						self.implicitSemicolon = true
+						self.lineStart = true
 					}
 					continue
 				} else {
@@ -384,6 +394,11 @@ func (self *_parser) scan() (tkn token.Token, literal string, parsedLiteral unis
 			case '^':
 				tkn = self.switch2(token.EXCLUSIVE_OR, token.EXCLUSIVE_OR_ASSIGN)
 			case '<':
+				if self.chr == '!' && strings.HasPrefix(self.str[self.offset:], "--") {
+					// A SingleLineHTMLOpenComment (Annex B.1.1).
+					self.skipSingleLineComment()
+					continue
+				}
 				tkn = self.switch4(token.LESS, token.LESS_OR_EQUAL, '<', token.SHIFT_LEFT, token.SHIFT_LEFT_ASSIGN)
 			case '>':
 				tkn = self.switch6(token.GREATER, token.GREATER_OR_EQUAL, '>', token.SHIFT_RIGHT, token.SHIFT_RIGHT_ASSIGN, '>', token.UNSIGNED_SHIFT_RIGHT, token.UNSIGNED_SHIFT_RIGHT_ASSIGN)
@@ -435,6 +450,9 @@ func (self *_parser) scan() (tkn token.Token, literal string, parsedLiteral unis
 				var err string
 				literal, parsedLiteral, err = self.scanString(self.chrOffset-1, true)
 				if err != "" {
+					if msg := v8EscapeError(err); msg != "" {
+						self.error(idx, msg)
+					}
 					tkn = token.ILLEGAL
 				}
 			case '`':
@@ -625,6 +643,7 @@ func (self *_parser) skipWhiteSpace() {
 			if self.insertSemicolon {
 				return
 			}
+			self.lineStart = true
 			self.read()
 			continue
 		}
@@ -643,7 +662,11 @@ func (self *_parser) scanMantissa(base int, allowSeparator bool) {
 		afterUnderscore := self.chr == '_'
 		self.read()
 		if afterUnderscore && !isDigit(self.chr, base) {
-			self.error(self.chrOffset, "Only one underscore is allowed as numeric separator")
+			if self.chr == '_' {
+				self.error(self.chrOffset, "Only one underscore is allowed as numeric separator")
+			} else {
+				self.error(self.chrOffset, "Numeric separators are not allowed at the end of numeric literals")
+			}
 		}
 	}
 }
@@ -1082,7 +1105,8 @@ func parseStringLiteral(literal string, length int, unicode, strict bool) (unist
 				fallthrough
 			case '1', '2', '3', '4', '5', '6', '7':
 				if strict {
-					return "", "Octal escape sequences are not allowed in this context"
+					// Only template strings are parsed strictly.
+					return "", "Octal escape sequences are not allowed in template strings."
 				}
 				value = rune(chr) - '0'
 				j := 0
@@ -1165,6 +1189,9 @@ func (self *_parser) scanNumericLiteral(decimalPoint bool) (token.Token, string)
 				// no-op
 			default:
 				// legacy octal
+				if self.chr == '_' {
+					self.error(self.chrOffset, "Numeric separator can not be used after leading 0.")
+				}
 				self.scanMantissa(8, false)
 				goto end
 			}
@@ -1207,4 +1234,19 @@ end:
 	}
 
 	return tkn, self.str[offset:self.chrOffset]
+}
+
+// v8EscapeError is V8's message for a string literal whose escape
+// parseStringLiteral refused with err, or "" to report the literal as an
+// invalid token.
+func v8EscapeError(err string) string {
+	switch {
+	case strings.HasPrefix(err, "invalid escape: \\x"):
+		return "Invalid hexadecimal escape sequence"
+	case strings.HasPrefix(err, "invalid escape: \\u"), strings.HasPrefix(err, "unterminated \\u{"):
+		return "Invalid Unicode escape sequence"
+	case strings.HasPrefix(err, "undefined Unicode code-point"):
+		return "Undefined Unicode code-point"
+	}
+	return ""
 }

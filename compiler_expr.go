@@ -494,7 +494,7 @@ func (e *compiledIdentifierExpr) emitUnary(prepare, body func(), postfix, putOnS
 
 func (e *compiledIdentifierExpr) emitDelete(putOnStack bool) {
 	if e.c.scope.strict {
-		e.c.throwSyntaxError(e.offset, "Delete of an unqualified identifier in strict mode")
+		e.c.throwSyntaxError(e.offset, "Delete of an unqualified identifier in strict mode.")
 		panic("Unreachable")
 	}
 	if b, noDynamics := e.c.scope.lookupName(e.name); noDynamics {
@@ -1842,6 +1842,7 @@ func (e *compiledClassLiteral) emitGetter(putOnStack bool) {
 	var clsName unistring.String
 	if name := e.name; name != nil {
 		clsName = name.Name
+		e.c.checkClassName(name)
 		clsBinding = e.c.createLexicalIdBinding(clsName, true, int(name.Idx)-1)
 	} else {
 		clsName = e.lhsName
@@ -3221,7 +3222,7 @@ func (c *compiler) compileIdentifierExpression(v *ast.Identifier) compiledExpr {
 
 func (c *compiler) compileNumberLiteral(v *ast.NumberLiteral) compiledExpr {
 	if c.scope.strict && len(v.Literal) > 1 && v.Literal[0] == '0' && v.Literal[1] <= '7' && v.Literal[1] >= '0' {
-		c.throwSyntaxError(int(v.Idx)-1, "Octal literals are not allowed in strict mode")
+		c.throwSyntaxError(int(v.Idx)-1, "Octal literals are not allowed in strict mode.")
 		panic("Unreachable")
 	}
 	var val Value

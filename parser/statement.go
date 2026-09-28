@@ -108,7 +108,7 @@ func (self *_parser) parseStatement() ast.Statement {
 		label := identifier.Name
 		for _, value := range self.scope.labels {
 			if label == value {
-				self.error(identifier.Idx0(), "Label '%s' already exists", label)
+				self.error(identifier.Idx0(), "Label '%s' has already been declared", label)
 			}
 		}
 		self.scope.labels = append(self.scope.labels, label) // Push the label
@@ -178,7 +178,14 @@ func (self *_parser) parseFunctionParameterList() *ast.ParameterList {
 	for self.token != token.RIGHT_PARENTHESIS && self.token != token.EOF {
 		if self.token == token.ELLIPSIS {
 			self.next()
-			rest = self.reinterpretAsDestructBindingTarget(self.parseAssignmentExpression())
+			expr := self.parseAssignmentExpression()
+			if _, ok := expr.(*ast.AssignExpression); ok {
+				self.error(expr.Idx0(), "Rest parameter may not have a default initializer")
+			}
+			rest = self.reinterpretAsDestructBindingTarget(expr)
+			if self.token == token.COMMA {
+				self.error(self.idx, "Rest parameter must be last formal parameter")
+			}
 			break
 		}
 		self.parseVariableDeclaration(&list)
@@ -238,8 +245,12 @@ func (self *_parser) parseFunction(declaration, async bool, start file.Idx) *ast
 	if self.token == token.IDENTIFIER {
 		name = self.parseIdentifier()
 	} else if declaration {
-		// Use expect error handling
-		self.expect(token.IDENTIFIER)
+		if self.token == token.LEFT_PARENTHESIS {
+			self.error(self.idx, "Function statements require a function name")
+		} else {
+			// Use expect error handling
+			self.expect(token.IDENTIFIER)
+		}
 	}
 	node.Name = name
 
@@ -493,7 +504,7 @@ func (self *_parser) parseThrowStatement() ast.Statement {
 	idx := self.expect(token.THROW)
 
 	if self.implicitSemicolon {
-		if self.chr == -1 { // Hackish
+		if self.token == token.EOF {
 			self.error(idx, "Unexpected end of input")
 		} else {
 			self.error(idx, "Illegal newline after throw")
@@ -540,7 +551,7 @@ func (self *_parser) parseSwitchStatement() ast.Statement {
 		clause := self.parseCaseStatement()
 		if clause.Test == nil {
 			if node.Default != -1 {
-				self.error(clause.Case, "Already saw a default in switch")
+				self.error(clause.Case, "More than one default clause in switch statement")
 			}
 			node.Default = index
 		}
@@ -693,10 +704,21 @@ func (self *_parser) parseForOrForInStatement() ast.Statement {
 					self.next()
 					forOf = true
 				}
+			} else if !missingPatternInitializer(list) {
+				// Else V8 reports the missing initializer first.
+				if self.token == token.IN {
+					self.error(self.idx, "Invalid left-hand side in for-in loop: Must have a single binding.")
+				} else if self.token == token.IDENTIFIER && self.literal == "of" {
+					self.error(self.idx, "Invalid left-hand side in for-of loop: Must have a single binding.")
+				}
 			}
 			if forIn || forOf {
 				if list[0].Initializer != nil {
-					self.error(list[0].Initializer.Idx0(), "for-in loop variable declaration may not have an initializer")
+					if forOf {
+						self.error(list[0].Initializer.Idx0(), "for-of loop variable declaration may not have an initializer.")
+					} else {
+						self.error(list[0].Initializer.Idx0(), "for-in loop variable declaration may not have an initializer.")
+					}
 				}
 				if tok == token.VAR {
 					into = &ast.ForIntoVar{
@@ -1040,7 +1062,7 @@ func (self *_parser) parseContinueStatement() ast.Statement {
 	self.expect(token.IDENTIFIER)
 
 illegal:
-	self.error(idx, "Illegal continue statement")
+	self.error(idx, "Illegal continue statement: no surrounding iteration statement")
 	self.nextStatement()
 	return &ast.BadStatement{From: idx, To: self.idx}
 }
@@ -1076,4 +1098,15 @@ func (self *_parser) nextStatement() {
 		}
 		self.next()
 	}
+}
+
+// missingPatternInitializer reports whether a declaration in list binds a
+// pattern without an initializer.
+func missingPatternInitializer(list []*ast.Binding) bool {
+	for _, b := range list {
+		if _, ok := b.Target.(ast.Pattern); ok && b.Initializer == nil {
+			return true
+		}
+	}
+	return false
 }

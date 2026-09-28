@@ -110,7 +110,15 @@ func (self *_parser) errorUnexpectedToken(tkn token.Token) error {
 		return self.error(self.idx, "Unexpected identifier")
 	case token.KEYWORD:
 		// TODO Might be a future reserved word
+		switch self.literal {
+		case "import", "export":
+			return self.error(self.idx, err_UnexpectedToken, self.literal)
+		}
 		return self.error(self.idx, "Unexpected reserved word")
+	case token.AWAIT:
+		return self.error(self.idx, "Unexpected reserved word")
+	case token.YIELD:
+		return self.error(self.idx, "Unexpected identifier")
 	case token.ESCAPED_RESERVED_WORD:
 		return self.error(self.idx, "Keyword must not contain escaped characters")
 	case token.NUMBER:

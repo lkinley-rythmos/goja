@@ -105,7 +105,20 @@ func (self *_parser) parsePrimaryExpression() ast.Expression {
 		}
 	}
 
-	self.errorUnexpectedToken(self.token)
+	if self.token == token.KEYWORD && self.literal == "import" {
+		// A script has no import declarations, import.meta or (here)
+		// import().
+		switch self.peek() {
+		case token.PERIOD:
+			self.error(idx, "Cannot use 'import.meta' outside a module")
+		case token.LEFT_PARENTHESIS:
+			self.errorUnexpectedToken(self.token)
+		default:
+			self.error(idx, "Cannot use import statement outside a module")
+		}
+	} else {
+		self.errorUnexpectedToken(self.token)
+	}
 	self.nextStatement()
 	return &ast.BadExpression{From: idx, To: self.idx}
 }
@@ -628,7 +641,13 @@ func (self *_parser) parseArgumentList() (argumentList []ast.Expression, idx0, i
 		}
 		self.next()
 	}
-	idx1 = self.expect(token.RIGHT_PARENTHESIS)
+	idx1 = self.idx
+	if self.token != token.RIGHT_PARENTHESIS {
+		// V8's wording for what is neither a comma nor the end of the
+		// arguments.
+		self.error(self.idx, "missing ) after argument list")
+	}
+	self.next()
 	return
 }
 
@@ -817,7 +836,7 @@ func (self *_parser) parseUpdateExpression() ast.Expression {
 		switch operand.(type) {
 		case *ast.Identifier, *ast.DotExpression, *ast.PrivateDotExpression, *ast.BracketExpression:
 		default:
-			self.error(idx, "Invalid left-hand side in assignment")
+			self.error(idx, "Invalid left-hand side expression in prefix operation")
 			self.nextStatement()
 			return &ast.BadExpression{From: idx, To: self.idx}
 		}
@@ -839,7 +858,7 @@ func (self *_parser) parseUpdateExpression() ast.Expression {
 			switch operand.(type) {
 			case *ast.Identifier, *ast.DotExpression, *ast.PrivateDotExpression, *ast.BracketExpression:
 			default:
-				self.error(idx, "Invalid left-hand side in assignment")
+				self.error(idx, "Invalid left-hand side expression in postfix operation")
 				self.nextStatement()
 				return &ast.BadExpression{From: idx, To: self.idx}
 			}
@@ -1123,6 +1142,7 @@ func isLogicalAndExpr(expr ast.Expression) bool {
 
 func (self *_parser) parseLogicalOrExpression() ast.Expression {
 	var idx file.Idx
+	var offending token.Token
 	parenthesis := self.token == token.LEFT_PARENTHESIS
 	left := self.parseLogicalAndExpression()
 
@@ -1137,7 +1157,7 @@ func (self *_parser) parseLogicalOrExpression() ast.Expression {
 					Right:    self.parseLogicalAndExpression(),
 				}
 			case token.COALESCE:
-				idx = self.idx
+				idx, offending = self.idx, self.token
 				goto mixed
 			default:
 				return left
@@ -1153,6 +1173,7 @@ func (self *_parser) parseLogicalOrExpression() ast.Expression {
 				parenthesis := self.token == token.LEFT_PARENTHESIS
 				right := self.parseLogicalAndExpression()
 				if !parenthesis && isLogicalAndExpr(right) {
+					offending = token.LOGICAL_AND
 					goto mixed
 				}
 
@@ -1162,7 +1183,7 @@ func (self *_parser) parseLogicalOrExpression() ast.Expression {
 					Right:    right,
 				}
 			case token.LOGICAL_OR:
-				idx = self.idx
+				idx, offending = self.idx, self.token
 				goto mixed
 			default:
 				return left
@@ -1171,7 +1192,8 @@ func (self *_parser) parseLogicalOrExpression() ast.Expression {
 	}
 
 mixed:
-	self.error(idx, "Logical expressions and coalesce expressions cannot be mixed. Wrap either by parentheses")
+	// V8 reports the operator that cannot follow.
+	self.error(idx, err_UnexpectedToken, offending.String())
 	return left
 }
 
@@ -1424,7 +1446,7 @@ func (self *_parser) parseExpression() ast.Expression {
 
 func (self *_parser) checkComma(from, to file.Idx) {
 	if pos := strings.IndexByte(self.str[int(from)-self.base:int(to)-self.base], ','); pos >= 0 {
-		self.error(from+file.Idx(pos), "Comma is not allowed here")
+		self.error(from+file.Idx(pos), "Rest element must be last element")
 	}
 }
 
@@ -1530,7 +1552,7 @@ func (self *_parser) reinterpretAsObjectBindingPattern(expr *ast.ObjectLiteral) 
 			ok = true
 		}
 		if !ok {
-			self.error(prop.Idx0(), "Invalid destructuring binding target")
+			self.error(prop.Idx0(), "Invalid destructuring assignment target")
 			return &ast.BadExpression{From: expr.Idx0(), To: expr.Idx1()}
 		}
 	}
@@ -1661,7 +1683,7 @@ func (self *_parser) reinterpretAsDestructBindingTarget(item ast.Expression) ast
 			return item
 		}
 	}
-	self.error(item.Idx0(), "Invalid destructuring binding target")
+	self.error(item.Idx0(), "Invalid destructuring assignment target")
 	return &ast.BadExpression{From: item.Idx0(), To: item.Idx1()}
 }
 

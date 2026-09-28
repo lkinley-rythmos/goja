@@ -150,7 +150,7 @@ func (c *compiler) compileTryStatement(v *ast.TryStatement, needResult bool) {
 				if c.scope.strict {
 					switch name {
 					case "arguments", "eval":
-						c.throwSyntaxError(offset, "Catch variable may not be eval or arguments in strict mode")
+						c.throwSyntaxError(offset, "Unexpected eval or arguments in strict mode")
 					}
 				}
 				c.scope.bindNameLexical(name, true, offset)
