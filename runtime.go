@@ -213,6 +213,8 @@ type Runtime struct {
 	toStringStack objectStack
 
 	alloc allocCounter
+
+	appendBufs appendBufs
 }
 
 type StackFrame struct {

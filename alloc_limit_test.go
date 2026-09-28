@@ -31,8 +31,10 @@ func TestAllocationCounterCountsObjectsArraysAndStrings(t *testing.T) {
 	if _, err := r.RunString(`let s = ""; for (let i = 0; i < 1000; i++) { s += "abcdefgh"; }`); err != nil {
 		t.Fatal(err)
 	}
-	// Each += charges the length of the result: 8+16+...+8000.
-	if min := int64(8 * 1000 * 1001 / 2); r.AllocatedBytes() < min {
+	// Each += below appendMinLength charges the length of its result
+	// (8+16+...+256); past it, the string grows in a buffer, and the
+	// buffers are charged: at least the 8,000 bytes the string holds.
+	if min := int64(8*32*33/2 + 8000); r.AllocatedBytes() < min {
 		t.Fatalf("concat: counted %d, want at least %d", r.AllocatedBytes(), min)
 	}
 

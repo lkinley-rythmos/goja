@@ -1295,9 +1295,7 @@ func (_add) exec(vm *vm) {
 		if !isRightString {
 			rightString = right.toString()
 		}
-		// The result is a new string of both lengths.
-		vm.r.growString(0, leftString.Length()+rightString.Length())
-		ret = leftString.Concat(rightString)
+		ret = vm.r.concatString(leftString, rightString)
 	} else {
 		switch left := left.(type) {
 		case valueInt:
@@ -5322,6 +5320,19 @@ func (n concatStrings) exec(vm *vm) {
 		default:
 			panic(unknownStringTypeErr(s))
 		}
+	}
+	if first := strs[0].(String); first.Length() >= appendMinLength {
+		if length > maxStringLength {
+			vm.r.throwInvalidStringLength()
+		}
+		rest := make([]String, len(strs)-1)
+		for i, s := range strs[1:] {
+			rest[i] = s.(String)
+		}
+		vm.sp -= int(n) - 1
+		vm.stack[vm.sp-1] = vm.r.appendStrings(first, rest, length)
+		vm.pc++
+		return
 	}
 	vm.r.growString(0, length)
 

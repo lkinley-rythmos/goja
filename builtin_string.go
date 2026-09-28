@@ -261,6 +261,12 @@ func (r *Runtime) stringproto_concat(call FunctionCall) Value {
 		}
 	}
 
+	if strs[0].Length() >= appendMinLength && len(strs) > 1 {
+		if totalLen > maxStringLength {
+			r.throwInvalidStringLength()
+		}
+		return r.appendStrings(strs[0], strs[1:], totalLen)
+	}
 	r.growString(0, totalLen)
 	if allAscii {
 		var buf strings.Builder
