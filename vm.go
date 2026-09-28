@@ -777,7 +777,12 @@ func (vm *vm) pushTryFrame(catchPos, finallyPos int32) {
 }
 
 func (vm *vm) popTryFrame() {
-	vm.tryStack = vm.tryStack[:len(vm.tryStack)-1]
+	l := len(vm.tryStack) - 1
+	// As in popCtx: the slot stays in the backing array, so it must not
+	// keep the stash (or an exception) of the frame it was pushed in.
+	tf := &vm.tryStack[l]
+	tf.exception, tf.stash, tf.privEnv = nil, nil, nil
+	vm.tryStack = vm.tryStack[:l]
 }
 
 func (vm *vm) restoreStacks(iterLen, refLen uint32) (ex *Exception) {
@@ -816,6 +821,8 @@ func (vm *vm) handleThrow(arg interface{}) *Exception {
 			ctx := &vm.callStack[tf.callStackLen]
 			vm.prg, vm.newTarget, vm.result, vm.pc, vm.sb, vm.args =
 				ctx.prg, ctx.newTarget, ctx.result, ctx.pc, ctx.sb, ctx.args
+			// As in popCtx: the frames unwound stay in the backing array.
+			clear(vm.callStack[tf.callStackLen:])
 			vm.callStack = vm.callStack[:tf.callStackLen]
 		}
 		vm.sp = int(tf.sp)
@@ -945,9 +952,10 @@ func (vm *vm) popCtx() {
 	ctx := &vm.callStack[l]
 	vm.restoreCtx(ctx)
 
-	if ctx.prg != nil {
-		*ctx = context{}
-	}
+	// The slot stays in the backing array. Cleared, it keeps nothing
+	// reachable, which matters as much when prg is nil: a native function
+	// calling back into JavaScript saves its caller's stash with no prg.
+	*ctx = context{}
 
 	vm.callStack = vm.callStack[:l]
 }
