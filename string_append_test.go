@@ -90,6 +90,91 @@ func TestConcatAppend_LinearCharges(t *testing.T) {
 	}
 }
 
+// TestConcatAppend_LinearChargesUnits is LinearCharges for a string of
+// units past ASCII, charged two bytes a unit.
+func TestConcatAppend_LinearChargesUnits(t *testing.T) {
+	vm := New()
+	vm.SetAllocationLimit(32 << 20)
+	v, err := vm.RunString(`(function() { var s = ""; for (var i = 0; i < 1e6; i++) s += "é"; return s.length; })()`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.ToInteger() != 1e6 {
+		t.Fatalf("length %v", v)
+	}
+	// At least the string's two million bytes; the buffer doubles.
+	if got := vm.AllocatedBytes(); got < 2e6 || got > 10e6 {
+		t.Fatalf("charged %d bytes", got)
+	}
+}
+
+// TestConcatAppend_ThreeTermsExact: big + x + y, made once, holds and is
+// charged what it always was, its result at its exact size: a chain of
+// concatenations goes into a buffer with room only at its third step.
+func TestConcatAppend_ThreeTermsExact(t *testing.T) {
+	for _, tc := range []struct {
+		name, unit string
+		unitBytes  int64
+		maxCharge  int64
+		more       string
+	}{
+		{"ascii", "x", 1, 17e6, ""},
+		{"units", "é", 2, 17e6, ""},
+		// Four terms: the third step goes into a buffer, with a quarter
+		// more room than its result.
+		{"four terms", "x", 1, 27e6, ` + i`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vm := New()
+			prg := MustCompile("", `var big = "`+tc.unit+`".repeat(4000), keep = []; for (var i = 0; i < 2000; i++) keep.push(big + i + "."`+tc.more+`);`, false)
+			runtime.GC()
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			if _, err := vm.RunProgram(prg); err != nil {
+				t.Fatal(err)
+			}
+			runtime.GC()
+			runtime.ReadMemStats(&after)
+			// Each result is about 4,005 units.
+			exact := 2000 * 4005 * tc.unitBytes
+			limit := exact * 12 / 10
+			if tc.more != "" {
+				limit = exact * 14 / 10
+			}
+			if held := int64(after.HeapAlloc) - int64(before.HeapAlloc); held > limit {
+				t.Fatalf("holds %d bytes, want about %d", held, exact)
+			}
+			// As base charged: each step its result's length in units.
+			if got := vm.AllocatedBytes(); got > tc.maxCharge || got < 2000*(4004+4005) {
+				t.Fatalf("charged %d bytes", got)
+			}
+			runtime.KeepAlive(vm)
+		})
+	}
+}
+
+// TestConcatAppend_BufferMapReleased: the map of buffers is let go when
+// the buffers are gone and a new run starts, not kept at the size it once
+// had.
+func TestConcatAppend_BufferMapReleased(t *testing.T) {
+	vm := New()
+	if _, err := vm.RunString(`var keep = []; for (var i = 0; i < 3000; i++) { var t = "x".repeat(300) + i; t += "."; t += ","; keep.push(t) }`); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(vm.appendBufs.m); n < 3000 {
+		t.Fatalf("%d buffers remembered for 3,000 strings being built", n)
+	}
+	if _, err := vm.RunString(`keep = t = null`); err != nil {
+		t.Fatal(err)
+	}
+	runtime.GC()
+	runtime.GC()
+	vm.SetAllocationLimit(0)
+	if vm.appendBufs.m != nil || vm.appendBufs.marks != nil {
+		t.Fatalf("%d buffers and %d marks kept after they were gone", len(vm.appendBufs.m), len(vm.appendBufs.marks))
+	}
+}
+
 // TestConcatAppend_BufferChargedToLimit: the buffers a string grows in count
 // toward the allocation limit, in bytes of either kind.
 func TestConcatAppend_BufferChargedToLimit(t *testing.T) {
@@ -120,7 +205,7 @@ func TestConcatAppend_BufferMapBounded(t *testing.T) {
 	vm := New()
 	// Each round's strings are of another size, so that their buffers do
 	// not simply reuse the addresses of the last round's.
-	prg := MustCompile("", `(function(n) { var big = "x".repeat(n); for (var i = 0; i < 1000; i++) { var t = big + i; t += "."; var once = `+"`${big}!${i}`"+`; } })(size)`, false)
+	prg := MustCompile("", `(function(n) { var big = "x".repeat(n); for (var i = 0; i < 1000; i++) { var t = big + i; t += "."; t += ","; var once = `+"`${big}!${i}`"+`; } })(size)`, false)
 	for round := range 20 {
 		vm.Set("size", 300+round*300)
 		if _, err := vm.RunProgram(prg); err != nil {
@@ -235,4 +320,8 @@ func BenchmarkConcatNestedRender(b *testing.B) {
 		}
 		return render(5).length;
 	})()`)
+}
+
+func BenchmarkConcatThreeTerm(b *testing.B) {
+	benchmarkConcatScript(b, `(function() { var big = "x".repeat(4000), keep = []; for (var i = 0; i < 100; i++) { keep.push(big + i + "."); } return keep; })()`)
 }

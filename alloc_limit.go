@@ -49,6 +49,8 @@ type allocCounter struct {
 // crossed inside a run does.
 func (r *Runtime) SetAllocationLimit(bytes int64) {
 	r.alloc = allocCounter{limit: max(bytes, 0)}
+	// A new run starts: what the last one built its strings in is released.
+	r.appendBufs.release()
 }
 
 // AllocatedBytes returns the estimated bytes counted since the Runtime was

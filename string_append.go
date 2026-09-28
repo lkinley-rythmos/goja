@@ -43,6 +43,12 @@ const appendMinLength = 256
 // appendMaxMarks bounds the marks; past it they are forgotten.
 const appendMaxMarks = 4096
 
+// appendPromoteSteps is the step of a chain of concatenations onto marked
+// results at which the result goes into a buffer with room: the first two
+// are made at their exact size, so that big + x + y, a chain of two steps,
+// costs what it always did.
+const appendPromoteSteps = 3
+
 type appendBuf struct {
 	// One of them is set: the buffer is bytes of an asciiString, or the
 	// code units of a unicodeString, BOM first.
@@ -52,10 +58,18 @@ type appendBuf struct {
 	c int // code units allocated, the BOM included
 }
 
+// appendMark is a result made at its exact size: its length (the BOM
+// included), and the steps of the chain that made it.
+type appendMark struct {
+	n     int
+	steps int
+}
+
 type appendBufs struct {
 	m       map[uintptr]appendBuf
 	sweepAt int
-	marks   map[uintptr]int // results made at their exact size: their length
+	peak    int // the most entries m has had since it was made
+	marks   map[uintptr]appendMark
 }
 
 // lookup returns the buffer whose longest string starts at p and is n code
@@ -80,38 +94,54 @@ func (a *appendBufs) add(p unsafe.Pointer, e appendBuf) {
 		a.sweepAt = 64
 	}
 	a.m[uintptr(p)] = e
+	a.peak = max(a.peak, len(a.m))
 	if len(a.m) >= a.sweepAt {
 		a.sweep()
 	}
 }
 
-// sweep drops the entries of buffers that are gone.
+// sweep drops the entries of buffers that are gone. A Go map does not
+// shrink, so one left mostly empty is made again at its size.
 func (a *appendBufs) sweep() {
 	for k, e := range a.m {
 		if e.b.Value() == nil && e.u.Value() == nil {
 			delete(a.m, k)
 		}
 	}
+	switch {
+	case len(a.m) == 0:
+		a.m, a.peak = nil, 0
+	case len(a.m) < a.peak/4:
+		m := make(map[uintptr]appendBuf, len(a.m))
+		for k, e := range a.m {
+			m[k] = e
+		}
+		a.m, a.peak = m, len(m)
+	}
 	a.sweepAt = max(2*len(a.m), 64)
 }
 
-// marked reports, and forgets, a mark for the string at p of n code units
-// (the BOM included).
-func (a *appendBufs) marked(p unsafe.Pointer, n int) bool {
-	if l, ok := a.marks[uintptr(p)]; ok && l == n {
-		delete(a.marks, uintptr(p))
-		return true
-	}
-	return false
+// release sweeps the buffers and forgets the marks, between runs.
+func (a *appendBufs) release() {
+	a.sweep()
+	a.marks = nil
 }
 
-func (a *appendBufs) mark(p unsafe.Pointer, n int) {
-	if a.marks == nil {
-		a.marks = make(map[uintptr]int)
-	} else if len(a.marks) >= appendMaxMarks {
-		clear(a.marks)
+// marked returns, and forgets, the steps of the chain that made the string
+// at p of n code units (the BOM included), or 0 if it is not marked.
+func (a *appendBufs) marked(p unsafe.Pointer, n int) int {
+	if m, ok := a.marks[uintptr(p)]; ok && m.n == n {
+		delete(a.marks, uintptr(p))
+		return m.steps
 	}
-	a.marks[uintptr(p)] = n
+	return 0
+}
+
+func (a *appendBufs) mark(p unsafe.Pointer, n, steps int) {
+	if a.marks == nil || len(a.marks) >= appendMaxMarks {
+		a.marks = make(map[uintptr]appendMark)
+	}
+	a.marks[uintptr(p)] = appendMark{n: n, steps: steps}
 }
 
 // concatString is left + right for the + operator.
@@ -157,40 +187,62 @@ func (r *Runtime) appendStrings(first String, rest []String, length int) String 
 func (r *Runtime) appendASCII(first asciiString, rest []String, length int) String {
 	var buf []byte
 	var w weak.Pointer[byte]
-	grown := false
+	var p0 unsafe.Pointer // the buffer written in place
+	grown, steps := false, 0
 	if p := unsafe.Pointer(unsafe.StringData(string(first))); p != nil {
 		if e, ok := r.appendBufs.lookup(p, len(first)); ok && e.u == (weak.Pointer[uint16]{}) {
 			grown = true
 			if length <= e.c {
-				buf, w = unsafe.Slice((*byte)(p), e.c)[:len(first)], e.b
+				buf, w, p0 = unsafe.Slice((*byte)(p), e.c)[:len(first)], e.b, p
 			} else {
 				delete(r.appendBufs.m, uintptr(p))
 				buf = r.newASCIIBuf(first, 2*length)
 			}
-		} else if r.appendBufs.marked(p, len(first)) {
-			// The second step of a string being built: leave it room.
+		} else if steps = r.appendBufs.marked(p, len(first)); steps >= appendPromoteSteps-1 {
+			// A string being built: leave it room, a quarter at first, so
+			// that a long expression made once holds little more than
+			// its result.
 			grown = true
-			buf = r.newASCIIBuf(first, 2*length)
+			buf = r.newASCIIBuf(first, promotedRoom(length))
 		}
 	}
 	if buf == nil {
-		buf = r.newASCIIBuf(first, length)
+		// Made at its exact size, and charged as the + operator charges
+		// its results.
+		r.countAlloc(int64(length))
+		buf = make([]byte, len(first), length)
+		copy(buf, first)
 	}
 	for _, s := range rest {
 		buf = append(buf, s.(asciiString)...)
 	}
-	p := unsafe.SliceData(buf)
+	p := unsafe.Pointer(unsafe.SliceData(buf))
 	if !grown {
-		r.appendBufs.mark(unsafe.Pointer(p), len(buf))
+		r.appendBufs.mark(p, len(buf), steps+1)
 	} else {
-		if w == (weak.Pointer[byte]{}) {
-			w = weak.Make(p)
+		if p0 != nil && p != p0 {
+			// The room was not enough (it always is): append moved the
+			// string, so the weak pointer is not the buffer's.
+			delete(r.appendBufs.m, uintptr(p0))
+			w = weak.Pointer[byte]{}
 		}
-		r.appendBufs.add(unsafe.Pointer(p), appendBuf{b: w, n: len(buf), c: cap(buf)})
+		if w == (weak.Pointer[byte]{}) {
+			w = weak.Make((*byte)(p))
+		}
+		r.appendBufs.add(p, appendBuf{b: w, n: len(buf), c: cap(buf)})
 	}
-	return asciiString(unsafe.String(p, len(buf)))
+	return asciiString(unsafe.String((*byte)(p), len(buf)))
 }
 
+// promotedRoom is the capacity of the first buffer of a string of length
+// code units being built. A buffer that fills is replaced by one twice the
+// length.
+func promotedRoom(length int) int {
+	return length + max(length/4, 64)
+}
+
+// newASCIIBuf returns a buffer, charged, for a string of up to c bytes that
+// starts with first.
 func (r *Runtime) newASCIIBuf(first asciiString, c int) []byte {
 	c = min(c, maxStringLength)
 	r.countAlloc(int64(c))
@@ -202,20 +254,21 @@ func (r *Runtime) newASCIIBuf(first asciiString, c int) []byte {
 func (r *Runtime) appendUnicode(fa asciiString, fu unicodeString, rest []String, length int) String {
 	var buf []uint16
 	var w weak.Pointer[uint16]
-	grown := false
+	var p0 unsafe.Pointer // the buffer written in place
+	grown, steps := false, 0
 	if fu != nil {
 		p := unsafe.Pointer(unsafe.SliceData(fu))
 		if e, ok := r.appendBufs.lookup(p, len(fu)); ok && e.b == (weak.Pointer[byte]{}) {
 			grown = true
 			if length+1 <= e.c {
-				buf, w = unsafe.Slice((*uint16)(p), e.c)[:len(fu)], e.u
+				buf, w, p0 = unsafe.Slice((*uint16)(p), e.c)[:len(fu)], e.u, p
 			} else {
 				delete(r.appendBufs.m, uintptr(p))
 				buf = r.newUnicodeBuf(fa, fu, 2*length)
 			}
-		} else if r.appendBufs.marked(p, len(fu)) {
+		} else if steps = r.appendBufs.marked(p, len(fu)); steps >= appendPromoteSteps-1 {
 			grown = true
-			buf = r.newUnicodeBuf(fa, fu, 2*length)
+			buf = r.newUnicodeBuf(fa, fu, promotedRoom(length))
 		}
 	} else if p := unsafe.Pointer(unsafe.StringData(string(fa))); p != nil {
 		if _, ok := r.appendBufs.lookup(p, len(fa)); ok {
@@ -223,15 +276,18 @@ func (r *Runtime) appendUnicode(fa asciiString, fu unicodeString, rest []String,
 			// ASCII: it goes on in a buffer of units, with room.
 			delete(r.appendBufs.m, uintptr(p))
 			grown = true
-		} else if r.appendBufs.marked(p, len(fa)) {
+		} else if steps = r.appendBufs.marked(p, len(fa)); steps >= appendPromoteSteps-1 {
 			grown = true
 		}
 		if grown {
-			buf = r.newUnicodeBuf(fa, nil, 2*length)
+			buf = r.newUnicodeBuf(fa, nil, promotedRoom(length))
 		}
 	}
 	if buf == nil {
-		buf = r.newUnicodeBuf(fa, fu, length)
+		// Made at its exact size, and charged as the + operator charges
+		// its results, in code units.
+		r.countAlloc(int64(length))
+		buf = unicodeBufOf(fa, fu, length+1)
 	}
 	for _, s := range rest {
 		switch s := s.(type) {
@@ -243,25 +299,37 @@ func (r *Runtime) appendUnicode(fa asciiString, fu unicodeString, rest []String,
 			buf = append(buf, s[1:]...)
 		}
 	}
-	p := unsafe.SliceData(buf)
+	p := unsafe.Pointer(unsafe.SliceData(buf))
 	if !grown {
-		r.appendBufs.mark(unsafe.Pointer(p), len(buf))
+		r.appendBufs.mark(p, len(buf), steps+1)
 	} else {
-		if w == (weak.Pointer[uint16]{}) {
-			w = weak.Make(p)
+		if p0 != nil && p != p0 {
+			// The room was not enough (it always is): append moved the
+			// string, so the weak pointer is not the buffer's.
+			delete(r.appendBufs.m, uintptr(p0))
+			w = weak.Pointer[uint16]{}
 		}
-		r.appendBufs.add(unsafe.Pointer(p), appendBuf{u: w, n: len(buf), c: cap(buf)})
+		if w == (weak.Pointer[uint16]{}) {
+			w = weak.Make((*uint16)(p))
+		}
+		r.appendBufs.add(p, appendBuf{u: w, n: len(buf), c: cap(buf)})
 	}
 	// The capacity is cut to the length, so that nothing appending to the
 	// result writes into the room left for the buffer's next string.
 	return unicodeString(buf[:len(buf):len(buf)])
 }
 
-// newUnicodeBuf returns a buffer of units for a string of up to c code units
-// that starts with the BOM and the units of fa or fu.
+// newUnicodeBuf returns a buffer of units, charged, for a string of up to
+// c code units that starts with the BOM and the units of fa or fu.
 func (r *Runtime) newUnicodeBuf(fa asciiString, fu unicodeString, c int) []uint16 {
 	c = min(c, maxStringLength) + 1
 	r.countAlloc(2 * int64(c))
+	return unicodeBufOf(fa, fu, c)
+}
+
+// unicodeBufOf returns a slice of units of capacity c that holds the BOM
+// and the units of fa or fu.
+func unicodeBufOf(fa asciiString, fu unicodeString, c int) []uint16 {
 	buf := make([]uint16, 0, c)
 	if fu != nil {
 		return append(buf, fu...)
