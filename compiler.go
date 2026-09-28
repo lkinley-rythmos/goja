@@ -209,6 +209,9 @@ func (b *binding) emitGetP() {
 func (b *binding) emitSet() {
 	if b.isConst {
 		if b.isStrict || b.scope.c.scope.strict {
+			// A const is read before its declaration first: that error
+			// wins, as in V8.
+			b.emitGetP()
 			b.scope.c.emit(throwAssignToConst)
 		}
 		return
@@ -224,6 +227,9 @@ func (b *binding) emitSet() {
 func (b *binding) emitSetP() {
 	if b.isConst {
 		if b.isStrict || b.scope.c.scope.strict {
+			// A const is read before its declaration first: that error
+			// wins, as in V8.
+			b.emitGetP()
 			b.scope.c.emit(throwAssignToConst)
 		}
 		return

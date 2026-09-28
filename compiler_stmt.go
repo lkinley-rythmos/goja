@@ -826,6 +826,9 @@ func (c *compiler) emitPatternAssign(target, init compiledExpr) {
 		b, noDyn := c.scope.lookupName(id.name)
 		if noDyn {
 			c.emitNamedOrConst(init, id.name)
+			if b != nil {
+				c.p.addSrcMap(id.offset)
+			}
 			b.emitSetP()
 		} else {
 			c.emitVarRef(id.name, id.offset, b)

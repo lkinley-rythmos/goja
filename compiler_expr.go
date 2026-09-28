@@ -402,6 +402,9 @@ func (e *compiledIdentifierExpr) emitVarSetter1(putOnStack bool, emitRight func(
 		}
 		emitRight(false)
 		if b != nil {
+			// The store's source position is the name, which an error
+			// for a binding not yet initialized names.
+			e.addSrcMap()
 			if putOnStack {
 				b.emitSet()
 			} else {
