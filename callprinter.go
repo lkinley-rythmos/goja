@@ -17,30 +17,14 @@ import (
 // error happens, the expression is parsed again from there and printed the
 // same way.
 
-// parseCallSite parses the source of a recorded expression. It returns nil
-// if the source does not parse on its own.
+// parseCallSite parses the source of a recorded expression, once. It returns
+// nil if the source does not parse on its own. (The parser takes super and
+// the like anywhere; the compiler is what refuses them.)
 func parseCallSite(src string) ast.Expression {
 	if src == "" {
 		return nil
 	}
-	if e := parseCallSiteIn("(", src, ")"); e != nil {
-		return e
-	}
-	// super is only valid in a method.
-	if strings.Contains(src, "super") {
-		if e := parseCallSiteIn("({m(){return (", src, ")}})"); e != nil {
-			if obj, ok := e.(*ast.ObjectLiteral); ok && len(obj.Value) == 1 {
-				if p, ok := obj.Value[0].(*ast.PropertyKeyed); ok {
-					if fn, ok := p.Value.(*ast.FunctionLiteral); ok && fn.Body != nil && len(fn.Body.List) == 1 {
-						if ret, ok := fn.Body.List[0].(*ast.ReturnStatement); ok {
-							return ret.Argument
-						}
-					}
-				}
-			}
-		}
-	}
-	return nil
+	return parseCallSiteIn("(", src, ")")
 }
 
 func parseCallSiteIn(prefix, src, suffix string) ast.Expression {

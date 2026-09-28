@@ -1,6 +1,7 @@
 package goja
 
 import (
+	"strings"
 	"unicode"
 	"unicode/utf8"
 
@@ -189,25 +190,168 @@ func (vm *vm) callSiteExpr() ast.Expression {
 	return parseCallSiteAt(vm.prg.src.Source(), start, end)
 }
 
-// parseCallSiteAt parses the expression at src[start:end]. A node's range
-// leaves out the parentheses its first operand is written in, as in
-// (function(){})(), so while the source does not parse on its own, the
-// opening parentheses before it are taken in.
+// parseCallSiteAt parses the expression at src[start:end], at most once. A
+// node's range leaves out the parentheses its first or last operand is
+// written in, as in (function(){})() or a + (b), so as many as the source
+// lacks are added around it. An expression longer than
+// maxCallSiteSource is not parsed: the error names the value instead.
 func parseCallSiteAt(src string, start, end int) ast.Expression {
-	for range 8 {
-		if e := parseCallSite(src[start:end]); e != nil {
-			return e
-		}
-		i := start - 1
-		for i >= 0 && (src[i] == ' ' || src[i] == '\t' || src[i] == '\n' || src[i] == '\r') {
-			i--
-		}
-		if i < 0 || src[i] != '(' {
-			return nil
-		}
-		start = i
+	if end-start > maxCallSiteSource {
+		return nil
 	}
-	return nil
+	text := src[start:end]
+	open, closing, ok := parenBalance(text)
+	if !ok {
+		return nil
+	}
+	if open > 0 || closing > 0 {
+		text = strings.Repeat("(", open) + text + strings.Repeat(")", closing)
+	}
+	return parseCallSite(text)
+}
+
+// maxCallSiteSource bounds the source an error parses to name an
+// expression: V8 prints expressions of any length, but a throw must not
+// cost a parse of a megabyte.
+const maxCallSiteSource = 16 << 10
+
+// parenBalance returns how many opening parentheses src lacks before its
+// first unmatched closing one, and how many closing ones it lacks at its
+// end. It skips strings, templates, comments and (by the usual heuristic)
+// regular expressions; ok is false if it cannot tell.
+func parenBalance(src string) (open, closing int, ok bool) {
+	depth, minDepth := 0, 0
+	// prev is the last significant character, which tells a regular
+	// expression from a division.
+	prev := byte(0)
+	braces := []int{} // brace depths of the template substitutions open
+	braceDepth := 0
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		switch c {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth < minDepth {
+				minDepth = depth
+			}
+		case '{':
+			braceDepth++
+		case '}':
+			if len(braces) > 0 && braces[len(braces)-1] == braceDepth {
+				// The end of a substitution: the template goes on.
+				braces = braces[:len(braces)-1]
+				j, subst, ok := skipTemplate(src, i+1)
+				if !ok {
+					return 0, 0, false
+				}
+				if subst {
+					braces = append(braces, braceDepth)
+				}
+				i = j
+				prev = '`'
+				continue
+			}
+			braceDepth--
+		case '"', '\'':
+			j := i + 1
+			for ; j < len(src) && src[j] != c; j++ {
+				if src[j] == '\\' {
+					j++
+				}
+			}
+			if j >= len(src) {
+				return 0, 0, false
+			}
+			i = j
+		case '`':
+			j, subst, ok := skipTemplate(src, i+1)
+			if !ok {
+				return 0, 0, false
+			}
+			if subst {
+				braces = append(braces, braceDepth)
+			}
+			i = j
+			prev = '`'
+			continue
+		case '/':
+			if i+1 < len(src) && src[i+1] == '/' {
+				for i < len(src) && src[i] != '\n' {
+					i++
+				}
+				continue
+			}
+			if i+1 < len(src) && src[i+1] == '*' {
+				j := strings.Index(src[i+2:], "*/")
+				if j < 0 {
+					return 0, 0, false
+				}
+				i += j + 3
+				continue
+			}
+			if prev == 0 || strings.IndexByte("(,=:[!&|?{};+-*%<>~^", prev) >= 0 {
+				j, ok := skipRegExp(src, i+1)
+				if !ok {
+					return 0, 0, false
+				}
+				i = j
+				c = 'r'
+			}
+		}
+		prev = c
+	}
+	if len(braces) > 0 {
+		return 0, 0, false
+	}
+	open = -minDepth
+	return open, depth + open, true
+}
+
+// skipTemplate skips the characters of a template from i, just past its
+// opening backtick or the closing brace of a substitution, and returns the
+// index of the backtick that ends it or of the brace of the substitution
+// that interrupts it (subst).
+func skipTemplate(src string, i int) (int, bool, bool) {
+	for ; i < len(src); i++ {
+		switch src[i] {
+		case '\\':
+			i++
+		case '`':
+			return i, false, true
+		case '$':
+			if i+1 < len(src) && src[i+1] == '{' {
+				return i + 1, true, true
+			}
+		}
+	}
+	return 0, false, false
+}
+
+// skipRegExp skips a regular expression's body from i, just past its
+// opening slash, and returns the index of its closing slash.
+func skipRegExp(src string, i int) (int, bool) {
+	inClass := false
+	for ; i < len(src); i++ {
+		switch src[i] {
+		case '\\':
+			i++
+		case '[':
+			inClass = true
+		case ']':
+			inClass = false
+		case '/':
+			if !inClass {
+				return i, true
+			}
+		case '\n':
+			return 0, false
+		}
+	}
+	return 0, false
 }
 
 // toSetBase is v as the object a property key is set on, or V8's error for
