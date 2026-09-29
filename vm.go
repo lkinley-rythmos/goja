@@ -1357,6 +1357,34 @@ func (_add) exec(vm *vm) {
 	vm.pc++
 }
 
+// _addChain is the + operator whose left operand is the result of another
+// + in the same expression (the later steps of a + b + c): a primitive,
+// and, when it is a string, one nothing else holds yet. Its concatenation is
+// a step of the chain the expression's first + started, not a new one (see
+// concatStringChained).
+type _addChain struct{}
+
+var addChain _addChain
+
+func (_addChain) exec(vm *vm) {
+	left, ok := vm.stack[vm.sp-2].(String)
+	if !ok {
+		add.exec(vm)
+		return
+	}
+	right := vm.stack[vm.sp-1]
+	if o, ok := right.(*Object); ok {
+		right = o.toPrimitive()
+	}
+	rightString, ok := right.(String)
+	if !ok {
+		rightString = right.toString()
+	}
+	vm.stack[vm.sp-2] = vm.r.concatStringChained(left, rightString)
+	vm.sp--
+	vm.pc++
+}
+
 type _sub struct{}
 
 var sub _sub

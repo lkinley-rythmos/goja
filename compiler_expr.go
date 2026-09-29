@@ -2779,7 +2779,11 @@ func (e *compiledBinaryExpr) emitGetter(putOnStack bool) {
 	case token.STRICT_NOT_EQUAL:
 		e.c.emit(op_strict_neq)
 	case token.PLUS:
-		e.c.emit(add)
+		if l, ok := e.left.(*compiledBinaryExpr); ok && l.operator == token.PLUS {
+			e.c.emit(addChain)
+		} else {
+			e.c.emit(add)
+		}
 	case token.MINUS:
 		e.c.emit(sub)
 	case token.MULTIPLY:

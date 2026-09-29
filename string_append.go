@@ -1,6 +1,7 @@
 package goja
 
 import (
+	"slices"
 	"unsafe"
 	"weak"
 
@@ -30,23 +31,39 @@ import (
 //
 // A weak pointer costs an allocation, so a long concatenation first makes
 // its result as before, at its exact size, and only marks it (its address
-// and length) as possibly growing. A concatenation onto a marked string is
-// the second step of a string being built: its result goes into a buffer.
+// and length) as possibly growing, with the steps of the chain that made
+// it. A concatenation onto a string marked as the result of two steps is
+// the third step of a string being built: its result goes into a buffer.
 // Nothing is written through a mark, so a mark left by a string that is gone
-// and matched by another string at the same address costs only a buffer.
+// and matched by another string at the same address costs only a buffer. A
+// mark is used once: the other concatenations onto the same string, forks
+// of it, are made at their exact size.
+//
+// The steps of a chain are the concatenations whose left operand is a value
+// that was kept: s += x is one each time. The later + of one expression,
+// a + b + c, has for its left operand the one before's result, which
+// nothing holds: it is part of the same step (concatStringChained), so an
+// expression of any number of terms, made once, makes each of its results
+// at its exact size, as base did; built on in a loop, it is promoted as
+// s += x is, and its later + append in place.
 
 // appendMinLength is the length, in code units, a left operand needs for its
 // concatenation to be marked or to go through a shared buffer. Below it,
 // copying costs less than looking the buffer up.
 const appendMinLength = 256
 
-// appendMaxMarks bounds the marks; past it they are forgotten.
-const appendMaxMarks = 4096
+// appendMarkSlots is the size of the table of marks, a power of two. A mark
+// goes in the slot its address hashes to, and takes it from the one there:
+// a mark lost only makes its string be promoted later, and the table costs
+// no allocation per mark.
+const appendMarkSlots = 1 << appendMarkBits
+
+const appendMarkBits = 10
 
 // appendPromoteSteps is the step of a chain of concatenations onto marked
 // results at which the result goes into a buffer with room: the first two
-// are made at their exact size, so that big + x + y, a chain of two steps,
-// costs what it always did.
+// are made at their exact size, so that t = big + x; t += y costs what it
+// always did.
 const appendPromoteSteps = 3
 
 type appendBuf struct {
@@ -58,18 +75,19 @@ type appendBuf struct {
 	c int // code units allocated, the BOM included
 }
 
-// appendMark is a result made at its exact size: its length (the BOM
-// included), and the steps of the chain that made it.
+// appendMark is a result made at its exact size: its address, its length
+// (the BOM included), and the steps of the chain that made it.
 type appendMark struct {
-	n     int
-	steps int
+	p     uintptr
+	n     uint32
+	steps uint32
 }
 
 type appendBufs struct {
 	m       map[uintptr]appendBuf
 	sweepAt int
 	peak    int // the most entries m has had since it was made
-	marks   map[uintptr]appendMark
+	marks   *[appendMarkSlots]appendMark
 }
 
 // lookup returns the buffer whose longest string starts at p and is n code
@@ -130,22 +148,46 @@ func (a *appendBufs) release() {
 // marked returns, and forgets, the steps of the chain that made the string
 // at p of n code units (the BOM included), or 0 if it is not marked.
 func (a *appendBufs) marked(p unsafe.Pointer, n int) int {
-	if m, ok := a.marks[uintptr(p)]; ok && m.n == n {
-		delete(a.marks, uintptr(p))
-		return m.steps
+	if a.marks == nil {
+		return 0
 	}
-	return 0
+	m := &a.marks[markSlot(p)]
+	if m.p != uintptr(p) {
+		return 0
+	}
+	m.p = 0
+	if int(m.n) != n {
+		return 0
+	}
+	return int(m.steps)
 }
 
 func (a *appendBufs) mark(p unsafe.Pointer, n, steps int) {
-	if a.marks == nil || len(a.marks) >= appendMaxMarks {
-		a.marks = make(map[uintptr]appendMark)
+	if a.marks == nil {
+		a.marks = new([appendMarkSlots]appendMark)
 	}
-	a.marks[uintptr(p)] = appendMark{n: n, steps: steps}
+	a.marks[markSlot(p)] = appendMark{p: uintptr(p), n: uint32(n), steps: uint32(min(steps, appendPromoteSteps))}
+}
+
+// markSlot is the slot of the table of marks for the address p.
+func markSlot(p unsafe.Pointer) int {
+	return int(uint64(uintptr(p)) * 0x9e3779b97f4a7c15 >> (64 - appendMarkBits))
 }
 
 // concatString is left + right for the + operator.
 func (r *Runtime) concatString(left, right String) String {
+	return r.concat(left, right, false)
+}
+
+// concatStringChained is left + right for a + whose left operand is the
+// result of the + before it in the same expression: a later step of the
+// same chain, which appends in place to a buffer but does not count as a
+// step of its own, nor promote its left operand to a buffer.
+func (r *Runtime) concatStringChained(left, right String) String {
+	return r.concat(left, right, true)
+}
+
+func (r *Runtime) concat(left, right String, chained bool) String {
 	ll, rl := left.Length(), right.Length()
 	if rl > maxStringLength-ll {
 		r.throwInvalidStringLength()
@@ -155,12 +197,18 @@ func (r *Runtime) concatString(left, right String) String {
 		r.countAlloc(int64(ll + rl))
 		return left.Concat(right)
 	}
-	return r.appendStrings(left, []String{right}, ll+rl)
+	return r.appendStringsChain(left, []String{right}, ll+rl, chained)
 }
 
 // appendStrings is first followed by rest, which is length code units long
 // in all and at most maxStringLength. It charges what it allocates.
 func (r *Runtime) appendStrings(first String, rest []String, length int) String {
+	return r.appendStringsChain(first, rest, length, false)
+}
+
+// appendStringsChain is appendStrings, as a later step of first's chain if
+// chained.
+func (r *Runtime) appendStringsChain(first String, rest []String, length int, chained bool) String {
 	fa, fu := devirtualizeString(first)
 	ascii := fu == nil
 	for i, s := range rest {
@@ -179,12 +227,26 @@ func (r *Runtime) appendStrings(first String, rest []String, length int) String 
 		}
 	}
 	if ascii {
-		return r.appendASCII(fa, rest, length)
+		return r.appendASCII(fa, rest, length, chained)
 	}
-	return r.appendUnicode(fa, fu, rest, length)
+	return r.appendUnicode(fa, fu, rest, length, chained)
 }
 
-func (r *Runtime) appendASCII(first asciiString, rest []String, length int) String {
+// promotes reports whether a concatenation onto a string marked with the
+// steps of its chain goes into a buffer with room.
+func promotes(steps int, chained bool) bool {
+	return !chained && steps >= appendPromoteSteps-1
+}
+
+// nextSteps is the steps of the chain a result's mark records.
+func nextSteps(steps int, chained bool) int {
+	if chained {
+		return steps
+	}
+	return steps + 1
+}
+
+func (r *Runtime) appendASCII(first asciiString, rest []String, length int, chained bool) String {
 	var buf []byte
 	var w weak.Pointer[byte]
 	var p0 unsafe.Pointer // the buffer written in place
@@ -198,7 +260,7 @@ func (r *Runtime) appendASCII(first asciiString, rest []String, length int) Stri
 				delete(r.appendBufs.m, uintptr(p))
 				buf = r.newASCIIBuf(first, 2*length)
 			}
-		} else if steps = r.appendBufs.marked(p, len(first)); steps >= appendPromoteSteps-1 {
+		} else if steps = r.appendBufs.marked(p, len(first)); promotes(steps, chained) {
 			// A string being built: leave it room, a quarter at first, so
 			// that a long expression made once holds little more than
 			// its result.
@@ -218,7 +280,7 @@ func (r *Runtime) appendASCII(first asciiString, rest []String, length int) Stri
 	}
 	p := unsafe.Pointer(unsafe.SliceData(buf))
 	if !grown {
-		r.appendBufs.mark(p, len(buf), steps+1)
+		r.appendBufs.mark(p, len(buf), nextSteps(steps, chained))
 	} else {
 		if p0 != nil && p != p0 {
 			// The room was not enough (it always is): append moved the
@@ -251,7 +313,7 @@ func (r *Runtime) newASCIIBuf(first asciiString, c int) []byte {
 	return buf
 }
 
-func (r *Runtime) appendUnicode(fa asciiString, fu unicodeString, rest []String, length int) String {
+func (r *Runtime) appendUnicode(fa asciiString, fu unicodeString, rest []String, length int, chained bool) String {
 	var buf []uint16
 	var w weak.Pointer[uint16]
 	var p0 unsafe.Pointer // the buffer written in place
@@ -266,7 +328,7 @@ func (r *Runtime) appendUnicode(fa asciiString, fu unicodeString, rest []String,
 				delete(r.appendBufs.m, uintptr(p))
 				buf = r.newUnicodeBuf(fa, fu, 2*length)
 			}
-		} else if steps = r.appendBufs.marked(p, len(fu)); steps >= appendPromoteSteps-1 {
+		} else if steps = r.appendBufs.marked(p, len(fu)); promotes(steps, chained) {
 			grown = true
 			buf = r.newUnicodeBuf(fa, fu, promotedRoom(length))
 		}
@@ -276,7 +338,7 @@ func (r *Runtime) appendUnicode(fa asciiString, fu unicodeString, rest []String,
 			// ASCII: it goes on in a buffer of units, with room.
 			delete(r.appendBufs.m, uintptr(p))
 			grown = true
-		} else if steps = r.appendBufs.marked(p, len(fa)); steps >= appendPromoteSteps-1 {
+		} else if steps = r.appendBufs.marked(p, len(fa)); promotes(steps, chained) {
 			grown = true
 		}
 		if grown {
@@ -292,16 +354,14 @@ func (r *Runtime) appendUnicode(fa asciiString, fu unicodeString, rest []String,
 	for _, s := range rest {
 		switch s := s.(type) {
 		case asciiString:
-			for i := 0; i < len(s); i++ {
-				buf = append(buf, uint16(s[i]))
-			}
+			buf = appendASCIIUnits(buf, s)
 		case unicodeString:
 			buf = append(buf, s[1:]...)
 		}
 	}
 	p := unsafe.Pointer(unsafe.SliceData(buf))
 	if !grown {
-		r.appendBufs.mark(p, len(buf), steps+1)
+		r.appendBufs.mark(p, len(buf), nextSteps(steps, chained))
 	} else {
 		if p0 != nil && p != p0 {
 			// The room was not enough (it always is): append moved the
@@ -334,9 +394,16 @@ func unicodeBufOf(fa asciiString, fu unicodeString, c int) []uint16 {
 	if fu != nil {
 		return append(buf, fu...)
 	}
-	buf = append(buf, unistring.BOM)
-	for i := 0; i < len(fa); i++ {
-		buf = append(buf, uint16(fa[i]))
+	return appendASCIIUnits(append(buf, unistring.BOM), fa)
+}
+
+// appendASCIIUnits appends the bytes of s to buf as code units.
+func appendASCIIUnits(buf []uint16, s asciiString) []uint16 {
+	n := len(buf)
+	buf = slices.Grow(buf, len(s))[:n+len(s)]
+	dst := buf[n:]
+	for i := range dst {
+		dst[i] = uint16(s[i])
 	}
 	return buf
 }
