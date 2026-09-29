@@ -1056,6 +1056,7 @@ func (c *compiler) compileSwitchStatement(v *ast.SwitchStatement, needResult boo
 
 	var enter *enterBlock
 	var db *binding
+	dbInit := -1
 	if scopeDeclared {
 		c.block = &block{
 			typ:        blockScope,
@@ -1064,6 +1065,9 @@ func (c *compiler) compileSwitchStatement(v *ast.SwitchStatement, needResult boo
 		}
 		enter = &enterBlock{}
 		c.emit(enter)
+		// Where the discriminant goes if its binding ends up in the stash.
+		dbInit = len(c.p.code)
+		c.emit(nil)
 		// create anonymous variable for the discriminant
 		bindings := c.scope.bindings
 		var bb []*binding
@@ -1135,7 +1139,18 @@ func (c *compiler) compileSwitchStatement(v *ast.SwitchStatement, needResult boo
 	}
 	if enter != nil {
 		c.leaveScopeBlock(enter)
-		enter.stackSize--
+		if c.scope.dynLookup || db.inStash {
+			// The discriminant, on the stack, goes into its binding's slot
+			// in the stash. (With a direct eval every binding is in the
+			// stash: stackSize is 0, and taking the discriminant's slot off
+			// it wrapped it to 2^32-1.)
+			db.emitInitPAtScope(c.scope, dbInit)
+		} else {
+			// The discriminant, on the stack, is its binding's slot: the
+			// block reserves the others.
+			c.p.code[dbInit] = jump(1)
+			enter.stackSize--
+		}
 		c.popScope()
 	}
 	c.leaveBlock()

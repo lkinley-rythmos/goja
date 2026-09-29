@@ -181,7 +181,7 @@ type stashRefLex struct {
 func (r *stashRefLex) get() Value {
 	v := (*r.v)[r.idx]
 	if v == nil {
-		panic(errAccessBeforeInit)
+		panic(accessBeforeInitNamed(r.n))
 	}
 	return v
 }
@@ -189,9 +189,18 @@ func (r *stashRefLex) get() Value {
 func (r *stashRefLex) set(v Value) {
 	p := &(*r.v)[r.idx]
 	if *p == nil {
-		panic(errAccessBeforeInit)
+		panic(accessBeforeInitNamed(r.n))
 	}
 	*p = v
+}
+
+// accessBeforeInitNamed is the error for reading or writing name before its
+// declaration has run.
+func accessBeforeInitNamed(name unistring.String) referenceError {
+	if name == "" {
+		return errAccessBeforeInit
+	}
+	return referenceError("Cannot access '" + name.String() + "' before initialization")
 }
 
 func (r *stashRefLex) init(v Value) {
@@ -204,6 +213,10 @@ type stashRefConst struct {
 }
 
 func (r *stashRefConst) set(v Value) {
+	if (*r.v)[r.idx] == nil {
+		// Before its declaration, as V8 reports it first.
+		panic(accessBeforeInitNamed(r.n))
+	}
 	if r.strictConst {
 		panic(errAssignToConst)
 	}
@@ -445,9 +458,19 @@ func toNumeric(value Value) Value {
 	return value.ToNumber()
 }
 
+// maxValueStackSlots bounds the value stack: 32M slots, 512 MB on 64-bit
+// platforms, far past what V8 allows (its RangeError for a spread or a
+// recursion comes much earlier). A single instruction that would grow the
+// stack past it (a miscompiled block size did: 4 billion slots, uncharged
+// and uninterruptible) fails with that RangeError instead.
+const maxValueStackSlots = 1 << 25
+
 func (s *valueStack) expand(idx int) {
 	if idx < len(*s) {
 		return
+	}
+	if idx >= maxValueStackSlots || idx < 0 {
+		panic(rangeError("Maximum call stack size exceeded"))
 	}
 	idx++
 	if idx < cap(*s) {
@@ -4332,7 +4355,7 @@ func (d *bindVars) exec(vm *vm) {
 	var target *stash
 	for _, name := range d.names {
 		for s := vm.stash; s != nil; s = s.outer {
-			if idx, exists := s.names[name]; exists && idx&(maskVar|maskCatchParam) == 0 {
+			if idx, exists := s.names[name]; exists && idx&(maskVar|maskCatchParam|maskFuncDecl) == 0 {
 				vm.throw(vm.alreadyDeclared(name))
 				return
 			}

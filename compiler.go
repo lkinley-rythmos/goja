@@ -34,8 +34,11 @@ const (
 	// maskCatchParam marks a catch clause's parameter when it is a plain
 	// name, which a var declared by eval code may redeclare (Annex B.3.4).
 	maskCatchParam = 1 << 28
+	// maskFuncDecl marks a function declared at the top of a function's
+	// body, which is var scoped: eval code may declare a var of its name.
+	maskFuncDecl = 1 << 27
 
-	maskTyp = maskConst | maskVar | maskDeletable | maskCatchParam
+	maskTyp = maskConst | maskVar | maskDeletable | maskCatchParam | maskFuncDecl
 )
 
 type varType byte
@@ -154,6 +157,7 @@ type binding struct {
 	isVar        bool
 	inStash      bool
 	isCatchParam bool // the name a catch clause binds its exception to
+	isFuncDecl   bool // a function declared at the top of a function's body
 }
 
 func (b *binding) getAccessPointsForScope(s *scope) *[]int {
@@ -977,6 +981,9 @@ func (s *scope) makeNamesMap() map[unistring.String]uint32 {
 		if b.isCatchParam {
 			idx |= maskCatchParam
 		}
+		if b.isFuncDecl {
+			idx |= maskFuncDecl
+		}
 		names[b.name] = idx
 	}
 	return names
@@ -1144,7 +1151,10 @@ func (c *compiler) createFunctionBindings(funcs []*ast.FunctionDeclaration) {
 			hasNonStandard := false
 			for _, decl := range funcs {
 				if !decl.Function.Async && !decl.Function.Generator {
-					s.bindNameLexical(decl.Function.Name.Name, false, int(decl.Function.Name.Idx1())-1)
+					b, _ := s.bindNameLexical(decl.Function.Name.Name, false, int(decl.Function.Name.Idx1())-1)
+					if s.isFunction() {
+						b.isFuncDecl = true
+					}
 				} else {
 					hasNonStandard = true
 				}
@@ -1152,7 +1162,10 @@ func (c *compiler) createFunctionBindings(funcs []*ast.FunctionDeclaration) {
 			if hasNonStandard {
 				for _, decl := range funcs {
 					if decl.Function.Async || decl.Function.Generator {
-						s.bindNameLexical(decl.Function.Name.Name, true, int(decl.Function.Name.Idx1())-1)
+						b, _ := s.bindNameLexical(decl.Function.Name.Name, true, int(decl.Function.Name.Idx1())-1)
+						if s.isFunction() {
+							b.isFuncDecl = true
+						}
 					}
 				}
 			}
