@@ -242,6 +242,10 @@ func (self *_RegExp_parser) read() {
 			chr, width = utf8.DecodeRuneInString(self.str[self.offset:])
 			if chr == utf8.RuneError && width == 1 {
 				self.error(true, "Invalid UTF-8 character")
+				// The scan ends here even if an error was reported before
+				// (and the scan went back, as for \c).
+				self.offset = self.length
+				self.chr = -1
 				return
 			}
 		}
@@ -1195,6 +1199,9 @@ func (self *_RegExp_parser) scanEscape(inClass bool) {
 				// Annex B: in a class, a digit or _ is a control letter too.
 				self.writeLegacyChar(offset-1, self.offset, self.chr%32)
 				self.read()
+				return
+			}
+			if self.err != nil {
 				return
 			}
 			// Annex B: the backslash is itself, and the c is read next.

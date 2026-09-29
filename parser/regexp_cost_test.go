@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 	"unicode"
 )
 
@@ -272,6 +273,30 @@ func TestTransformRegExpNestingBounded(t *testing.T) {
 		}
 		if got := outcome(t, strings.Repeat("(", maxGroupNesting)+"a"+strings.Repeat(")", maxGroupNesting), unicode, false); got != "go" {
 			t.Errorf("%d groups (u: %v): %s", maxGroupNesting, unicode, got)
+		}
+	}
+}
+
+func TestTransformRegExpInvalidUTF8(t *testing.T) {
+	// Invalid UTF-8 ends the scan, even after an error, when the scan went
+	// back (\c without a control letter is a backslash, and the c is read
+	// again): "\c\xff" looped for ever. A Go string given to RunString may
+	// have such bytes.
+	for _, pattern := range []string{"k8a]\\c\xff", "\\c\xff", "[\\c\xff]", "a\xff", "(?<\xff>)"} {
+		for _, unicode := range []bool{false, true} {
+			done := make(chan error, 1)
+			go func() {
+				_, _, err := TransformRegExp2(pattern, false, unicode, false)
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if _, ok := err.(RegexpSyntaxError); !ok {
+					t.Errorf("%q (u: %v): %v", pattern, unicode, err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("%q (u: %v): no result", pattern, unicode)
+			}
 		}
 	}
 }
