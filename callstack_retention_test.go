@@ -106,3 +106,32 @@ func TestInterruptLeavesNoFrames(t *testing.T) {
 		}
 	}
 }
+
+// TestInterruptDropsOversizedValueStack: an interrupt that ends the
+// outermost run lets go of a value stack grown past maxRetainedStackCap, as
+// a run that returns does (TestLeaveDropsOversizedValueStack), and the next
+// run works. (It kept 15,360 slots after a recursion 5,000 deep.)
+func TestInterruptDropsOversizedValueStack(t *testing.T) {
+	for _, src := range []string{
+		`function f(n) { if (n === 0) { stop(); while (true) {} } return f(n - 1) + 1 } f(5000)`,
+		`function* g() { yield f(5000) } function f(n) { if (n === 0) { stop(); while (true) {} } return f(n - 1) + 1 } g().next()`,
+		`(function () { function f(n) { if (n === 0) { stop(); while (true) {} } return f(n - 1) + 1 } return f(5000) })`,
+	} {
+		vm := New()
+		vm.Set("stop", func() { vm.Interrupt("stop") })
+		v, err := vm.RunString(src)
+		if fn, ok := AssertFunction(v); ok && err == nil {
+			_, err = fn(nil)
+		}
+		var ie *InterruptedError
+		if !errors.As(err, &ie) {
+			t.Fatalf("%s: %v", src, err)
+		}
+		if c := cap(vm.vm.stack); c != 0 {
+			t.Fatalf("%s: kept a value stack of %d slots", src, c)
+		}
+		if v, err := vm.RunString(`[1, 2].map(function (x) { return x * 2 }).join()`); err != nil || v.String() != "2,4" {
+			t.Fatalf("%s: after the interrupt: %v, %v", src, v, err)
+		}
+	}
+}

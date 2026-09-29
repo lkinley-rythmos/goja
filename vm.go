@@ -6192,8 +6192,15 @@ func (vm *vm) resetAfterAbort() {
 	vm.iterStack = vm.iterStack[:0]
 	clear(vm.refStack)
 	vm.refStack = vm.refStack[:0]
-	clear(vm.stack)
-	vm.stack = vm.stack[:0]
+	// As leave() does: a stack grown past maxRetainedStackCap by the run is
+	// let go; a smaller one is kept, with nothing left in it.
+	if cap(vm.stack) > maxRetainedStackCap {
+		vm.stack = nil
+	} else {
+		st := vm.stack[:cap(vm.stack)]
+		clear(st)
+		vm.stack = st[:0]
+	}
 	vm.sp, vm.sb, vm.pc, vm.args = 0, -1, 0, 0
 	vm.prg, vm.stash, vm.privEnv, vm.newTarget, vm.result = nil, &vm.r.global.stash, nil, nil, nil
 	vm.nativeDepth = 0
