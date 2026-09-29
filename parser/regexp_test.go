@@ -9,11 +9,12 @@ func TestRegExp(t *testing.T) {
 	tt(t, func() {
 		{
 			// err
-			test := func(input string, expect interface{}) {
+			test := func(input string, expect string) {
 				_, err := TransformRegExp(input, false, false)
 				_, incompat := err.(RegexpErrorIncompatible)
 				is(incompat, false)
-				is(err, expect)
+				// V8's message.
+				is(err, "Invalid regular expression: /"+input+"/: "+expect)
 			}
 
 			test("[", "Unterminated character class")

@@ -93,6 +93,14 @@ type _RegExp_parser struct {
 	goExpansion, regexp2Expansion int
 	goInsts, atomInsts            int64
 
+	// V8 reports these errors only once the whole pattern has parsed: a
+	// named reference to no group (deferred), and a pattern too large to
+	// compile (refused, when nothing more is written for either engine).
+	deferred string
+	refused  bool
+
+	depth int // of the group being scanned
+
 	// The class being scanned ignoring case: its items, and what adding
 	// their case variants costs Go's regexp (in units) and regexp2 (in code
 	// points); and the classes rewritten as their sets, by their text.
@@ -141,6 +149,10 @@ const (
 
 // maxGoRepeat is the largest count Go's regexp takes in a repeat.
 const maxGoRepeat = 1000
+
+// maxGroupNesting is how deeply groups may nest: Go's regexp takes no more,
+// and regexp2 is refused more (see goja's maxRegexpNesting).
+const maxGroupNesting = 1000
 
 // TransformRegExp transforms a JavaScript pattern into  a Go "regexp" pattern.
 //
@@ -210,7 +222,10 @@ func (self *_RegExp_parser) regexp2Pattern() string {
 func (self *_RegExp_parser) parse() (err error) {
 	self.read() // Pull in the first character
 	self.scan()
-	if self.err == nil && self.incompat == nil && self.goCost() > maxRegexpExpansion {
+	if self.err == nil && self.deferred != "" {
+		self.syntaxError(self.deferred)
+	}
+	if self.err == nil && (self.refused || self.incompat == nil && self.goCost() > maxRegexpExpansion) {
 		self.syntaxError("Regular expression too large")
 	}
 	if self.err == nil {
@@ -533,8 +548,17 @@ func (self *_RegExp_parser) intervalQuantifier() (min, max, end int, ok bool) {
 
 // (...)
 func (self *_RegExp_parser) scanGroup() {
+	// The scan recurses per group: a pattern of a million nested groups
+	// would overflow the stack, which cannot be recovered from. Neither
+	// engine compiles more than maxGroupNesting.
+	if self.depth++; self.depth > maxGroupNesting {
+		self.syntaxError("Regular expression too large")
+		return
+	}
+	defer func() { self.depth-- }()
 	kind := termAtom
 	start := self.goInsts
+	name := ""
 	str := self.str[self.chrOffset:]
 	if len(str) > 0 { // A possibility of (?= or (?!
 		if str[0] == '?' && len(str) > 1 {
@@ -560,7 +584,7 @@ func (self *_RegExp_parser) scanGroup() {
 				self.pass()         // ?
 				self.writeByte('P') // older Go versions compatibility
 				self.pass()         // <
-				self.scanGroupName()
+				name = self.scanGroupName()
 			case ch == ':':
 				self.count(costGroup)
 				self.pass()
@@ -586,12 +610,24 @@ func (self *_RegExp_parser) scanGroup() {
 		self.fatal("Unterminated group")
 		return
 	}
+	if name != "" {
+		// V8 finds a name taken when the group ends.
+		if self.namesSeen[name] {
+			self.syntaxError("Duplicate capture group name")
+			return
+		}
+		if self.namesSeen == nil {
+			self.namesSeen = make(map[string]bool)
+		}
+		self.namesSeen[name] = true
+	}
 	self.pass()
 	self.prev = kind
 	self.atomInsts = start
 }
 
-func (self *_RegExp_parser) scanGroupName() {
+// scanGroupName scans a group's name, and returns it.
+func (self *_RegExp_parser) scanGroupName() string {
 	supported := true
 	if !(self.chr >= 'a' && self.chr <= 'z' || self.chr >= 'A' && self.chr <= 'Z' && self.chr == '_') {
 		supported = false
@@ -606,24 +642,17 @@ func (self *_RegExp_parser) scanGroupName() {
 	name, valid := decodeGroupName(self.str[start:self.chrOffset])
 	if self.chr != '>' || !valid {
 		self.syntaxError("Invalid capture group name")
-		return
+		return ""
 	}
 	if strings.IndexByte(self.str[start:self.chrOffset], '\\') >= 0 {
 		// regexp2 takes no escapes in a name.
 		self.writeRegexp2(start, self.chrOffset, name)
 	}
-	if self.namesSeen[name] {
-		self.syntaxError("Duplicate capture group name")
-		return
-	}
-	if self.namesSeen == nil {
-		self.namesSeen = make(map[string]bool)
-	}
-	self.namesSeen[name] = true
 	if !supported {
 		self.error(false, "Unsupported group name")
 	}
 	self.pass()
+	return name
 }
 
 // decodeGroupName decodes the \u escapes in a group name and reports whether
@@ -771,9 +800,12 @@ func (self *_RegExp_parser) scanBracket() {
 					self.syntaxError("Range out of order in character class")
 					return
 				}
-				self.classSet = self.classSet.union(runeSet{lo, hi})
-				self.classItem(runeSet{lo, hi}, false, false)
-			} else if self.err == nil {
+				if !self.refused {
+					self.classSet = self.classSet.union(runeSet{lo, hi})
+					self.classItem(runeSet{lo, hi}, false, false)
+				}
+			} else if self.err == nil && !self.refused {
+				// Past the bound the pattern is only validated.
 				set := self.classAtomSet(left)
 				self.classSet = self.classSet.union(set)
 				self.classItem(set, isWideClassEscape(left), isWordClassEscape(left))
@@ -823,6 +855,9 @@ func (self *_RegExp_parser) scanBracket() {
 	}
 	self.count(cost)
 	self.expandRegexp2(regexp2TextUnits(self.classItems))
+	if self.refused {
+		return
+	}
 	if len(self.classProps) > 0 {
 		self.writeGoClass(negated)
 		self.writeRegexp2Class(negated)
@@ -868,13 +903,13 @@ func (self *_RegExp_parser) expandGo(units int) {
 
 // goUsed reports whether the pattern is still written for Go's regexp.
 func (self *_RegExp_parser) goUsed() bool {
-	return self.incompat == nil && self.goCost() <= maxRegexpExpansion
+	return !self.refused && self.incompat == nil && self.goCost() <= maxRegexpExpansion
 }
 
 func (self *_RegExp_parser) expandRegexp2(units int) {
 	self.regexp2Expansion += units
 	if self.regexp2Expansion > maxRegexpExpansion {
-		self.syntaxError("Regular expression too large")
+		self.refused = true
 	}
 }
 
@@ -1415,9 +1450,8 @@ func (self *_RegExp_parser) scanUnicodeNamedReference(inClass bool) {
 			break
 		}
 	}
-	if !found {
-		self.syntaxError("Invalid named capture referenced")
-		return
+	if !found && self.deferred == "" {
+		self.deferred = "Invalid named capture referenced"
 	}
 	if strings.IndexByte(self.str[self.offset:self.offset+end], '\\') >= 0 {
 		self.writeRegexp2(self.offset, self.offset+end, name)
@@ -1458,6 +1492,10 @@ func (self *_RegExp_parser) scanPropertyEscape(inClass bool) {
 	}
 	self.expandGo(expansionEscape)
 	self.expandRegexp2(expansionEscape)
+	if self.refused {
+		// The rest of the pattern is only validated.
+		return
+	}
 	if inClass {
 		// The class is written when it ends.
 		if self.goUsed() {
@@ -1644,13 +1682,9 @@ func (self *_RegExp_parser) passString(start, end int) {
 	self.goRegexp.WriteString(self.str[start:end])
 }
 
-// fatal reports a syntax error, with V8's message format under the u flag.
+// fatal reports a syntax error, with V8's message format.
 func (self *_RegExp_parser) fatal(msg string) {
-	if self.unicode {
-		self.syntaxError(msg)
-	} else {
-		self.error(true, "%s", msg)
-	}
+	self.syntaxError(msg)
 }
 
 // syntaxError reports an error with the message V8 gives.

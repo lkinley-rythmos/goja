@@ -491,16 +491,22 @@ func regexpTooLarge(err error) bool {
 }
 
 func TestRegexpUnicodePropertiesTooLargeRefusedEarly(t *testing.T) {
-	// A pattern is refused as soon as its escapes take either engine past
-	// the bound, before the text for the other grows with the pattern:
-	// \p{Dia} costs regexp2 nothing (it knows Diacritic by name) and Go's
-	// regexp a class of about 3 KB, so 300,000 copies (a 2 MB pattern) made
-	// 900 MB of text, uncharged, before they were refused.
-	for _, n := range []int{100000, 300000} {
+	// A pattern is refused once its escapes take either engine past the
+	// bound, and nothing more is written for either as the rest of it is
+	// validated: \p{Dia} costs regexp2 nothing (it knows Diacritic by name)
+	// and Go's regexp a class of about 3 KB, so 300,000 copies (a 2 MB
+	// pattern) made 900 MB of text, uncharged, before they were refused;
+	// \p{CWKCF} is 850 ranges for regexp2.
+	for _, tc := range []struct {
+		escape string
+		n      int
+	}{{`\p{Dia}`, 100000}, {`\p{Dia}`, 300000}, {`\p{CWKCF}`, 100000}} {
+		n := tc.n
 		vm := New()
 		vm.SetAllocationLimit(64 << 20)
 		vm.Set("n", n)
-		if _, err := vm.RunString(`var p = "\\p{Dia}".repeat(n)`); err != nil {
+		vm.Set("e", tc.escape)
+		if _, err := vm.RunString(`var p = e.repeat(n)`); err != nil {
 			t.Fatal(err)
 		}
 		runtime.GC()
@@ -511,13 +517,13 @@ func TestRegexpUnicodePropertiesTooLargeRefusedEarly(t *testing.T) {
 		elapsed := time.Since(start)
 		runtime.ReadMemStats(&after)
 		if !regexpTooLarge(err) {
-			t.Fatalf("x%d: err %.200v", n, err)
+			t.Fatalf("%s x%d: err %.200v", tc.escape, n, err)
 		}
 		if d := after.TotalAlloc - before.TotalAlloc; d > 64<<20 {
-			t.Errorf("x%d: allocated %d MB before refusing", n, d>>20)
+			t.Errorf("%s x%d: allocated %d MB before refusing", tc.escape, n, d>>20)
 		}
 		if elapsed > time.Second && !raceDetectorEnabled {
-			t.Errorf("x%d: refused after %v", n, elapsed)
+			t.Errorf("%s x%d: refused after %v", tc.escape, n, elapsed)
 		}
 	}
 }

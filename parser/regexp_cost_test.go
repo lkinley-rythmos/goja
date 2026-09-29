@@ -3,6 +3,7 @@ package parser
 import (
 	"fmt"
 	"regexp"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"testing"
@@ -248,6 +249,29 @@ func TestTransformRegExpFoldedClassesCost(t *testing.T) {
 		// counted.
 		if plain, folded := parsePattern(strings.Repeat(`[\u0100-\u013f]`, 1000), unicode, false), parsePattern(strings.Repeat(`[\u0100-\u013f]`, 1000), unicode, true); folded.goCost() < plain.goCost()+50000 || folded.regexp2Expansion < plain.regexp2Expansion+150000 {
 			t.Errorf("u: %v: [\\u0100-\\u013f] costs Go's regexp %d units ignoring case, %d not; regexp2 %d, %d", unicode, folded.goCost(), plain.goCost(), folded.regexp2Expansion, plain.regexp2Expansion)
+		}
+	}
+}
+
+func TestTransformRegExpNestingBounded(t *testing.T) {
+	// The scan recurses per group; a million nested groups are refused at
+	// the bound, before the stack grows past a few hundred kilobytes (it
+	// overflowed the 250 MB a goroutine may have on 386). Node.js 18 takes
+	// 2,000 (and refuses 100,000 as "Too many captures"); neither of goja's
+	// engines takes over 1,000.
+	defer debug.SetMaxStack(debug.SetMaxStack(16 << 20))
+	for _, unicode := range []bool{false, true} {
+		for _, n := range []int{maxGroupNesting + 1, 1000000} {
+			pattern := strings.Repeat("(", n) + "a" + strings.Repeat(")", n)
+			if got := outcome(t, pattern, unicode, false); got != "too large" {
+				t.Errorf("%d groups (u: %v): %s", n, unicode, got)
+			}
+			if got := outcome(t, strings.Repeat("(?=", n)+"a"+strings.Repeat(")", n), unicode, false); got != "too large" {
+				t.Errorf("%d lookaheads (u: %v): %s", n, unicode, got)
+			}
+		}
+		if got := outcome(t, strings.Repeat("(", maxGroupNesting)+"a"+strings.Repeat(")", maxGroupNesting), unicode, false); got != "go" {
+			t.Errorf("%d groups (u: %v): %s", maxGroupNesting, unicode, got)
 		}
 	}
 }

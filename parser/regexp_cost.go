@@ -241,6 +241,9 @@ type foldedClass struct {
 // writeRegexp2 writes text for regexp2 in place of the input from start to
 // end.
 func (self *_RegExp_parser) writeRegexp2(start, end int, text string) {
+	if self.refused {
+		return
+	}
 	if !self.regexp2Used {
 		self.regexp2.Grow(len(self.str))
 		self.regexp2Used = true
