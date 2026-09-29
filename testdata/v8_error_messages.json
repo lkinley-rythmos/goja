@@ -874,5 +874,15 @@
   ["var it = {[Symbol.iterator]() { return {next() { return {done: false, value: 1} }, return: 5} }}; var [a] = it", "TypeError: number 5 is not a function"],
   ["var it = {[Symbol.iterator]() { return {next() { return {done: false, value: 1} }, return: 5} }}; Array.from(it, () => { throw 1 })", "Number: undefined"],
   ["var it = {[Symbol.iterator]() { return {next() { return {done: false, value: 1} }, return: 5} }}; new Map(it)", "TypeError: Iterator value 1 is not an entry object"],
-  ["var it = {[Symbol.iterator]() { return {get next() { throw new Error('getter') }} }}; [...it]", "Error: getter"]
+  ["var it = {[Symbol.iterator]() { return {get next() { throw new Error('getter') }} }}; [...it]", "Error: getter"],
+  ["var a = 'x', b = 'y'; (a /* ) */ + b).f()", "TypeError: (a + b).f is not a function"],
+  ["var a = 'x', b = 'y'; (a + /* ( */ b).f()", "TypeError: (a + b).f is not a function"],
+  ["var o = {x: {}}; (o /* ) */ .x).f()", "TypeError: o.x.f is not a function"],
+  ["var o = {x: {}}; (o.x /* ) */).f()", "TypeError: o.x.f is not a function"],
+  ["var o = {x: {}}; o /* ) */ .x.f()", "TypeError: o.x.f is not a function"],
+  ["var o = {x: {}}; (o /* ( */ .x /* ) */).f()", "TypeError: o.x.f is not a function"],
+  ["var a = [1], b = 2; (a /* ) */ [0] + b).f()", "TypeError: (a[0] + b).f is not a function"],
+  ["var a = 1, b = 2; (a /* ) ) */ * b).f()", "TypeError: (a * b).f is not a function"],
+  ["var a = 1, b = 2; ((a) /* ) */ - (b)).f()", "TypeError: (a - b).f is not a function"],
+  ["var o = {}; o.f(/* ) */)", "TypeError: o.f is not a function"]
 ]

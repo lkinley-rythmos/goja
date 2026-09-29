@@ -46,6 +46,9 @@ func runForNode(vm *Runtime, src string) string {
 	v, err := vm.RunString(src)
 	var ex *Exception
 	switch {
+	case err == nil && IsUndefined(v):
+		// JSON.stringify(undefined) is undefined.
+		return "ok: undefined"
 	case err == nil:
 		b, _ := json.Marshal(v.Export())
 		return "ok: " + string(b)

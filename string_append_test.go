@@ -241,6 +241,29 @@ func TestConcatAppend_BufferMapReleased(t *testing.T) {
 	}
 }
 
+// TestConcatAppend_BufferMapShrinks: a Go map does not shrink, so a sweep
+// that leaves it under a quarter of the most entries it had makes it again
+// at its size, rather than keep the room of 3,000 entries for 100.
+func TestConcatAppend_BufferMapShrinks(t *testing.T) {
+	vm := New()
+	if _, err := vm.RunString(`var keep = []; for (var i = 0; i < 3000; i++) { var t = "x".repeat(300) + i; t += "."; t += ","; keep.push(t) }`); err != nil {
+		t.Fatal(err)
+	}
+	if n := vm.appendBufs.peak; n < 3000 {
+		t.Fatalf("a peak of %d buffers for 3,000 strings being built", n)
+	}
+	if _, err := vm.RunString(`keep = keep.slice(0, 100); t = null`); err != nil {
+		t.Fatal(err)
+	}
+	runtime.GC()
+	runtime.GC()
+	vm.appendBufs.sweep()
+	if n, peak := len(vm.appendBufs.m), vm.appendBufs.peak; n < 100 || n > 110 || peak != n {
+		t.Fatalf("%d buffers left, in a map made for %d", n, peak)
+	}
+	runtime.KeepAlive(vm)
+}
+
 // TestConcatAppend_BufferChargedToLimit: the buffers a string grows in count
 // toward the allocation limit, in bytes of either kind.
 func TestConcatAppend_BufferChargedToLimit(t *testing.T) {
