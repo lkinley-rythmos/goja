@@ -785,7 +785,8 @@ func (self *_parser) scanString(offset int, parse bool) (literal string, parsed 
 	quote := rune(self.str[offset])
 	length := 0
 	isUnicode := false
-	for self.chr != quote {
+	inClass := false // in a regular expression's class, where a slash does not end it
+	for self.chr != quote || inClass {
 		chr := self.chr
 		if chr == '\n' || chr == '\r' || chr < 0 {
 			goto newline
@@ -809,11 +810,9 @@ func (self *_parser) scanString(offset int, parse bool) (literal string, parsed 
 			}
 			continue
 		} else if chr == '[' && quote == '/' {
-			// Allow a slash (/) in a bracket character class ([...])
-			// TODO Fix this, this is hacky...
-			quote = -1
-		} else if chr == ']' && quote == -1 {
-			quote = '/'
+			inClass = true
+		} else if chr == ']' && inClass {
+			inClass = false
 		}
 		if chr >= utf8.RuneSelf {
 			isUnicode = true

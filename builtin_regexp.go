@@ -506,6 +506,7 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 			case 'u':
 				if unicode {
 					invalidFlags()
+					return
 				}
 				unicode = true
 			default:

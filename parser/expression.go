@@ -275,19 +275,20 @@ func (self *_parser) parseRegExpLiteral() *ast.RegExpLiteral {
 		pattern = pattern[1 : len(pattern)-1]
 	}
 
-	flags := ""
-	if !isLineTerminator(self.chr) && !isLineWhiteSpace(self.chr) {
-		self.next()
-
-		if self.token == token.IDENTIFIER { // gim
-
-			flags = self.literal
-			self.next()
-			endOffset = self.chrOffset - 1
-		}
-	} else {
-		self.next()
+	// The flags are the identifier characters that follow, as in V8: "/x/in"
+	// has the flags "in", which are invalid, rather than the operator.
+	flagsOffset := self.chrOffset
+	for err == "" && isIdentifierPart(self.chr) {
+		self.read()
 	}
+	flags := self.str[flagsOffset:self.chrOffset]
+	if err == "" {
+		endOffset = self.chrOffset
+		if !validRegExpFlags(flags) {
+			self.error(idx, "Invalid regular expression flags")
+		}
+	}
+	self.next()
 
 	literal := self.str[offset:endOffset]
 
@@ -297,6 +298,26 @@ func (self *_parser) parseRegExpLiteral() *ast.RegExpLiteral {
 		Pattern: pattern,
 		Flags:   flags,
 	}
+}
+
+// validRegExpFlags tells whether V8 (Node.js 18) accepts a regular
+// expression literal's flags: each of "dgimsuy" at most once, and no escape.
+// Goja does not support "d"; the compiler refuses it.
+func validRegExpFlags(flags string) bool {
+	var seen [128]bool
+	for i := 0; i < len(flags); i++ {
+		c := flags[i]
+		switch c {
+		case 'd', 'g', 'i', 'm', 's', 'u', 'y':
+		default:
+			return false
+		}
+		if seen[c] {
+			return false
+		}
+		seen[c] = true
+	}
+	return true
 }
 
 func (self *_parser) isBindingId(tok token.Token) bool {
