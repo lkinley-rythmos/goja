@@ -31,8 +31,11 @@ const (
 	maskVar       = 1 << 30
 	maskDeletable = 1 << 29
 	maskStrict    = maskDeletable
+	// maskCatchParam marks a catch clause's parameter when it is a plain
+	// name, which a var declared by eval code may redeclare (Annex B.3.4).
+	maskCatchParam = 1 << 28
 
-	maskTyp = maskConst | maskVar | maskDeletable
+	maskTyp = maskConst | maskVar | maskDeletable | maskCatchParam
 )
 
 type varType byte
@@ -150,6 +153,7 @@ type binding struct {
 	isArg        bool
 	isVar        bool
 	inStash      bool
+	isCatchParam bool // the name a catch clause binds its exception to
 }
 
 func (b *binding) getAccessPointsForScope(s *scope) *[]int {
@@ -969,6 +973,9 @@ func (s *scope) makeNamesMap() map[unistring.String]uint32 {
 		}
 		if b.isVar {
 			idx |= maskVar
+		}
+		if b.isCatchParam {
+			idx |= maskCatchParam
 		}
 		names[b.name] = idx
 	}

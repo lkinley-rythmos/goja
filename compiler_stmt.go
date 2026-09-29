@@ -153,7 +153,10 @@ func (c *compiler) compileTryStatement(v *ast.TryStatement, needResult bool) {
 						c.throwSyntaxError(offset, "Unexpected eval or arguments in strict mode")
 					}
 				}
-				c.scope.bindNameLexical(name, true, offset)
+				b, _ := c.scope.bindNameLexical(name, true, offset)
+				if _, simple := v.Catch.Parameter.(*ast.Identifier); simple {
+					b.isCatchParam = true
+				}
 			})
 			enter := &enterBlock{}
 			c.emit(enter)

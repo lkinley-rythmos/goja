@@ -300,6 +300,14 @@ type (
 		Meta, Property *Identifier
 		Idx            file.Idx
 	}
+
+	// ImportCall is import(specifier) or import(specifier, options).
+	ImportCall struct {
+		Import           file.Idx
+		Specifier        Expression
+		Options          Expression
+		RightParenthesis file.Idx
+	}
 )
 
 // _expressionNode
@@ -332,6 +340,7 @@ func (*ThisExpression) _expressionNode()        {}
 func (*SuperExpression) _expressionNode()       {}
 func (*UnaryExpression) _expressionNode()       {}
 func (*MetaProperty) _expressionNode()          {}
+func (*ImportCall) _expressionNode()            {}
 func (*ObjectPattern) _expressionNode()         {}
 func (*ArrayPattern) _expressionNode()          {}
 func (*Binding) _expressionNode()               {}
@@ -678,6 +687,7 @@ func (self *UnaryExpression) Idx0() file.Idx {
 	return self.Idx
 }
 func (self *MetaProperty) Idx0() file.Idx { return self.Idx }
+func (self *ImportCall) Idx0() file.Idx   { return self.Import }
 
 func (self *BadStatement) Idx0() file.Idx        { return self.From }
 func (self *BlockStatement) Idx0() file.Idx      { return self.LeftBrace }
@@ -771,6 +781,8 @@ func (self *UnaryExpression) Idx1() file.Idx {
 func (self *MetaProperty) Idx1() file.Idx {
 	return self.Property.Idx1()
 }
+
+func (self *ImportCall) Idx1() file.Idx { return self.RightParenthesis + 1 }
 
 func (self *BadStatement) Idx1() file.Idx   { return self.To }
 func (self *BlockStatement) Idx1() file.Idx { return self.RightBrace + 1 }

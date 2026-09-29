@@ -128,9 +128,9 @@ func TestParserErr(t *testing.T) {
 
 		test("0x", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
 
-		test("09", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("09", nil) // a decimal in sloppy code, as in V8
 
-		test("018", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("018", nil)
 
 		test("01.0", "(anonymous): Line 1:3 Unexpected number")
 
@@ -454,7 +454,7 @@ func TestParserErr(t *testing.T) {
 			test("{a: 1,}", "(anonymous): Line 1:7 Unexpected token }")
 			test("{a: 1, b: 2}", "(anonymous): Line 1:9 Unexpected token :")
 			test("{a: 1, b: 2,}", "(anonymous): Line 1:9 Unexpected token :")
-			test(`let f = () => new import('');`, "(anonymous): Line 1:19 Unexpected token import")
+			test(`let f = () => new import('');`, "(anonymous): Line 1:15 Cannot use new with import")
 
 		}
 

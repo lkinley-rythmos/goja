@@ -636,3 +636,17 @@ func isObjectValue(v Value) bool {
 	_, ok := v.(*Object)
 	return ok
 }
+
+// dynamicImportError is the error Node.js rejects import() with in a vm
+// context made without importModuleDynamically.
+func (r *Runtime) dynamicImportError() *Object {
+	const code = "ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING"
+	const msg = "A dynamic import callback was not specified."
+	e := r.newTypeErrorString(msg)
+	e.self.setOwnStr("code", asciiString(code), false)
+	// Node.js's errors print their code.
+	e.self._putProp("toString", r.newNativeFunc(func(FunctionCall) Value {
+		return asciiString("TypeError [" + code + "]: " + msg)
+	}, "toString", 0), true, false, true)
+	return e
+}

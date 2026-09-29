@@ -112,7 +112,7 @@ func (self *_parser) parsePrimaryExpression() ast.Expression {
 		case token.PERIOD:
 			self.error(idx, "Cannot use 'import.meta' outside a module")
 		case token.LEFT_PARENTHESIS:
-			self.errorUnexpectedToken(self.token)
+			return self.parseImportCall()
 		default:
 			self.error(idx, "Cannot use import statement outside a module")
 		}
@@ -121,6 +121,30 @@ func (self *_parser) parsePrimaryExpression() ast.Expression {
 	}
 	self.nextStatement()
 	return &ast.BadExpression{From: idx, To: self.idx}
+}
+
+// parseImportCall parses import(specifier[, options][,]).
+func (self *_parser) parseImportCall() ast.Expression {
+	node := &ast.ImportCall{Import: self.idx}
+	self.next() // import
+	self.expect(token.LEFT_PARENTHESIS)
+	if self.token == token.RIGHT_PARENTHESIS {
+		self.error(self.idx, "import() requires a specifier")
+		self.next()
+		return &ast.BadExpression{From: node.Import, To: self.idx}
+	}
+	node.Specifier = self.parseAssignmentExpression()
+	if self.token == token.COMMA {
+		self.next()
+		if self.token != token.RIGHT_PARENTHESIS {
+			node.Options = self.parseAssignmentExpression()
+			if self.token == token.COMMA {
+				self.next()
+			}
+		}
+	}
+	node.RightParenthesis = self.expect(token.RIGHT_PARENTHESIS)
+	return node
 }
 
 func (self *_parser) parseSuperProperty() ast.Expression {
@@ -716,6 +740,9 @@ func (self *_parser) parseNewExpression() ast.Expression {
 	self.enterNesting()
 	defer self.leaveNesting()
 	idx := self.expect(token.NEW)
+	if self.token == token.KEYWORD && self.literal == "import" {
+		self.error(idx, "Cannot use new with import")
+	}
 	if self.token == token.PERIOD {
 		self.next()
 		if self.literal == "target" {
@@ -1368,6 +1395,7 @@ func (self *_parser) parseAssignmentExpression() ast.Expression {
 		switch l := left.(type) {
 		case *ast.Identifier, *ast.DotExpression, *ast.PrivateDotExpression, *ast.BracketExpression:
 			ok = true
+
 		case *ast.ArrayLiteral:
 			if !parenthesis && operator == token.ASSIGN {
 				left = self.reinterpretAsArrayAssignmentPattern(l)

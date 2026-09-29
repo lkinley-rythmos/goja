@@ -2,6 +2,7 @@ package goja
 
 import (
 	"math/big"
+	"strings"
 
 	"github.com/dop251/goja/ast"
 	"github.com/dop251/goja/file"
@@ -276,6 +277,13 @@ func (c *compiler) compileExpression(v ast.Expression) compiledExpr {
 		return c.compileNewExpression(v)
 	case *ast.MetaProperty:
 		return c.compileMetaProperty(v)
+	case *ast.ImportCall:
+		r := &compiledImportCall{specifier: c.compileExpression(v.Specifier)}
+		if v.Options != nil {
+			r.options = c.compileExpression(v.Options)
+		}
+		r.init(c, v.Import)
+		return r
 	case *ast.ObjectPattern:
 		return c.compileObjectAssignmentPattern(v)
 	case *ast.ArrayPattern:
@@ -2588,6 +2596,7 @@ func (c *compiler) compileUnaryExpression(v *ast.UnaryExpression) compiledExpr {
 		operator: v.Operator,
 		postfix:  v.Postfix,
 	}
+
 	r.init(c, v.Idx0())
 	return r
 }
@@ -3245,7 +3254,10 @@ func (c *compiler) compileIdentifierExpression(v *ast.Identifier) compiledExpr {
 }
 
 func (c *compiler) compileNumberLiteral(v *ast.NumberLiteral) compiledExpr {
-	if c.scope.strict && len(v.Literal) > 1 && v.Literal[0] == '0' && v.Literal[1] <= '7' && v.Literal[1] >= '0' {
+	if c.scope.strict && len(v.Literal) > 1 && v.Literal[0] == '0' && v.Literal[1] <= '9' && v.Literal[1] >= '0' {
+		if strings.IndexAny(strings.TrimLeft(v.Literal, "01234567"), "89") == 0 {
+			c.throwSyntaxError(int(v.Idx)-1, "Decimals with leading zeros are not allowed in strict mode.")
+		}
 		c.throwSyntaxError(int(v.Idx)-1, "Octal literals are not allowed in strict mode.")
 		panic("Unreachable")
 	}
@@ -3269,6 +3281,11 @@ func (c *compiler) compileNumberLiteral(v *ast.NumberLiteral) compiledExpr {
 }
 
 func (c *compiler) compileStringLiteral(v *ast.StringLiteral) compiledExpr {
+	if c.scope.strict {
+		if msg := legacyOctalEscape(v.Literal); msg != "" {
+			c.throwSyntaxError(int(v.Idx)-1, msg)
+		}
+	}
 	r := &compiledLiteral{
 		val: stringValueFromRaw(v.Value),
 	}
@@ -3315,6 +3332,7 @@ func (c *compiler) compileAssignExpression(v *ast.AssignExpression) compiledExpr
 		right:    c.compileExpression(v.Right),
 		operator: v.Operator,
 	}
+
 	if p, ok := r.left.(*compiledObjectAssignmentPattern); ok {
 		p.src = v.Right
 	}
@@ -3708,5 +3726,49 @@ func (e *compiledYieldExpression) emitGetter(putOnStack bool) {
 		} else {
 			e.c.emit(yield)
 		}
+	}
+}
+
+// legacyOctalEscape is V8's error for the first escape of a string
+// literal's source that strict code refuses: an octal one (\1, \00), or
+// \8 or \9.
+func legacyOctalEscape(raw string) string {
+	for i := 0; i < len(raw)-1; i++ {
+		if raw[i] != '\\' {
+			continue
+		}
+		i++
+		switch c := raw[i]; {
+		case c == '0':
+			if i+1 < len(raw) && raw[i+1] >= '0' && raw[i+1] <= '9' {
+				return "Octal escape sequences are not allowed in strict mode."
+			}
+		case c >= '1' && c <= '7':
+			return "Octal escape sequences are not allowed in strict mode."
+		case c == '8' || c == '9':
+			return "\\8 and \\9 are not allowed in strict mode."
+		}
+	}
+	return ""
+}
+
+// compiledImportCall is import(specifier): a runtime has no module loader,
+// so, as Node.js's vm contexts without importModuleDynamically do, it
+// returns a promise rejected with ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING,
+// once the specifier has been converted to a string.
+type compiledImportCall struct {
+	baseCompiledExpr
+	specifier, options compiledExpr
+}
+
+func (e *compiledImportCall) emitGetter(putOnStack bool) {
+	e.specifier.emitGetter(true)
+	if e.options != nil {
+		e.options.emitGetter(false)
+	}
+	e.addSrcMap()
+	e.c.emit(importDynamic{})
+	if !putOnStack {
+		e.c.emit(pop)
 	}
 }

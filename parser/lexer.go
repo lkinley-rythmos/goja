@@ -1188,12 +1188,31 @@ func (self *_parser) scanNumericLiteral(decimalPoint bool) (token.Token, string)
 			case '.', 'e', 'E':
 				// no-op
 			default:
-				// legacy octal
+				// A legacy octal literal (017), or, if a digit is 8 or 9, a
+				// decimal one with leading zeros (08, 09.5), which sloppy
+				// code takes (Annex B.1.1); neither is a BigInt.
 				if self.chr == '_' {
 					self.error(self.chrOffset, "Numeric separator can not be used after leading 0.")
 				}
-				self.scanMantissa(8, false)
-				goto end
+				legacyDecimal, legacy := false, false
+				for isDecimalDigit(self.chr) {
+					if self.chr >= '8' {
+						legacyDecimal = true
+					}
+					legacy = true
+					self.read()
+				}
+				if legacy && self.chr == 'n' {
+					return token.ILLEGAL, self.str[offset:self.chrOffset]
+				}
+				if !legacyDecimal {
+					goto end
+				}
+				if self.chr == '.' {
+					self.read()
+					self.scanMantissa(10, false)
+				}
+				goto exponent
 			}
 			if base > 0 {
 				self.read()
@@ -1212,6 +1231,7 @@ func (self *_parser) scanNumericLiteral(decimalPoint bool) (token.Token, string)
 		}
 	}
 
+exponent:
 	if self.chr == 'e' || self.chr == 'E' {
 		self.read()
 		if self.chr == '-' || self.chr == '+' {

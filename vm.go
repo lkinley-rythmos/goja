@@ -4332,7 +4332,7 @@ func (d *bindVars) exec(vm *vm) {
 	var target *stash
 	for _, name := range d.names {
 		for s := vm.stash; s != nil; s = s.outer {
-			if idx, exists := s.names[name]; exists && idx&maskVar == 0 {
+			if idx, exists := s.names[name]; exists && idx&(maskVar|maskCatchParam) == 0 {
 				vm.throw(vm.alreadyDeclared(name))
 				return
 			}
@@ -4359,6 +4359,19 @@ type bindGlobal struct {
 }
 
 func (b *bindGlobal) exec(vm *vm) {
+	if b.deletable {
+		// Eval code declaring vars in the global scope: they must not
+		// redeclare a lexical binding of the blocks the eval is in.
+		for s := vm.stash; s != nil && s != &vm.r.global.stash; s = s.outer {
+			for _, names := range [2][]unistring.String{b.funcs, b.vars} {
+				for _, name := range names {
+					if idx, exists := s.names[name]; exists && idx&(maskVar|maskCatchParam) == 0 {
+						panic(vm.alreadyDeclared(name))
+					}
+				}
+			}
+		}
+	}
 	vm.checkBindFuncsGlobal(b.funcs)
 	vm.checkBindLexGlobal(b.lets)
 	vm.checkBindLexGlobal(b.consts)
@@ -6133,4 +6146,19 @@ func (vm *vm) resetAfterAbort() {
 	vm.sp, vm.sb, vm.pc, vm.args = 0, -1, 0, 0
 	vm.prg, vm.stash, vm.privEnv, vm.newTarget, vm.result = nil, &vm.r.global.stash, nil, nil, nil
 	vm.nativeDepth = 0
+}
+
+type importDynamic struct{}
+
+func (importDynamic) exec(vm *vm) {
+	r := vm.r
+	p, _, reject := r.NewPromise()
+	specifier := vm.stack[vm.sp-1]
+	if ex := vm.try(func() { specifier.toString() }); ex != nil {
+		_ = reject(ex.Value())
+	} else {
+		_ = reject(r.dynamicImportError())
+	}
+	vm.stack[vm.sp-1] = p.val
+	vm.pc++
 }
