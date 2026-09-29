@@ -87,3 +87,43 @@ func TestSpreadCallInterrupt(t *testing.T) {
 		})
 	}
 }
+
+func TestSpreadCallAllocationLimit(t *testing.T) {
+	// The values a spread pushes, and the entries of an arguments object,
+	// are charged to the allocation limit as apply's list is: 30 million
+	// spread values reached 1.8 GB (3.2 GB with an arguments object) with
+	// nothing charged, where apply stops at the limit.
+	for _, tc := range []struct{ name, setup, script string }{
+		{"spread", ``, `function g() {} g(...new Array(3e7))`},
+		{"spread arguments", ``, `function f() { return arguments.length } f(...new Array(3e7))`},
+		{"spread strict arguments", ``, `function f() { 'use strict'; return arguments.length } f(...new Array(3e7))`},
+		{"spread native", ``, `Math.max(...new Array(3e7))`},
+		// The array is charged before the limit is set; apply takes a
+		// dense array's values as they are, so the arguments object is
+		// what is charged.
+		{"apply arguments", `var a = []; for (var i = 0; i < 3e6; i++) a.push(i)`, `function f() { return arguments.length } for (var i = 0; i < 10; i++) f.apply(null, a)`},
+		{"apply strict arguments", `var a = []; for (var i = 0; i < 3e6; i++) a.push(i)`, `function f() { 'use strict'; return arguments.length } for (var i = 0; i < 10; i++) f.apply(null, a)`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vm := New()
+			if _, err := vm.RunString(tc.setup); err != nil {
+				t.Fatal(err)
+			}
+			vm.SetAllocationLimit(64 << 20)
+			timer := time.AfterFunc(20*time.Second, func() { vm.Interrupt("halt") })
+			defer timer.Stop()
+			_, err := vm.RunString(tc.script)
+			if !errors.Is(err, ErrAllocationLimitExceeded) {
+				t.Fatalf("err %v, %d MB charged", err, vm.AllocatedBytes()>>20)
+			}
+		})
+	}
+	// Under the limit the same calls run.
+	vm := New()
+	vm.SetAllocationLimit(64 << 20)
+	v, err := vm.RunString(`function f() { return arguments.length } function g(a, b) { return b }
+		[f(...new Array(1e5)), g(...new Array(1e5).fill(7)), f.apply(null, new Array(1e5))].join()`)
+	if err != nil || v.String() != "100000,7,100000" {
+		t.Fatalf("%v %v", v, err)
+	}
+}

@@ -27,6 +27,9 @@ const (
 	// One pre-sized string-keyed property: a map key and value plus the
 	// propNames entry.
 	allocSizePropSlot = 2*int64(unsafe.Sizeof(unistring.String(""))) + allocSizeValue
+	// An entry of an arguments object: a property slot and its key, the
+	// index's digits (up to 8 for the counts a value stack holds).
+	allocSizeArgsEntry = allocSizePropSlot + 8
 )
 
 type allocCounter struct {

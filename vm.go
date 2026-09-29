@@ -2939,6 +2939,9 @@ func (_pushSpread) exec(vm *vm) {
 		if n++; n%interruptCheckInterval == 0 {
 			vm.checkInterrupt()
 		}
+		// Each value is charged, as apply charges its list (see
+		// createListFromArrayLike).
+		vm.r.countAlloc(allocSizeValue)
 		vm.push(val)
 	})
 	vm.pc++
@@ -5146,6 +5149,7 @@ func (formalArgs createArgsMapped) exec(vm *vm) {
 		c = vm.args
 	}
 	for ; i < c; i++ {
+		vm.r.countAlloc(allocSizeArgsEntry)
 		args._put(unistring.String(strconv.Itoa(i)), &mappedProperty{
 			valueProperty: valueProperty{
 				writable:     true,
@@ -5157,10 +5161,11 @@ func (formalArgs createArgsMapped) exec(vm *vm) {
 	}
 
 	for _, v := range vm.stash.extraArgs {
-		// A spread can pass millions (see pushSpread).
+		// A spread can pass millions (see pushSpread), each charged.
 		if i%interruptCheckInterval == 0 {
 			vm.checkInterrupt()
 		}
+		vm.r.countAlloc(allocSizeArgsEntry)
 		args._put(unistring.String(strconv.Itoa(i)), v)
 		i++
 	}
@@ -5181,15 +5186,17 @@ func (formalArgs createArgsUnmapped) exec(vm *vm) {
 		c = vm.args
 	}
 	for _, v := range vm.stash.values[:c] {
+		vm.r.countAlloc(allocSizeArgsEntry)
 		args._put(unistring.String(strconv.Itoa(i)), v)
 		i++
 	}
 
 	for _, v := range vm.stash.extraArgs {
-		// A spread can pass millions (see pushSpread).
+		// A spread can pass millions (see pushSpread), each charged.
 		if i%interruptCheckInterval == 0 {
 			vm.checkInterrupt()
 		}
+		vm.r.countAlloc(allocSizeArgsEntry)
 		args._put(unistring.String(strconv.Itoa(i)), v)
 		i++
 	}
