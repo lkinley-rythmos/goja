@@ -94,7 +94,7 @@ func (self *_parser) errorUnexpected(idx file.Idx, chr rune) error {
 	if chr == -1 {
 		return self.error(idx, err_UnexpectedEndOfInput)
 	}
-	return self.error(idx, err_UnexpectedToken, token.ILLEGAL)
+	return self.error(idx, errInvalidToken)
 }
 
 func (self *_parser) errorUnexpectedToken(tkn token.Token) error {
@@ -125,6 +125,9 @@ func (self *_parser) errorUnexpectedToken(tkn token.Token) error {
 		return self.error(self.idx, "Unexpected number")
 	case token.STRING:
 		return self.error(self.idx, "Unexpected string")
+	case token.ILLEGAL:
+		// V8's message.
+		return self.error(self.idx, errInvalidToken)
 	}
 	return self.error(self.idx, err_UnexpectedToken, value)
 }

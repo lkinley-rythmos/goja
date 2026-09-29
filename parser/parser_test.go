@@ -110,23 +110,23 @@ func TestParserErr(t *testing.T) {
 
 		test("}", "(anonymous): Line 1:1 Unexpected token }")
 
-		test("3ea", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("3ea", "(anonymous): Line 1:1 Invalid or unexpected token")
 
-		test("3in", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("3in", "(anonymous): Line 1:1 Invalid or unexpected token")
 
-		test("3in []", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("3in []", "(anonymous): Line 1:1 Invalid or unexpected token")
 
-		test("3e", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("3e", "(anonymous): Line 1:1 Invalid or unexpected token")
 
-		test("3e+", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("3e+", "(anonymous): Line 1:1 Invalid or unexpected token")
 
-		test("3e-", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("3e-", "(anonymous): Line 1:1 Invalid or unexpected token")
 
-		test("3x", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("3x", "(anonymous): Line 1:1 Invalid or unexpected token")
 
-		test("3x0", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("3x0", "(anonymous): Line 1:1 Invalid or unexpected token")
 
-		test("0x", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("0x", "(anonymous): Line 1:1 Invalid or unexpected token")
 
 		test("09", nil) // a decimal in sloppy code, as in V8
 
@@ -136,25 +136,25 @@ func TestParserErr(t *testing.T) {
 
 		test(".0.9", "(anonymous): Line 1:3 Unexpected number")
 
-		test("0o3e1", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("0o3e1", "(anonymous): Line 1:1 Invalid or unexpected token")
 
-		test("01a", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("01a", "(anonymous): Line 1:1 Invalid or unexpected token")
 
-		test("0x3in[]", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("0x3in[]", "(anonymous): Line 1:1 Invalid or unexpected token")
 
-		test("\"Hello\nWorld\"", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("\"Hello\nWorld\"", "(anonymous): Line 1:1 Invalid or unexpected token")
 
-		test("\u203f = 10", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("\u203f = 10", "(anonymous): Line 1:1 Invalid or unexpected token")
 
-		test("x\\", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("x\\", "(anonymous): Line 1:1 Invalid or unexpected token")
 
-		test("x\\\\", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("x\\\\", "(anonymous): Line 1:1 Invalid or unexpected token")
 
-		test("x\\u005c", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("x\\u005c", "(anonymous): Line 1:1 Invalid or unexpected token")
 
-		test("x\\u002a", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("x\\u002a", "(anonymous): Line 1:1 Invalid or unexpected token")
 
-		test("x\\\\u002a", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("x\\\\u002a", "(anonymous): Line 1:1 Invalid or unexpected token")
 
 		test("/\n", "(anonymous): Line 1:1 Invalid regular expression: missing /")
 
@@ -184,7 +184,7 @@ func TestParserErr(t *testing.T) {
 
 		test("var abc = /\n/", "(anonymous): Line 1:11 Invalid regular expression: missing /")
 
-		test("var abc = \"\n", "(anonymous): Line 1:11 Unexpected token ILLEGAL")
+		test("var abc = \"\n", "(anonymous): Line 1:11 Invalid or unexpected token")
 
 		test("var if = 0", "(anonymous): Line 1:5 Unexpected token if")
 
@@ -282,7 +282,7 @@ func TestParserErr(t *testing.T) {
 
 		test("try {} catch () {}", "(anonymous): Line 1:15 Unexpected token )")
 
-		test("\u203f = 1", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("\u203f = 1", "(anonymous): Line 1:1 Invalid or unexpected token")
 
 		// TODO
 		// const x = 12, y;
@@ -323,21 +323,21 @@ func TestParserErr(t *testing.T) {
 
 		test("/*\r \n*/]", "(anonymous): Line 3:3 Unexpected token ]")
 
-		test("\\\\", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("\\\\", "(anonymous): Line 1:1 Invalid or unexpected token")
 
-		test("\\u005c", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("\\u005c", "(anonymous): Line 1:1 Invalid or unexpected token")
 
-		test("\\abc", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("\\abc", "(anonymous): Line 1:1 Invalid or unexpected token")
 
-		test("\\u0000", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("\\u0000", "(anonymous): Line 1:1 Invalid or unexpected token")
 
-		test("\\u200c = []", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("\\u200c = []", "(anonymous): Line 1:1 Invalid or unexpected token")
 
-		test("\\u200D = []", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("\\u200D = []", "(anonymous): Line 1:1 Invalid or unexpected token")
 
-		test(`"\`, "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test(`"\`, "(anonymous): Line 1:1 Invalid or unexpected token")
 
-		test(`"\u`, "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test(`"\u`, "(anonymous): Line 1:1 Invalid Unicode escape sequence")
 
 		test("return", "(anonymous): Line 1:1 Illegal return statement")
 
@@ -391,7 +391,7 @@ func TestParserErr(t *testing.T) {
 
 		test("[object Object]", "(anonymous): Line 1:9 Unexpected identifier")
 
-		test("\\u0xyz", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("\\u0xyz", "(anonymous): Line 1:1 Invalid Unicode escape sequence")
 
 		test(`for (var abc, def in {}) {}`, "(anonymous): Line 1:19 Invalid left-hand side in for-in loop: Must have a single binding.")
 
@@ -501,9 +501,9 @@ func TestParserErr(t *testing.T) {
 		test("`", "(anonymous): Line 1:2 Unexpected end of input")
 		test(" `", "(anonymous): Line 1:3 Unexpected end of input")
 		test("` ", "(anonymous): Line 1:3 Unexpected end of input")
-		test(`var{..(`, "(anonymous): Line 1:7 Unexpected token ILLEGAL")
-		test(`var{get..(`, "(anonymous): Line 1:10 Unexpected token ILLEGAL")
-		test(`var{set..(`, "(anonymous): Line 1:10 Unexpected token ILLEGAL")
+		test(`var{..(`, "(anonymous): Line 1:7 Invalid or unexpected token")
+		test(`var{get..(`, "(anonymous): Line 1:10 Invalid or unexpected token")
+		test(`var{set..(`, "(anonymous): Line 1:10 Invalid or unexpected token")
 		test(`(0 ?? 0 || true)`, "(anonymous): Line 1:9 Unexpected token ||")
 		test(`(a || b ?? c)`, "(anonymous): Line 1:9 Unexpected token ??")
 		test(`2 ?? 2 && 3 + 3`, "(anonymous): Line 1:3 Unexpected token &&")
@@ -555,9 +555,9 @@ func TestParser(t *testing.T) {
 
 		test("/*", "(anonymous): Line 1:3 Unexpected end of input")
 
-		test("#", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("#", "(anonymous): Line 1:1 Invalid or unexpected token")
 
-		test("/**/#", "(anonymous): Line 1:5 Unexpected token ILLEGAL")
+		test("/**/#", "(anonymous): Line 1:5 Invalid or unexpected token")
 
 		test("new +", "(anonymous): Line 1:5 Unexpected token +")
 
@@ -723,12 +723,12 @@ func TestParser(t *testing.T) {
 
 		// 7_3_10
 		test("var abc = \u2029;", "(anonymous): Line 2:1 Unexpected token ;")
-		test("var abc = \\u2029;", "(anonymous): Line 1:11 Unexpected token ILLEGAL")
+		test("var abc = \\u2029;", "(anonymous): Line 1:11 Invalid or unexpected token")
 		test("var \\u0061\\u0062\\u0063 = 0;", nil)
 
-		test("'", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("'", "(anonymous): Line 1:1 Invalid or unexpected token")
 
-		test("'\nstr\ning\n'", "(anonymous): Line 1:1 Unexpected token ILLEGAL")
+		test("'\nstr\ning\n'", "(anonymous): Line 1:1 Invalid or unexpected token")
 
 		// S7.6_A4.3_T1
 		test(`var $\u0030 = 0;`, nil)
@@ -1027,13 +1027,13 @@ func Test_parseStringLiteral(t *testing.T) {
 			is(res, "")
 		}
 
-		test(`"\u"`, `invalid escape: \u: len("") != 4`)
-		test(`"\u0"`, `invalid escape: \u: len("0") != 4`)
-		test(`"\u00"`, `invalid escape: \u: len("00") != 4`)
-		test(`"\u000"`, `invalid escape: \u: len("000") != 4`)
+		test(`"\u"`, `Invalid Unicode escape sequence`)
+		test(`"\u0"`, `Invalid Unicode escape sequence`)
+		test(`"\u00"`, `Invalid Unicode escape sequence`)
+		test(`"\u000"`, `Invalid Unicode escape sequence`)
 
-		test(`"\x"`, `invalid escape: \x: len("") != 2`)
-		test(`"\x0"`, `invalid escape: \x: len("0") != 2`)
+		test(`"\x"`, `Invalid hexadecimal escape sequence`)
+		test(`"\x0"`, `Invalid hexadecimal escape sequence`)
 	})
 }
 

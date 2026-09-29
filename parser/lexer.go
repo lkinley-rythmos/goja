@@ -2,7 +2,6 @@ package parser
 
 import (
 	"errors"
-	"fmt"
 	"math/big"
 	"strconv"
 	"strings"
@@ -90,54 +89,27 @@ func (self *_parser) scanIdentifier() (string, unistring.String, bool, string) {
 		length++
 		if r == '\\' {
 			hasEscape = true
-			distance := self.chrOffset - offset
+			value, n, err := identifierEscape(self.str[self.chrOffset:])
+			if err != "" {
+				self.read() // always make progress
+				return "", "", false, err
+			}
+			if n == 0 || value == '\\' || self.chrOffset == offset && !isIdentifierStart(value) || self.chrOffset > offset && !isIdentifierPart(value) {
+				// The token ends here, illegal. V8 has scanned the next one
+				// by the time it reports it, and reports a malformed escape
+				// there instead.
+				next := self.chrOffset + max(n, 1)
+				self.offset = next
+				self.read() // always make progress
+				if next < len(self.str) {
+					if err := identifierEscapeError(self.str[next:]); err != "" {
+						return "", "", false, err
+					}
+				}
+				return "", "", false, errInvalidToken
+			}
+			self.offset = self.chrOffset + n - 1
 			self.read()
-			if self.chr != 'u' {
-				return "", "", false, fmt.Sprintf("Invalid identifier escape character: %c (%s)", self.chr, string(self.chr))
-			}
-			var value rune
-			if self._peek() == '{' {
-				self.read()
-				value = -1
-				for value <= utf8.MaxRune {
-					self.read()
-					if self.chr == '}' {
-						break
-					}
-					decimal, ok := hex2decimal(byte(self.chr))
-					if !ok {
-						return "", "", false, "Invalid Unicode escape sequence"
-					}
-					if value == -1 {
-						value = decimal
-					} else {
-						value = value<<4 | decimal
-					}
-				}
-				if value == -1 {
-					return "", "", false, "Invalid Unicode escape sequence"
-				}
-			} else {
-				for j := 0; j < 4; j++ {
-					self.read()
-					decimal, ok := hex2decimal(byte(self.chr))
-					if !ok {
-						return "", "", false, fmt.Sprintf("Invalid identifier escape character: %c (%s)", self.chr, string(self.chr))
-					}
-					value = value<<4 | decimal
-				}
-			}
-			if value == '\\' {
-				return "", "", false, fmt.Sprintf("Invalid identifier escape value: %c (%s)", value, string(value))
-			} else if distance == 0 {
-				if !isIdentifierStart(value) {
-					return "", "", false, fmt.Sprintf("Invalid identifier escape value: %c (%s)", value, string(value))
-				}
-			} else if distance > 0 {
-				if !isIdentifierPart(value) {
-					return "", "", false, fmt.Sprintf("Invalid identifier escape value: %c (%s)", value, string(value))
-				}
-			}
 			r = value
 		}
 		if r >= utf8.RuneSelf {
@@ -153,7 +125,6 @@ func (self *_parser) scanIdentifier() (string, unistring.String, bool, string) {
 	var parsed unistring.String
 	if hasEscape || isUnicode {
 		var err string
-		// TODO strict
 		parsed, err = parseStringLiteral(literal, length, isUnicode, false)
 		if err != "" {
 			return "", "", false, err
@@ -163,6 +134,67 @@ func (self *_parser) scanIdentifier() (string, unistring.String, bool, string) {
 	}
 
 	return literal, parsed, hasEscape, ""
+}
+
+// identifierEscape decodes the escape of an identifier s starts with (a
+// backslash), and returns its length: 0 if it is not a \u escape, with the
+// error V8 reports if it is a malformed one.
+func identifierEscape(s string) (value rune, n int, err string) {
+	if len(s) < 2 || s[1] != 'u' {
+		return 0, 0, ""
+	}
+	if len(s) > 2 && s[2] == '{' {
+		i := 3
+		for ; i < len(s) && s[i] != '}'; i++ {
+			decimal, ok := hex2decimal(s[i])
+			if !ok {
+				return 0, 0, errUnicodeEscape
+			}
+			value = value<<4 | decimal
+			if value > utf8.MaxRune {
+				return 0, 0, errUndefinedCodePoint
+			}
+		}
+		if i == 3 || i == len(s) {
+			return 0, 0, errUnicodeEscape
+		}
+		return value, i + 1, ""
+	}
+	if len(s) < 6 {
+		return 0, 0, errUnicodeEscape
+	}
+	for i := 2; i < 6; i++ {
+		decimal, ok := hex2decimal(s[i])
+		if !ok {
+			return 0, 0, errUnicodeEscape
+		}
+		value = value<<4 | decimal
+	}
+	return value, 6, ""
+}
+
+// identifierEscapeError returns the error V8 reports for a malformed escape
+// in the identifier s starts with, if any, before the identifier ends.
+func identifierEscapeError(s string) string {
+	for i := 0; i < len(s); {
+		if s[i] == '\\' {
+			value, n, err := identifierEscape(s[i:])
+			if err != "" {
+				return err
+			}
+			if n == 0 || value == '\\' || i == 0 && !isIdentifierStart(value) || i > 0 && !isIdentifierPart(value) {
+				return ""
+			}
+			i += n
+			continue
+		}
+		r, w := utf8.DecodeRuneInString(s[i:])
+		if i == 0 && !isIdentifierStart(r) || i > 0 && !isIdentifierPart(r) {
+			return ""
+		}
+		i += w
+	}
+	return ""
 }
 
 // 7.2
@@ -241,6 +273,7 @@ func (self *_parser) scan() (tkn token.Token, literal string, parsedLiteral unis
 			var hasEscape bool
 			literal, parsedLiteral, hasEscape, err = self.scanIdentifier()
 			if err != "" {
+				self.error(idx, err)
 				tkn = token.ILLEGAL
 				break
 			}
@@ -450,9 +483,7 @@ func (self *_parser) scan() (tkn token.Token, literal string, parsedLiteral unis
 				var err string
 				literal, parsedLiteral, err = self.scanString(self.chrOffset-1, true)
 				if err != "" {
-					if msg := v8EscapeError(err); msg != "" {
-						self.error(idx, msg)
-					}
+					// scanString has reported the error in V8's words.
 					tkn = token.ILLEGAL
 				}
 			case '`':
@@ -722,16 +753,19 @@ func (self *_parser) scanEscape(quote rune) (int, bool) {
 				self.read()
 			}
 		} else {
-			for self.chr != quote && self.chr >= 0 && value < utf8.MaxRune {
-				if self.chr == '}' {
-					self.read()
-					break
-				}
+			// \u{...}: every hex digit, and the closing brace. A value past
+			// U+10FFFF is an error (see parseStringLiteral), and saturates.
+			for {
 				digit := uint32(digitValue(self.chr))
 				if digit >= base {
 					break
 				}
-				value = value*base + digit
+				if value <= utf8.MaxRune {
+					value = value*base + digit
+				}
+				self.read()
+			}
+			if self.chr == '}' {
 				self.read()
 			}
 		}
@@ -794,18 +828,29 @@ func (self *_parser) scanString(offset int, parse bool) (literal string, parsed 
 	self.read()
 	literal = self.str[offset:self.chrOffset]
 	if parse {
-		// TODO strict
+		// Strict mode's octal escapes are refused by the compiler, which
+		// knows the mode.
 		parsed, err = parseStringLiteral(literal[1:len(literal)-1], length, isUnicode, false)
+		if err != "" {
+			self.error(self.idxOf(offset), err)
+		}
 	}
 	return
 
 newline:
-	self.scanNewline()
-	errStr := "String not terminated"
+	errStr := errInvalidToken
 	if quote == '/' {
+		self.scanNewline()
 		errStr = "Invalid regular expression: missing /"
 		self.error(self.idxOf(offset), errStr)
+		return "", "", errStr
 	}
+	// V8 reports a malformed escape before the end of the line.
+	if _, e := parseStringLiteral(self.str[offset+1:self.chrOffset], length, true, false); e != "" && e != errInvalidToken {
+		errStr = e
+	}
+	self.scanNewline()
+	self.error(self.idxOf(offset), errStr)
 	return "", "", errStr
 }
 
@@ -847,11 +892,6 @@ func (self *_parser) parseTemplateCharacters() (literal string, parsed unistring
 				}
 				self.scanNewline()
 			} else {
-				if self.chr == '8' || self.chr == '9' {
-					if parseErr == "" {
-						parseErr = "\\8 and \\9 are not allowed in template strings."
-					}
-				}
 				l, u := self.scanEscape('`')
 				length += l
 				if u {
@@ -888,6 +928,11 @@ func (self *_parser) parseTemplateCharacters() (literal string, parsed unistring
 	self.insertSemicolon = true
 	return
 unterminated:
+	// V8 reports an escape an untagged template is not allowed before the
+	// end of the input (see parseTemplateLiteral).
+	if _, e := parseStringLiteral(self.str[offset:], length, true, true); e != "" && e != errInvalidToken {
+		parseErr = e
+	}
 	err = err_UnexpectedEndOfInput
 	finished = true
 	return
@@ -980,7 +1025,23 @@ error:
 	return nil, errors.New("Illegal numeric literal")
 }
 
-func parseStringLiteral(literal string, length int, unicode, strict bool) (unistring.String, string) {
+// V8's messages for the escapes of string literals, templates and
+// identifiers.
+const (
+	errInvalidToken       = "Invalid or unexpected token"
+	errUnicodeEscape      = "Invalid Unicode escape sequence"
+	errHexEscape          = "Invalid hexadecimal escape sequence"
+	errUndefinedCodePoint = "Undefined Unicode code-point"
+	errTemplateOctal      = "Octal escape sequences are not allowed in template strings."
+	errTemplate89         = "\\8 and \\9 are not allowed in template strings."
+)
+
+// parseStringLiteral decodes the escapes of a literal (inTemplate: a
+// template's characters, where octal escapes are not allowed). length is
+// the number of UTF-16 code units the scan counted, and only sizes the
+// result; unicode is whether it found a character that is not ASCII (if it
+// missed one the literal is decoded again as unicode).
+func parseStringLiteral(literal string, length int, unicode, inTemplate bool) (unistring.String, string) {
 	var sb strings.Builder
 	var chars []uint16
 	if unicode {
@@ -996,6 +1057,9 @@ func parseStringLiteral(literal string, length int, unicode, strict bool) (unist
 		// value, which can be: " ' /
 		// This assumes we're already passed a partially well-formed literal
 		case chr >= utf8.RuneSelf:
+			if !unicode {
+				return parseStringLiteral(literal, length, true, inTemplate)
+			}
 			chr, size := utf8.DecodeRuneInString(str)
 			if chr <= 0xFFFF {
 				chars = append(chars, uint16(chr))
@@ -1016,7 +1080,7 @@ func parseStringLiteral(literal string, length int, unicode, strict bool) (unist
 		}
 
 		if len(str) <= 1 {
-			panic("len(str) <= 1")
+			return "", errInvalidToken
 		}
 		chr := str[1]
 		var value rune
@@ -1044,73 +1108,58 @@ func parseStringLiteral(literal string, length int, unicode, strict bool) (unist
 			case 'v':
 				value = '\v'
 			case 'x', 'u':
-				size := 0
-				switch chr {
-				case 'x':
-					size = 2
-				case 'u':
-					if str == "" || str[0] != '{' {
-						size = 4
+				if chr == 'x' || str == "" || str[0] != '{' {
+					size, msg := 2, errHexEscape
+					if chr == 'u' {
+						size, msg = 4, errUnicodeEscape
 					}
-				}
-				if size > 0 {
 					if len(str) < size {
-						return "", fmt.Sprintf("invalid escape: \\%s: len(%q) != %d", string(chr), str, size)
+						return "", msg
 					}
 					for j := 0; j < size; j++ {
 						decimal, ok := hex2decimal(str[j])
 						if !ok {
-							return "", fmt.Sprintf("invalid escape: \\%s: %q", string(chr), str[:size])
+							return "", msg
 						}
 						value = value<<4 | decimal
 					}
-				} else {
-					str = str[1:]
-					var val rune
-					value = -1
-					for ; size < len(str); size++ {
-						if str[size] == '}' {
-							if size == 0 {
-								return "", fmt.Sprintf("invalid escape: \\%s", string(chr))
-							}
-							size++
-							value = val
-							break
-						}
-						decimal, ok := hex2decimal(str[size])
-						if !ok {
-							return "", fmt.Sprintf("invalid escape: \\%s: %q", string(chr), str[:size+1])
-						}
-						val = val<<4 | decimal
-						if val > utf8.MaxRune {
-							return "", fmt.Sprintf("undefined Unicode code-point: %q", str[:size+1])
-						}
-					}
-					if value == -1 {
-						return "", fmt.Sprintf("unterminated \\u{: %q", str)
-					}
-				}
-				str = str[size:]
-				if chr == 'x' {
+					str = str[size:]
 					break
 				}
-				if value > utf8.MaxRune {
-					panic("value > utf8.MaxRune")
+				// \u{...}: past U+10FFFF is refused as soon as it is.
+				str = str[1:]
+				j := 0
+				for ; j < len(str); j++ {
+					decimal, ok := hex2decimal(str[j])
+					if !ok {
+						break
+					}
+					value = value<<4 | decimal
+					if value > utf8.MaxRune {
+						return "", errUndefinedCodePoint
+					}
 				}
+				if j == 0 || j == len(str) || str[j] != '}' {
+					return "", errUnicodeEscape
+				}
+				str = str[j+1:]
 			case '0':
-				if len(str) == 0 || '0' > str[0] || str[0] > '7' {
+				if len(str) == 0 || '0' > str[0] || str[0] > '9' {
 					value = 0
 					break
 				}
 				fallthrough
 			case '1', '2', '3', '4', '5', '6', '7':
-				if strict {
-					// Only template strings are parsed strictly.
-					return "", "Octal escape sequences are not allowed in template strings."
+				if inTemplate {
+					return "", errTemplateOctal
 				}
 				value = rune(chr) - '0'
-				j := 0
-				for ; j < 2; j++ {
+				// Up to three digits from 0 to 3, two from 4 to 7.
+				j, digits := 0, 2
+				if chr >= '4' {
+					digits = 1
+				}
+				for ; j < digits; j++ {
 					if len(str) < j+1 {
 						break
 					}
@@ -1122,6 +1171,11 @@ func parseStringLiteral(literal string, length int, unicode, strict bool) (unist
 					value = (value << 3) | decimal
 				}
 				str = str[j:]
+			case '8', '9':
+				if inTemplate {
+					return "", errTemplate89
+				}
+				value = rune(chr)
 			case '\\':
 				value = '\\'
 			case '\'', '"':
@@ -1148,20 +1202,14 @@ func parseStringLiteral(literal string, length int, unicode, strict bool) (unist
 			}
 		} else {
 			if value >= utf8.RuneSelf {
-				return "", "Unexpected unicode character"
+				return parseStringLiteral(literal, length, true, inTemplate)
 			}
 			sb.WriteByte(byte(value))
 		}
 	}
 
 	if unicode {
-		if len(chars) != length+1 {
-			panic(fmt.Errorf("unexpected unicode length while parsing '%s'", literal))
-		}
 		return unistring.FromUtf16(chars), ""
-	}
-	if sb.Len() != length {
-		panic(fmt.Errorf("unexpected length while parsing '%s'", literal))
 	}
 	return unistring.String(sb.String()), ""
 }
@@ -1254,19 +1302,4 @@ end:
 	}
 
 	return tkn, self.str[offset:self.chrOffset]
-}
-
-// v8EscapeError is V8's message for a string literal whose escape
-// parseStringLiteral refused with err, or "" to report the literal as an
-// invalid token.
-func v8EscapeError(err string) string {
-	switch {
-	case strings.HasPrefix(err, "invalid escape: \\x"):
-		return "Invalid hexadecimal escape sequence"
-	case strings.HasPrefix(err, "invalid escape: \\u"), strings.HasPrefix(err, "unterminated \\u{"):
-		return "Invalid Unicode escape sequence"
-	case strings.HasPrefix(err, "undefined Unicode code-point"):
-		return "Undefined Unicode code-point"
-	}
-	return ""
 }

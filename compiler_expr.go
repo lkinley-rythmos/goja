@@ -3316,6 +3316,26 @@ func (c *compiler) compileStringLiteral(v *ast.StringLiteral) compiledExpr {
 	return r
 }
 
+// legacyOctalEscape returns V8's message for the escapes a string literal
+// (as written) has that strict mode does not allow: legacy octal escapes,
+// reported before \8 and \9 wherever they are.
+func legacyOctalEscape(literal string) string {
+	msg := ""
+	for i := 0; i+1 < len(literal); i++ {
+		if literal[i] != '\\' {
+			continue
+		}
+		i++
+		switch c := literal[i]; {
+		case c >= '1' && c <= '7', c == '0' && i+1 < len(literal) && literal[i+1] >= '0' && literal[i+1] <= '9':
+			return "Octal escape sequences are not allowed in strict mode."
+		case c == '8' || c == '9':
+			msg = "\\8 and \\9 are not allowed in strict mode."
+		}
+	}
+	return msg
+}
+
 func (c *compiler) compileTemplateLiteral(v *ast.TemplateLiteral) compiledExpr {
 	r := &compiledTemplateLiteral{}
 	if v.Tag != nil {
@@ -3752,29 +3772,6 @@ func (e *compiledYieldExpression) emitGetter(putOnStack bool) {
 			e.c.emit(yield)
 		}
 	}
-}
-
-// legacyOctalEscape is V8's error for the first escape of a string
-// literal's source that strict code refuses: an octal one (\1, \00), or
-// \8 or \9.
-func legacyOctalEscape(raw string) string {
-	for i := 0; i < len(raw)-1; i++ {
-		if raw[i] != '\\' {
-			continue
-		}
-		i++
-		switch c := raw[i]; {
-		case c == '0':
-			if i+1 < len(raw) && raw[i+1] >= '0' && raw[i+1] <= '9' {
-				return "Octal escape sequences are not allowed in strict mode."
-			}
-		case c >= '1' && c <= '7':
-			return "Octal escape sequences are not allowed in strict mode."
-		case c == '8' || c == '9':
-			return "\\8 and \\9 are not allowed in strict mode."
-		}
-	}
-	return ""
 }
 
 // compiledInvalidTarget is a call assigned to (f() = 1, f()++, for (f() of

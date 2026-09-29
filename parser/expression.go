@@ -614,6 +614,10 @@ func (self *_parser) parseTemplateLiteral(tagged bool) *ast.TemplateLiteral {
 	for {
 		start := self.offset
 		literal, parsed, finished, parseErr, err := self.parseTemplateCharacters()
+		if !tagged && parseErr != "" {
+			// Before the end of the input, as V8 reports it.
+			self.error(self.offset, parseErr)
+		}
 		if err != "" {
 			self.error(self.offset, err)
 		}
@@ -623,9 +627,6 @@ func (self *_parser) parseTemplateLiteral(tagged bool) *ast.TemplateLiteral {
 			Parsed:  parsed,
 			Valid:   parseErr == "",
 		})
-		if !tagged && parseErr != "" {
-			self.error(self.offset, parseErr)
-		}
 		end := self.chrOffset - 1
 		self.next()
 		if finished {
