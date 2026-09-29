@@ -76,7 +76,11 @@ const (
 	r2FoldItemUnits  = 10
 	// classFoldUnits is what rewriting a class as its set closed under case
 	// folding costs, for both engines; a class is rewritten when adding its
-	// case variants would cost them more.
+	// case variants would cost them more. The closure takes one pass over
+	// the set and the table of case variants, however wide the set is:
+	// about 7 µs with Canonicalize (canonClosure) and 14 µs with simple case
+	// folding (caseClosure), which the units round up; writing the set is
+	// counted by its ranges.
 	classFoldUnits = 400
 )
 

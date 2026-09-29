@@ -250,3 +250,70 @@ func TestRegexpCompileInterruptedBetweenSteps(t *testing.T) {
 		})
 	}
 }
+
+// distinctWideClasses returns n distinct classes [\u0100-\uffff<digit><CJK>].
+func distinctWideClasses(n int) string {
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		b.WriteString("[\u0100-\uffff")
+		b.WriteRune(rune('0' + i%10))
+		b.WriteRune(rune(0x4e00 + i))
+		b.WriteByte(']')
+	}
+	return b.String()
+}
+
+func TestRegexpDistinctCanonClassesCompileBounded(t *testing.T) {
+	// Without the u flag, ignoring case, each distinct class is closed under
+	// Canonicalize, which cannot be interrupted: 3,520 distinct wide classes
+	// took 1.5 s with an Interrupt at 100 ms, and a literal of them 3.7 s to
+	// compile. They are refused as too large, or compile, within the bound
+	// (about 50 ms), from a string or a literal.
+	for _, tc := range []struct {
+		name, pattern, flags string
+	}{
+		{"wide", distinctWideClasses(3520), "i"},
+		{"wide under the bound", distinctWideClasses(3000), "gi"},
+		{"negated", strings.Replace(distinctWideClasses(3264), "[", "[^", -1), "i"},
+		{"narrow", distinctClassesFrom(3904, 'a'), "i"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			check := func(what string, elapsed time.Duration, err error) {
+				t.Helper()
+				if err != nil && !regexpTooLarge(err) && !strings.Contains(err.Error(), "/: Regular expression too large at ") {
+					msg := err.Error()
+					t.Fatalf("%s: %s...%s", what, msg[:min(len(msg), 60)], msg[max(len(msg)-100, 0):])
+				}
+				if elapsed > 500*time.Millisecond && !raceDetectorEnabled {
+					t.Errorf("%s took %v", what, elapsed)
+				}
+			}
+			resetRegexpCache()
+			defer resetRegexpCache()
+			vm := New()
+			vm.Set("p", tc.pattern)
+			vm.Set("f", tc.flags)
+			start := time.Now()
+			_, err := vm.RunString(`new RegExp(p, f).test("\u4e01")`)
+			check("new RegExp", time.Since(start), err)
+			resetRegexpCache()
+			start = time.Now()
+			_, err = Compile("", "x = /"+tc.pattern+"/"+tc.flags, false)
+			check("Compile", time.Since(start), err)
+		})
+	}
+}
+
+// distinctClassesFrom returns n distinct classes [<lo>-<c>] of characters from
+// U+0100.
+func distinctClassesFrom(n int, lo rune) string {
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		b.WriteByte('[')
+		b.WriteRune(lo)
+		b.WriteByte('-')
+		b.WriteRune(rune(0x100 + i))
+		b.WriteByte(']')
+	}
+	return b.String()
+}

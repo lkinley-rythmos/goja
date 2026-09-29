@@ -3,6 +3,7 @@ package parser
 import (
 	"fmt"
 	"regexp"
+	"runtime"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -337,5 +338,68 @@ func TestRegExpReadInvalidUTF8AfterError(t *testing.T) {
 	p.seek(1)
 	if p.chr != -1 {
 		t.Fatalf("read %q", p.chr)
+	}
+}
+
+// distinctWideClasses returns n distinct classes [\u0100-\uffff<digit><CJK>]
+// (the i flag rewrites each as its set closed under Canonicalize).
+func distinctWideClasses(n int) string {
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		b.WriteString("[\u0100-\uffff")
+		b.WriteRune(rune('0' + i%10))
+		b.WriteRune(rune(0x4e00 + i))
+		b.WriteByte(']')
+	}
+	return b.String()
+}
+
+func TestTransformRegExpDistinctCanonClassesBounded(t *testing.T) {
+	// Each distinct class of a pattern that ignores case without the u flag
+	// is closed under Canonicalize in one pass over the table: 3,520
+	// distinct wide classes took 1.76 s and allocated 2.2 GB, a closure a
+	// union per case class, where they are charged 40 µs each (a closure
+	// takes about 7 µs). The pattern is refused as too large, or compiles;
+	// what it allocates stands for the time, which regexp_cost_test.go in
+	// goja bounds.
+	for _, tc := range []struct {
+		name    string
+		pattern string
+	}{
+		{"wide", distinctWideClasses(3520)},
+		{"negated", strings.Replace(distinctWideClasses(3264), "[", "[^", -1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var before, after runtime.MemStats
+			runtime.GC()
+			runtime.ReadMemStats(&before)
+			_, _, err := TransformRegExp2(tc.pattern, false, false, true)
+			runtime.ReadMemStats(&after)
+			if err != nil && !strings.HasSuffix(err.Error(), "/: Regular expression too large") {
+				t.Fatalf("%.200v", err)
+			}
+			if alloc := after.TotalAlloc - before.TotalAlloc; alloc > 100<<20 {
+				t.Errorf("allocated %d MB", alloc>>20)
+			}
+		})
+	}
+}
+
+func TestCanonClosure(t *testing.T) {
+	// canonClosure is the union of the classes of the code units in s.
+	units, _, _ := canonClasses()
+	for _, s := range []runeSet{
+		nil, {'a', 'a'}, {'A', 'Z'}, {0x100, 0xffff}, {0, 0x10ffff}, {'0', '0', 0x100, 0xffff},
+		{0x17f, 0x17f}, {0x212a, 0x212a}, {0x3a3, 0x3a3, 0x1e9e, 0x1e9e}, {0x10000, 0x10ffff},
+	} {
+		want := s
+		for _, u := range units {
+			if s.contains(rune(u)) {
+				want = want.union(canonClass(rune(u)))
+			}
+		}
+		if got := canonClosure(s); !got.equal(want) {
+			t.Errorf("%x: %x, want %x", s, got, want)
+		}
 	}
 }

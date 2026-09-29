@@ -63,15 +63,27 @@ func canonClass(r rune) runeSet {
 }
 
 // canonClosure adds to s every code unit Canonicalize makes equivalent to
-// one in s.
+// one in s. It takes one pass over s and the table, and one over the
+// table: linear in both, however wide s is.
 func canonClosure(s runeSet) runeSet {
 	units, class, sets := canonClasses()
 	hit := make([]bool, len(sets))
+	in := make([]bool, len(units))
+	j := 0
+	for i, u := range units {
+		r := rune(u)
+		for j < len(s) && s[j+1] < r {
+			j += 2
+		}
+		if j < len(s) && s[j] <= r {
+			in[i] = true
+			hit[class[i]] = true
+		}
+	}
 	var add runeSet
 	for i, u := range units {
-		if !hit[class[i]] && s.contains(rune(u)) {
-			hit[class[i]] = true
-			add = add.union(sets[class[i]])
+		if !in[i] && hit[class[i]] {
+			add = add.appendRange(rune(u), rune(u))
 		}
 	}
 	return s.union(add)
