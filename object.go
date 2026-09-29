@@ -700,6 +700,13 @@ func (o *baseObject) _defineOwnProperty(name unistring.String, existingValue Val
 		existing = &valueProperty{}
 	} else {
 		if existing, ok = existingValue.(*valueProperty); !ok {
+			if descr.Writable == FLAG_TRUE && descr.Enumerable == FLAG_TRUE && descr.Configurable == FLAG_TRUE && descr.Value != nil {
+				// A plain data property over a plain one (stored as the
+				// bare value, so configurable): nothing can reject it, and
+				// the result is the bare new value, as below; allocate no
+				// valueProperty just to discard it.
+				return descr.Value, true
+			}
 			existing = &valueProperty{
 				writable:     true,
 				enumerable:   true,
