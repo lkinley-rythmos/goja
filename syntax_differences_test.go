@@ -176,3 +176,32 @@ func TestClassOctalLeniency(t *testing.T) {
 		}
 	}
 }
+
+// TestDynamicImportOptions runs testdata/v8_dynamic_import.json: import()
+// with options reads their import assertions as V8 10.2 does, "with" then
+// "assert", rejecting with V8's TypeErrors or what a getter or a trap
+// throws, before it rejects for the missing callback; that rejection's
+// stack has the code on its first line. Each script logs to R, read once
+// its jobs have run; the logs are Node.js 18.20.3's, each script run in a
+// new vm context. (The missing callback's error is Node.js's own there, not
+// the context's: the logs do not compare its instanceof.)
+func TestDynamicImportOptions(t *testing.T) {
+	data, err := os.ReadFile("testdata/v8_dynamic_import.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases [][2]string
+	if err := json.Unmarshal(data, &cases); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cases {
+		vm := New()
+		if _, err := vm.RunString(c[0]); err != nil {
+			t.Errorf("%s: %v", c[0], err)
+			continue
+		}
+		if got, _ := vm.RunString(`JSON.stringify(R)`); got.String() != c[1] {
+			t.Errorf("%s\n got: %s\nwant: %s", c[0], got, c[1])
+		}
+	}
+}

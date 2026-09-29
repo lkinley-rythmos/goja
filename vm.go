@@ -6213,13 +6213,25 @@ func (t throwReferenceError) exec(vm *vm) {
 	vm.throw(vm.r.newError(vm.r.getReferenceError(), string(t)))
 }
 
-type importDynamic struct{}
+// importDynamic is import(specifier[, options]), with options on the stack
+// if given.
+type importDynamic struct {
+	options bool
+}
 
-func (importDynamic) exec(vm *vm) {
+func (d importDynamic) exec(vm *vm) {
 	r := vm.r
 	p, _, reject := r.NewPromise()
+	var options Value = _undefined
+	if d.options {
+		options = vm.stack[vm.sp-1]
+		vm.sp--
+	}
 	specifier := vm.stack[vm.sp-1]
-	if ex := vm.try(func() { specifier.toString() }); ex != nil {
+	if ex := vm.try(func() {
+		specifier.toString()
+		r.importAssertions(options)
+	}); ex != nil {
 		_ = reject(ex.Value())
 	} else {
 		_ = reject(r.dynamicImportError())

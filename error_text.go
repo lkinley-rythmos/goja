@@ -643,10 +643,53 @@ func (r *Runtime) dynamicImportError() *Object {
 	const code = "ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING"
 	const msg = "A dynamic import callback was not specified."
 	e := r.newTypeErrorString(msg)
-	e.self.setOwnStr("code", asciiString(code), false)
-	// Node.js's errors print their code.
+	// Node.js's errors print their code, in their toString and on the
+	// first line of their stack: it is captured with the code in the
+	// name, which is then deleted.
 	e.self._putProp("toString", r.newNativeFunc(func(FunctionCall) Value {
 		return asciiString("TypeError [" + code + "]: " + msg)
 	}, "toString", 0), true, false, true)
+	e.self.setOwnStr("code", asciiString(code), false)
+	if eo, ok := e.self.(*errorObject); ok {
+		eo._putProp("name", asciiString("TypeError ["+code+"]"), true, false, true)
+		eo.addStackProp()
+		eo.deleteStr("name", false)
+	}
 	return e
+}
+
+// importAssertions reads the import assertions of import()'s options as
+// V8 10.2 does (Node.js 18.20.3): options, if not undefined, must be an
+// object; its "with" property, or if undefined its "assert" property, if
+// not undefined, must be an object, whose own enumerable string-keyed
+// properties are read, and must be strings. It throws V8's TypeErrors, or
+// what a getter or a proxy's trap throws.
+func (r *Runtime) importAssertions(options Value) {
+	if options == _undefined {
+		return
+	}
+	o, ok := options.(*Object)
+	if !ok {
+		panic(r.newTypeErrorString("The second argument to import() must be an object"))
+	}
+	a := nilSafe(o.self.getStr("with", nil))
+	if a == _undefined {
+		a = nilSafe(o.self.getStr("assert", nil))
+	}
+	if a == _undefined {
+		return
+	}
+	ao, ok := a.(*Object)
+	if !ok {
+		panic(r.newTypeErrorString("The 'assert' option must be an object"))
+	}
+	allStrings := true
+	for _, key := range ao.self.stringKeys(false, nil) {
+		if _, ok := nilSafe(ao.self.getStr(key.string(), nil)).(String); !ok {
+			allStrings = false
+		}
+	}
+	if !allStrings {
+		panic(r.newTypeErrorString("Import assertion value must be a string"))
+	}
 }

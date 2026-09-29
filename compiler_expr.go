@@ -3818,10 +3818,11 @@ func (e *compiledInvalidTarget) emitRef() {
 	e.emitThrow(false)
 }
 
-// compiledImportCall is import(specifier): a runtime has no module loader,
-// so, as Node.js's vm contexts without importModuleDynamically do, it
-// returns a promise rejected with ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING,
-// once the specifier has been converted to a string.
+// compiledImportCall is import(specifier[, options]): a runtime has no
+// module loader, so, as Node.js's vm contexts without
+// importModuleDynamically do, it returns a promise rejected with
+// ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING, once the specifier has been
+// converted to a string and the options' import assertions read.
 type compiledImportCall struct {
 	baseCompiledExpr
 	specifier, options compiledExpr
@@ -3830,10 +3831,10 @@ type compiledImportCall struct {
 func (e *compiledImportCall) emitGetter(putOnStack bool) {
 	e.specifier.emitGetter(true)
 	if e.options != nil {
-		e.options.emitGetter(false)
+		e.options.emitGetter(true)
 	}
 	e.addSrcMap()
-	e.c.emit(importDynamic{})
+	e.c.emit(importDynamic{options: e.options != nil})
 	if !putOnStack {
 		e.c.emit(pop)
 	}

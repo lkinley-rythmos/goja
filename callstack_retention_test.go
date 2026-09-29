@@ -74,6 +74,8 @@ func TestInterruptLeavesNoFrames(t *testing.T) {
 		`async function f(){ await 1; stop(); while(true){} } f()`,
 		`function* g(){ stop(); while(true){} } [1].forEach(function(){ g().next() })`,
 		`function* g(){ try { stop(); while(true){} } finally { [1].map(function(){}) } } for (var x of g()) {}`,
+		`import('x', {get assert() { stop(); while(true){} }})`,
+		`function* g(){ import('x', {assert: {get type() { stop(); while(true){} }}}) } g().next()`,
 	} {
 		for _, viaCallable := range []bool{false, true} {
 			vm := New()
