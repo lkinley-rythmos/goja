@@ -116,15 +116,13 @@ func RegExpSourceError(err error, converted, source string) error {
 // after it; its flags are valid. Whether the pattern is too large to compile
 // is left to the compiler.
 func (self *_parser) validateRegExpLiteral(idx file.Idx, pattern, flags string) {
-	var dotAll, unicode, ignoreCase bool
+	var dotAll, unicode bool
 	for i := 0; i < len(flags); i++ {
 		switch flags[i] {
 		case 's':
 			dotAll = true
 		case 'u':
 			unicode = true
-		case 'i':
-			ignoreCase = true
 		}
 	}
 	converted := pattern
@@ -136,12 +134,15 @@ func (self *_parser) validateRegExpLiteral(idx file.Idx, pattern, flags string) 
 	if converted == "" {
 		return
 	}
+	// The pattern is only validated: its syntax does not depend on the i
+	// flag, and nothing is written for the engines (as past the bound on
+	// what it costs), which the compiler does when it compiles it.
 	p := _RegExp_parser{
-		str:        converted,
-		length:     len(converted),
-		dotAll:     dotAll,
-		unicode:    unicode,
-		ignoreCase: ignoreCase,
+		str:     converted,
+		length:  len(converted),
+		dotAll:  dotAll,
+		unicode: unicode,
+		refused: true,
 	}
 	p.read()
 	p.scan()

@@ -370,3 +370,41 @@ func TestCanonClosure(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateRegExpLiteralOnlyValidates(t *testing.T) {
+	// A literal's pattern is validated when it is parsed, and transformed
+	// when it is compiled: the validation neither folds case nor writes the
+	// pattern, which made the worst literal cost two transforms (3.66 s
+	// against 1.76 s before canonClosure was linear).
+	src := "x = /" + distinctWideClasses(3000) + "/i"
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	if _, err := ParseFile(nil, "", src, 0); err != nil {
+		t.Fatal(err)
+	}
+	runtime.ReadMemStats(&after)
+	parsed := after.TotalAlloc - before.TotalAlloc
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	if _, _, err := TransformRegExp2(distinctWideClasses(3000), false, false, true); err != nil {
+		t.Fatal(err)
+	}
+	runtime.ReadMemStats(&after)
+	if transformed := after.TotalAlloc - before.TotalAlloc; parsed > transformed/4 {
+		t.Errorf("parsing allocated %d KB, the transform %d KB", parsed>>10, transformed>>10)
+	}
+	// Its syntax errors are found with the i flag as without it.
+	for _, pattern := range []string{`[b-a]`, `(?<a>x)(?<a>y)`, `\k<b>(?<a>x)`, `[\p{Foo}]`, `a{2,1}`, `(`} {
+		for _, flags := range []string{"i", "iu", "", "u"} {
+			_, err := ParseFile(nil, "", "/"+pattern+"/"+flags, 0)
+			_, _, terr := TransformRegExp2(pattern, false, strings.Contains(flags, "u"), strings.Contains(flags, "i"))
+			if _, incompat := terr.(RegexpErrorIncompatible); incompat {
+				terr = nil
+			}
+			if (err == nil) != (terr == nil) {
+				t.Errorf("/%s/%s: parse %v, transform %v", pattern, flags, err, terr)
+			}
+		}
+	}
+}
