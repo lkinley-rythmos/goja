@@ -1387,6 +1387,7 @@ func (e *compiledFunctionLiteral) compile() (prg *Program, name unistring.String
 	if e.typ != funcClsInit {
 		s.octalLenient = false
 	}
+	octalMark := len(e.c.legacyOctals)
 
 	if e.name != nil {
 		name = e.name.Name
@@ -1746,6 +1747,9 @@ func (e *compiledFunctionLiteral) compile() (prg *Program, name unistring.String
 	e.c.p.srcMap[0].pc = delta
 	s.trimCode(delta)
 
+	if s.strict && e.source != "" {
+		e.c.checkLegacyOctal(octalMark, e.offset+len(e.source))
+	}
 	strict = s.strict
 	prg = e.c.p
 	// e.c.p.dumpCode()
@@ -3272,10 +3276,10 @@ func (c *compiler) compileIdentifierExpression(v *ast.Identifier) compiledExpr {
 func (c *compiler) compileNumberLiteral(v *ast.NumberLiteral) compiledExpr {
 	if c.octalStrict() && len(v.Literal) > 1 && v.Literal[0] == '0' && v.Literal[1] <= '9' && v.Literal[1] >= '0' {
 		if strings.IndexAny(strings.TrimLeft(v.Literal, "01234567"), "89") == 0 {
-			c.throwSyntaxError(int(v.Idx)-1, "Decimals with leading zeros are not allowed in strict mode.")
+			c.recordLegacyOctal(int(v.Idx)-1, "Decimals with leading zeros are not allowed in strict mode.")
+		} else {
+			c.recordLegacyOctal(int(v.Idx)-1, "Octal literals are not allowed in strict mode.")
 		}
-		c.throwSyntaxError(int(v.Idx)-1, "Octal literals are not allowed in strict mode.")
-		panic("Unreachable")
 	}
 	var val Value
 	switch num := v.Value.(type) {
@@ -3306,7 +3310,7 @@ func (c *compiler) octalStrict() bool {
 func (c *compiler) compileStringLiteral(v *ast.StringLiteral) compiledExpr {
 	if c.octalStrict() {
 		if msg := legacyOctalEscape(v.Literal); msg != "" {
-			c.throwSyntaxError(int(v.Idx)-1, msg)
+			c.recordLegacyOctal(int(v.Idx)-1, msg)
 		}
 	}
 	r := &compiledLiteral{
@@ -3316,9 +3320,9 @@ func (c *compiler) compileStringLiteral(v *ast.StringLiteral) compiledExpr {
 	return r
 }
 
-// legacyOctalEscape returns V8's message for the escapes a string literal
-// (as written) has that strict mode does not allow: legacy octal escapes,
-// reported before \8 and \9 wherever they are.
+// legacyOctalEscape returns V8's message for the last escape a string
+// literal (as written) has that strict mode does not allow, a legacy octal
+// escape or \8 or \9: V8 reports the last it read.
 func legacyOctalEscape(literal string) string {
 	msg := ""
 	for i := 0; i+1 < len(literal); i++ {
@@ -3328,7 +3332,7 @@ func legacyOctalEscape(literal string) string {
 		i++
 		switch c := literal[i]; {
 		case c >= '1' && c <= '7', c == '0' && i+1 < len(literal) && literal[i+1] >= '0' && literal[i+1] <= '9':
-			return "Octal escape sequences are not allowed in strict mode."
+			msg = "Octal escape sequences are not allowed in strict mode."
 		case c == '8' || c == '9':
 			msg = "\\8 and \\9 are not allowed in strict mode."
 		}

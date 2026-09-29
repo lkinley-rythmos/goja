@@ -127,6 +127,22 @@ type compiler struct {
 	// refForSet makes the next member reference emitted one that is only
 	// set (a destructuring target), not read first.
 	refForSet bool
+
+	// legacyOctals are the legacy octal escapes and literals (and \8, \9
+	// and decimals with a leading zero) in strict code, in the order
+	// compiled; octalError is the one V8 reports (see checkLegacyOctal).
+	legacyOctals []legacyOctal
+	octalError   *legacyOctalError
+}
+
+type legacyOctal struct {
+	offset int
+	msg    string
+}
+
+type legacyOctalError struct {
+	legacyOctal
+	end int // of the strict function (or script) V8 reports it at
 }
 
 // enterNesting counts one level of compiler recursion. The parser bounds the
@@ -1110,6 +1126,10 @@ func (c *compiler) compile(in *ast.Program, strict, inGlobal bool, evalVm *vm) {
 		c.leaveScopeBlock(enter)
 		c.popScope()
 	}
+	if scope.strict {
+		c.checkLegacyOctal(0, len(in.File.Source())+1)
+	}
+	c.throwLegacyOctal()
 
 	scope.finaliseVarAlloc(0)
 	c.stringCache = nil
@@ -1400,6 +1420,10 @@ func (c *compiler) emit(instructions ...instruction) {
 }
 
 func (c *compiler) throwSyntaxError(offset int, msg string) {
+	if e := c.octalError; e != nil && e.end <= offset {
+		// V8 reported it at the end of its function, before this.
+		offset, msg = e.offset, e.msg
+	}
 	panic(&CompilerSyntaxError{
 		CompilerError: CompilerError{
 			File:    c.p.src,
@@ -1409,12 +1433,49 @@ func (c *compiler) throwSyntaxError(offset int, msg string) {
 	})
 }
 
+// recordLegacyOctal notes a legacy octal escape or literal in strict code,
+// which V8 reports only when the strict function (or script) it is in ends.
+func (c *compiler) recordLegacyOctal(offset int, msg string) {
+	c.legacyOctals = append(c.legacyOctals, legacyOctal{offset: offset, msg: msg})
+}
+
+// checkLegacyOctal is the check V8 makes at the end of a strict function or
+// script, which ends at end: V8's scanner keeps only the last legacy octal
+// escape or literal it read, and reports it if it is in the function. So a
+// function reports the last one in it, and the function that ends first
+// reports first. The ones in it are those recorded since mark, when its
+// compilation began.
+func (c *compiler) checkLegacyOctal(mark, end int) {
+	if e := c.octalError; e != nil && e.end <= end || mark >= len(c.legacyOctals) {
+		return
+	}
+	last := &c.legacyOctals[mark]
+	for i := mark + 1; i < len(c.legacyOctals); i++ {
+		if o := &c.legacyOctals[i]; o.offset > last.offset {
+			last = o
+		}
+	}
+	c.octalError = &legacyOctalError{legacyOctal: *last, end: end}
+}
+
+// throwLegacyOctal throws the error checkLegacyOctal found, once the whole
+// program is compiled.
+func (c *compiler) throwLegacyOctal() {
+	if e := c.octalError; e != nil {
+		c.throwSyntaxError(e.offset, e.msg)
+	}
+}
+
 func (c *compiler) throwSyntaxErrorf(offset int, format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	if e := c.octalError; e != nil && e.end <= offset {
+		offset, msg = e.offset, e.msg
+	}
 	panic(&CompilerSyntaxError{
 		CompilerError: CompilerError{
 			File:    c.p.src,
 			Offset:  offset,
-			Message: fmt.Sprintf(format, args...),
+			Message: msg,
 		},
 	})
 }
