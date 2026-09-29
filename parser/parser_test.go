@@ -293,17 +293,17 @@ func TestParserErr(t *testing.T) {
 
 		test(`new abc()."def"`, "(anonymous): Line 1:11 Unexpected string")
 
-		test("/*", "(anonymous): Line 1:3 Unexpected end of input")
+		test("/*", "(anonymous): Line 1:3 Invalid or unexpected token")
 
-		test("/**", "(anonymous): Line 1:4 Unexpected end of input")
+		test("/**", "(anonymous): Line 1:4 Invalid or unexpected token")
 
-		test("/*\n\n\n", "(anonymous): Line 4:1 Unexpected end of input")
+		test("/*\n\n\n", "(anonymous): Line 4:1 Invalid or unexpected token")
 
-		test("/*\n\n\n*", "(anonymous): Line 4:2 Unexpected end of input")
+		test("/*\n\n\n*", "(anonymous): Line 4:2 Invalid or unexpected token")
 
-		test("/*abc", "(anonymous): Line 1:6 Unexpected end of input")
+		test("/*abc", "(anonymous): Line 1:6 Invalid or unexpected token")
 
-		test("/*abc  *", "(anonymous): Line 1:9 Unexpected end of input")
+		test("/*abc  *", "(anonymous): Line 1:9 Invalid or unexpected token")
 
 		test("\n]", "(anonymous): Line 2:1 Unexpected token ]")
 
@@ -379,9 +379,9 @@ func TestParserErr(t *testing.T) {
 
 		test("function(){}", "(anonymous): Line 1:9 Function statements require a function name")
 
-		test("\n/*/", "(anonymous): Line 2:4 Unexpected end of input")
+		test("\n/*/", "(anonymous): Line 2:4 Invalid or unexpected token")
 
-		test("/*/.source", "(anonymous): Line 1:11 Unexpected end of input")
+		test("/*/.source", "(anonymous): Line 1:11 Invalid or unexpected token")
 
 		test("var class", "(anonymous): Line 1:5 Unexpected token class")
 
@@ -553,7 +553,7 @@ func TestParser(t *testing.T) {
 
 		test("/*****/", nil)
 
-		test("/*", "(anonymous): Line 1:3 Unexpected end of input")
+		test("/*", "(anonymous): Line 1:3 Invalid or unexpected token")
 
 		test("#", "(anonymous): Line 1:1 Invalid or unexpected token")
 
@@ -746,7 +746,7 @@ func TestParser(t *testing.T) {
 		test("var regExp = /=/;", nil)
 
 		// S7.8.5_A1.2_T1
-		test("/*/", "(anonymous): Line 1:4 Unexpected end of input")
+		test("/*/", "(anonymous): Line 1:4 Invalid or unexpected token")
 
 		// Sbp_7.9_A9_T3
 		test(`

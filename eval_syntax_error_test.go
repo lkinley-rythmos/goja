@@ -47,3 +47,58 @@ func TestCompilerSyntaxErrorV8Message(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenCommentSyntaxErrorNode18(t *testing.T) {
+	// A comment left open is an illegal token in V8 (Node.js 18.20.3's
+	// messages), not the end of the input.
+	r := New()
+	v, err := r.RunString(`({
+		ev(src) { try { return "ok " + String((0, eval)(src)); } catch (e) { return e.name + ": " + e.message; } },
+		fn(src) { try { new Function(src); return "ok"; } catch (e) { return e.name + ": " + e.message; } },
+	})`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := v.ToObject(r)
+	for _, tc := range []struct{ how, src, want string }{
+		{"ev", "/* abc", "SyntaxError: Invalid or unexpected token"},
+		{"fn", "/* abc", "SyntaxError: Invalid or unexpected token"},
+		{"ev", "a /* x", "SyntaxError: Invalid or unexpected token"},
+		{"fn", "a /* x", "SyntaxError: Invalid or unexpected token"},
+		{"ev", "/*\n", "SyntaxError: Invalid or unexpected token"},
+		{"fn", "/*\n", "SyntaxError: Invalid or unexpected token"},
+		{"ev", "/*\n*", "SyntaxError: Invalid or unexpected token"},
+		{"fn", "/*\n*", "SyntaxError: Invalid or unexpected token"},
+		{"ev", "x = 1 /*", "SyntaxError: Invalid or unexpected token"},
+		{"fn", "x = 1 /*", "SyntaxError: Invalid or unexpected token"},
+		{"ev", "/**", "SyntaxError: Invalid or unexpected token"},
+		{"fn", "/**", "SyntaxError: Invalid or unexpected token"},
+		{"ev", "/*/", "SyntaxError: Invalid or unexpected token"},
+		{"fn", "/*/", "SyntaxError: Invalid or unexpected token"},
+		{"ev", "/* */ /*", "SyntaxError: Invalid or unexpected token"},
+		{"fn", "/* */ /*", "SyntaxError: Invalid or unexpected token"},
+		{"ev", "`${/*`", "SyntaxError: Invalid or unexpected token"},
+		{"fn", "`${/*`", "SyntaxError: Invalid or unexpected token"},
+		{"ev", "a\n/* x\n y", "SyntaxError: Invalid or unexpected token"},
+		{"fn", "a\n/* x\n y", "SyntaxError: Invalid or unexpected token"},
+		{"ev", "/* x */ 1", "ok 1"},
+		{"fn", "/* x */ 1", "ok"},
+		{"ev", "--> x", "ok undefined"},
+		{"fn", "--> x", "ok"},
+		{"ev", "/*\n*/ --> x", "ok undefined"},
+		{"fn", "/*\n*/ --> x", "ok"},
+		{"ev", "<!-- x", "ok undefined"},
+		{"fn", "<!-- x", "ok"},
+		{"ev", "x\n<!-- /*", "ReferenceError: x is not defined"},
+		{"fn", "x\n<!-- /*", "ok"},
+	} {
+		fn, _ := AssertFunction(o.Get(tc.how))
+		res, err := fn(o, r.ToValue(tc.src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := res.String(); got != tc.want {
+			t.Errorf("%s %q: %q, want %q", tc.how, tc.src, got, tc.want)
+		}
+	}
+}
