@@ -63,72 +63,12 @@ func writeHex4(b *strings.Builder, i int) {
 	b.WriteByte(hex[i&0xF])
 }
 
-// Convert any valid surrogate pairs in the form of \uXXXX\uXXXX to unicode characters
 func convertRegexpToUnicode(patternStr string) string {
-	var sb strings.Builder
-	pos := 0
-	for i := 0; i < len(patternStr)-11; {
-		r, size := utf8.DecodeRuneInString(patternStr[i:])
-		if r == '\\' {
-			i++
-			if patternStr[i] == 'u' && patternStr[i+5] == '\\' && patternStr[i+6] == 'u' {
-				if first, ok := decodeHex(patternStr[i+1 : i+5]); ok {
-					if isUTF16FirstSurrogate(uint16(first)) {
-						if second, ok := decodeHex(patternStr[i+7 : i+11]); ok {
-							if isUTF16SecondSurrogate(uint16(second)) {
-								r = utf16.DecodeRune(rune(first), rune(second))
-								sb.WriteString(patternStr[pos : i-1])
-								sb.WriteRune(r)
-								i += 11
-								pos = i
-								continue
-							}
-						}
-					}
-				}
-			}
-			i++
-		} else {
-			i += size
-		}
-	}
-	if pos > 0 {
-		sb.WriteString(patternStr[pos:])
-		return sb.String()
-	}
-	return patternStr
+	return parser.ConvertRegExpToUnicode(patternStr)
 }
 
-// Convert any extended unicode characters to UTF-16 in the form of \uXXXX\uXXXX
 func convertRegexpToUtf16(patternStr string) string {
-	var sb strings.Builder
-	pos := 0
-	escaped := false
-	for i := 0; i < len(patternStr); {
-		r, size := utf8.DecodeRuneInString(patternStr[i:])
-		if r > 0xFFFF {
-			if escaped {
-				// An identity escape of the first surrogate: the character
-				// itself.
-				sb.WriteString(patternStr[pos : i-1])
-			} else {
-				sb.WriteString(patternStr[pos:i])
-			}
-			first, second := utf16.EncodeRune(r)
-			sb.WriteString(`\u`)
-			writeHex4(&sb, int(first))
-			sb.WriteString(`\u`)
-			writeHex4(&sb, int(second))
-			pos = i + size
-		}
-		i += size
-		escaped = r == '\\' && !escaped
-	}
-	if pos > 0 {
-		sb.WriteString(patternStr[pos:])
-		return sb.String()
-	}
-	return patternStr
+	return parser.ConvertRegExpToUTF16(patternStr)
 }
 
 // convert any broken UTF-16 surrogate pairs to \uXXXX
@@ -444,20 +384,6 @@ func chargeRegexp(r *Runtime, n int64) {
 	}
 }
 
-// regexpSourceError puts the source of a pattern back into a syntax error's
-// message, which shows the pattern as V8 does: the parser saw the pattern
-// with its surrogate pair escapes converted.
-func regexpSourceError(err error, converted, source string) error {
-	if converted == source {
-		return err
-	}
-	prefix := "Invalid regular expression: /" + converted + "/: "
-	if msg := err.Error(); strings.HasPrefix(msg, prefix) {
-		return errors.New("Invalid regular expression: /" + source + "/: " + msg[len(prefix):])
-	}
-	return err
-}
-
 func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPattern, err error) {
 	var global, ignoreCase, multiline, dotAll, sticky, unicode bool
 	var wrapper *regexpWrapper
@@ -586,7 +512,7 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 	} else {
 		var incompat parser.RegexpErrorIncompatible
 		if !errors.As(err, &incompat) {
-			err = regexpSourceError(err, patternStr, source)
+			err = parser.RegExpSourceError(err, patternStr, source)
 			return
 		}
 	}

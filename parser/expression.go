@@ -286,6 +286,8 @@ func (self *_parser) parseRegExpLiteral() *ast.RegExpLiteral {
 		endOffset = self.chrOffset
 		if !validRegExpFlags(flags) {
 			self.error(idx, "Invalid regular expression flags")
+		} else {
+			self.validateRegExpLiteral(idx, pattern, flags)
 		}
 	}
 	self.next()

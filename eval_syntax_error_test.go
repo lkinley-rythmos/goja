@@ -32,6 +32,10 @@ func TestCompilerSyntaxErrorV8Message(t *testing.T) {
 		{"var x = {;", "Unexpected token ';'"},
 		{"'use strict'; 010", "Octal literals are not allowed in strict mode."},
 		{`"\u{110000}"`, "Undefined Unicode code-point"},
+		{"/(/", "Invalid regular expression: /(/: Unterminated group"},
+		{"/(/u; )", "Invalid regular expression: /(/: Unterminated group"},
+		{"x = /[/", "Invalid regular expression: missing /"},
+		{"/x/gg", "Invalid regular expression flags"},
 	} {
 		_, err := Compile("rule.js", tc.src, false)
 		se, ok := err.(*CompilerSyntaxError)

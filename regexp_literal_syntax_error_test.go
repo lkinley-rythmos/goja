@@ -7,7 +7,8 @@ import "testing"
 // characters that follow it ("/x/in"), and invalid ones are "Invalid regular
 // expression flags", before any error in its pattern; an error in its
 // pattern has the prefix "Invalid regular expression: /<pattern>/: ", with
-// or without u. Node.js 18.20.3 recorded the messages.
+// or without u, and is reported when the literal is parsed, before an error
+// after it. Node.js 18.20.3 recorded the messages.
 func TestRegExpLiteralSyntaxErrorNode18(t *testing.T) {
 	r := New()
 	v, err := r.RunString(`({
@@ -86,6 +87,27 @@ func TestRegExpLiteralSyntaxErrorNode18(t *testing.T) {
 		{"/\\1/u", "SyntaxError: Invalid regular expression: /\\1/: Invalid escape"},
 		{"/(?)/", "SyntaxError: Invalid regular expression: /(?)/: Invalid group"},
 		{"/[\\d-z]/u", "SyntaxError: Invalid regular expression: /[\\d-z]/: Invalid character class"},
+		{"/(/; )", "SyntaxError: Invalid regular expression: /(/: Unterminated group"},
+		{"/(/u; )", "SyntaxError: Invalid regular expression: /(/: Unterminated group"},
+		{"/(?<=/+\\k<a>/imsu", "SyntaxError: Invalid regular expression: /(?<=/: Unterminated group"},
+		{"/[😀-😁]/; )", "SyntaxError: Invalid regular expression: /[😀-😁]/: Range out of order in character class"},
+		{"/[😀-😁]/u; )", "SyntaxError: Unexpected token ')'"},
+		{"/[\\ud83d\\ude00-\\ud83d\\ude01]/u; )", "SyntaxError: Unexpected token ')'"},
+		{"/[\\ud83d\\ude01-\\ud83d\\ude00]/u; )", "SyntaxError: Invalid regular expression: /[\\ud83d\\ude01-\\ud83d\\ude00]/: Range out of order in character class"},
+		{"/\\ud83d\\ude00{/u; )", "SyntaxError: Invalid regular expression: /\\ud83d\\ude00{/: Incomplete quantifier"},
+		{"/(/d", "SyntaxError: Invalid regular expression: /(/: Unterminated group"},
+		{"/(/dg; )", "SyntaxError: Invalid regular expression: /(/: Unterminated group"},
+		{"/a{2,1}/; )", "SyntaxError: Invalid regular expression: /a{2,1}/: numbers out of order in {} quantifier"},
+		{"/\\p{Foo}/u; )", "SyntaxError: Invalid regular expression: /\\p{Foo}/: Invalid property name"},
+		{"/\\p{Foo}/; )", "SyntaxError: Unexpected token ')'"},
+		{"function f() { return /)/ } )", "SyntaxError: Invalid regular expression: /)/: Unmatched ')'"},
+		{"/(?<a>)\\k<b>/; )", "SyntaxError: Invalid regular expression: /(?<a>)\\k<b>/: Invalid named capture referenced"},
+		{"/\\k<b>/; )", "SyntaxError: Unexpected token ')'"},
+		{"x = /[/; )", "SyntaxError: Invalid regular expression: missing /"},
+		{"/x/; )", "SyntaxError: Unexpected token ')'"},
+		{"/(?:x{200000}){20}/; )", "SyntaxError: Unexpected token ')'"},
+		{"/(?<a>)(?<a>)/; )", "SyntaxError: Invalid regular expression: /(?<a>)(?<a>)/: Duplicate capture group name"},
+		{"/(/gg; )", "SyntaxError: Invalid regular expression flags"},
 	})
 	check("fn", []struct{ src, want string }{
 		{"/[/", "SyntaxError: Invalid regular expression: missing /"},
