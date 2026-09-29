@@ -54,10 +54,13 @@ func TestSpreadCallInterrupt(t *testing.T) {
 		{"spread", `g(...a)`, func(time.Duration) time.Duration { return 50 * time.Millisecond }},
 		// After the spread, while the arguments object is built.
 		{"arguments", `f(...a)`, func(spread time.Duration) time.Duration { return spread + spread/4 + 50*time.Millisecond }},
+		// A strict function's arguments object is unmapped, and built apart.
+		{"strict arguments", `h(...a)`, func(spread time.Duration) time.Duration { return spread + spread/4 + 50*time.Millisecond }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			vm := New()
-			if _, err := vm.RunString(`var a = new Array(4e6); function f() { return arguments.length; } function g() { return 0; }`); err != nil {
+			if _, err := vm.RunString(`var a = new Array(4e6); function f() { return arguments.length; } function g() { return 0; }
+				function h() { 'use strict'; return arguments.length; }`); err != nil {
 				t.Fatal(err)
 			}
 			// How long the spread alone takes, once the stack has grown.
