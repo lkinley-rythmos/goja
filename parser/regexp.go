@@ -111,12 +111,9 @@ type _RegExp_parser struct {
 	canonChars                map[rune]canonChar
 	backref                   bool
 
-	// The class being scanned ignoring case: its items, and what adding
-	// their case variants costs Go's regexp (in units) and regexp2 (in code
-	// points); and the classes rewritten as their sets, by their text.
+	// The items of the class being scanned, and the classes rewritten as
+	// their sets closed under case folding, by their text.
 	classItems    int
-	classGoFold   int
-	classR2Span   int64
 	foldedClasses map[string]foldedClass
 }
 
@@ -332,21 +329,21 @@ func (self *_RegExp_parser) scanTerm() {
 			self.writeRegexp2(start, self.chrOffset, self.regexp2Boundary(esc == 'B'))
 		}
 		if self.canonFold() && self.err == nil && !self.backref && !isCharacterClassEscape(esc) && esc != 'b' && esc != 'B' {
-			if set, isClass := nonUnicodeClassAtom(self.str[start:self.chrOffset], false); !isClass {
+			if self.unicode {
+				if esc != 'p' && esc != 'P' {
+					self.writeCanonChar(start, self.chrOffset, classAtomValue(self.str[start:self.chrOffset]))
+				}
+			} else if set, isClass := nonUnicodeClassAtom(self.str[start:self.chrOffset], false); !isClass {
 				self.writeCanonChar(start, self.chrOffset, set[0])
 			}
 		}
-		if self.ignoreCase && self.unicode && self.err == nil {
-			// See termCost.
-			switch esc {
-			case 'w':
-				self.writeRegexp2(start, self.chrOffset, regexp2FoldWord)
-			case 'W':
-				self.writeRegexp2(start, self.chrOffset, regexp2FoldNonWord)
-			case 'S':
-				self.writeRegexp2(start, self.chrOffset, `(?-i:\S)`)
-			case 'D':
-				self.writeRegexp2(start, self.chrOffset, `(?-i:\D)`)
+		if self.ignoreCase && self.unicode && self.err == nil && (esc == 'w' || esc == 'W') {
+			// With the u and i flags, \w stands for U+017F and U+212A too,
+			// whose case variants are word characters (see regexp2FoldWord).
+			if esc == 'w' {
+				self.rewriteAtom(start, self.chrOffset, goFoldWord, regexp2FoldWord)
+			} else {
+				self.rewriteAtom(start, self.chrOffset, goFoldNonWord, regexp2FoldNonWord)
 			}
 		}
 		self.prev = kind
@@ -360,9 +357,6 @@ func (self *_RegExp_parser) scanTerm() {
 	case '.':
 		self.startAtom()
 		self.count(costDot)
-		if self.ignoreCase && self.unicode {
-			self.writeRegexp2(self.chrOffset, self.offset, `(?-i:.)`)
-		}
 		if self.dotAll {
 			self.pass()
 		} else {
@@ -508,7 +502,14 @@ func (self *_RegExp_parser) scanUnicodeTermChar() {
 	default:
 		self.startAtom()
 		self.count(costLiteral)
-		self.pass()
+		if self.canonFold() {
+			chr, start := self.chr, self.chrOffset
+			self.markCanon()
+			self.pass()
+			self.writeCanonChar(start, self.chrOffset, chr)
+		} else {
+			self.pass()
+		}
 		self.prev = termAtom
 	}
 }
@@ -798,7 +799,7 @@ func (self *_RegExp_parser) scanBracket() {
 	self.classSet = nil
 	self.classProps = self.classProps[:0]
 	self.classGoStart = -1
-	self.classItems, self.classGoFold, self.classR2Span = 0, 0, 0
+	self.classItems = 0
 	if self.ignoreCase {
 		if self.passOffset != -1 {
 			self.stopPassing()
@@ -833,13 +834,13 @@ func (self *_RegExp_parser) scanBracket() {
 				}
 				if !self.refused {
 					self.classSet = self.classSet.union(runeSet{lo, hi})
-					self.classItem(runeSet{lo, hi}, false, false)
+					self.classItem(runeSet{lo, hi})
 				}
 			} else if self.err == nil && !self.refused {
 				// Past the bound the pattern is only validated.
 				set := self.classAtomSet(left)
 				self.classSet = self.classSet.union(set)
-				self.classItem(set, isWideClassEscape(left), isWordClassEscape(left))
+				self.classItem(set)
 			}
 			continue
 		}
@@ -873,7 +874,7 @@ func (self *_RegExp_parser) scanBracket() {
 			self.syntaxError("Range out of order in character class")
 			return
 		}
-		self.classItem(runeSet{lo[0], hi[0]}, false, false)
+		self.classItem(runeSet{lo[0], hi[0]})
 	}
 	if self.chr != ']' {
 		self.fatal("Unterminated character class")
@@ -894,8 +895,6 @@ func (self *_RegExp_parser) scanBracket() {
 		self.writeRegexp2Class(negated)
 	} else if self.canonFold() {
 		self.canonFoldClass(negated)
-	} else if self.ignoreCase {
-		self.foldClass(negated)
 	}
 }
 
@@ -907,19 +906,8 @@ func (self *_RegExp_parser) nonUnicodeClassItem(atom string) {
 		return
 	}
 	// Canonicalize takes no variants of \w's characters for word characters.
-	set, isClass := nonUnicodeClassAtom(atom, false)
-	self.classItem(set, isClass && isWideClassEscape(atom), isClass && isWordClassEscape(atom))
-}
-
-// isWideClassEscape reports whether a class atom is a class escape standing
-// for most of Unicode.
-func isWideClassEscape(atom string) bool {
-	return len(atom) == 2 && atom[0] == '\\' && (atom[1] == 'W' || atom[1] == 'S' || atom[1] == 'D')
-}
-
-// isWordClassEscape reports whether a class atom is \w or \W.
-func isWordClassEscape(atom string) bool {
-	return len(atom) == 2 && atom[0] == '\\' && (atom[1] == 'w' || atom[1] == 'W')
+	set, _ := nonUnicodeClassAtom(atom, false)
+	self.classItem(set)
 }
 
 // expandGo and expandRegexp2 count what a property escape costs an engine
@@ -948,19 +936,11 @@ func (self *_RegExp_parser) expandRegexp2(units int) {
 }
 
 // writeGoClass rewrites the class that has just been scanned, which has
-// property escapes, for Go's regexp when ignoring case and one of them has no
-// name Go's regexp knows: Go's regexp adds the case variants of the others
-// by trying every code point, so it gets the set the class stands for,
-// matched case-sensitively.
+// property escapes, for Go's regexp when ignoring case: it gets the set the
+// class stands for, closed under case folding and matched case-sensitively
+// (see canonFold).
 func (self *_RegExp_parser) writeGoClass(negated bool) {
 	if self.classGoStart < 0 || !self.goUsed() {
-		return
-	}
-	unnamed := false
-	for _, p := range self.classProps {
-		unnamed = unnamed || p.prop.goRegexpName() == ""
-	}
-	if !unnamed {
 		return
 	}
 	self.goRegexp.Truncate(self.classGoStart)
@@ -1473,6 +1453,11 @@ func (self *_RegExp_parser) scanUnicodeDecimalEscape(inClass bool) {
 		return
 	}
 	self.error(false, "re2: Invalid \\%d <backreference>", value)
+	self.backref = true
+	if self.canonFold() {
+		// regexp2 compares it ignoring case.
+		self.writeRegexp2(self.escStart, self.chrOffset, "(?i:"+self.str[self.escStart:self.chrOffset]+")")
+	}
 }
 
 // scanUnicodeNamedReference scans \k<name> with the u flag.
@@ -1570,56 +1555,49 @@ func (self *_RegExp_parser) scanPropertyEscape(inClass bool) {
 	self.writeRegexp2Property(prop, negate)
 }
 
-// writeGoProperty writes a property escape for Go's regexp. Go's regexp knows
-// General_Category and Script by name, and when ignoring case, adds the case
-// variants of what it is given. With a name it takes them from its tables,
-// which can lack some, and negates after adding them, where ECMAScript
-// negates first; so the name comes with the variants it misses. For other
-// sets it tries every code point, so when ignoring case they are given
-// closed under case folding, matched case-sensitively (outside a class).
+// writeGoProperty writes a property escape for Go's regexp, which knows
+// General_Category and Script by name; other sets are written out.
+// Ignoring case, the escape is written as its set closed under case folding
+// and matched case-sensitively (see canonFold), and a class with a property
+// escape is written whole (see writeGoClass).
 func (self *_RegExp_parser) writeGoProperty(prop regexpProperty, negate, inClass bool) {
-	if name := prop.goRegexpName(); name != "" {
-		switch {
-		case inClass:
-			self.expandGo(expansionClassTable * prop.ranges())
-		case self.ignoreCase && !negate:
-			// Go's regexp adds the case variants of the table's ranges,
-			// sorting them in with its own.
-			self.expandGo(prop.ranges() + expansionClassTable*len(prop.foldExtra(false))/2)
-		case self.ignoreCase:
-			self.expandGo(5 * prop.ranges() / 4)
-		default:
-			self.expandGo(2 * prop.ranges() / 5)
-		}
-		var extra runeSet
-		switch {
-		case !self.ignoreCase:
-		case !negate:
-			extra = prop.goFoldMissing()
-		case !inClass:
-			// The negation, and the characters whose case variants are
-			// not all in the property, matched case-sensitively.
-			self.writeString(`(?-i:`)
+	if self.ignoreCase && inClass {
+		// The class is written whole (see writeGoClass).
+		return
+	}
+	name := prop.goRegexpName()
+	if self.ignoreCase && !prop.closed(negate) {
+		// The set closed under case folding, or the table and what makes
+		// up its closure (the case variants of its characters, or for its
+		// negation, its characters some of whose case variants are not in
+		// it), whichever costs less.
+		c := prop.class(negate, true, false)
+		extra := prop.foldExtra(false)
+		if negate {
 			extra = prop.notClosed()
-			self.expandGo(expansionTextRange * len(extra) / 2)
-			if len(extra) > 0 {
-				self.writeByte('[')
-			}
-			self.writeString(`\P{`)
-			self.writeString(name)
-			self.writeByte('}')
-			writeRanges(&self.goRegexp, extra, `\x`)
-			if len(extra) > 0 {
-				self.writeByte(']')
-			}
-			self.writeByte(')')
-			return
-		default:
-			extra = prop.foldExtra(true)
 		}
-		self.expandGo(expansionTextRange * len(extra) / 2)
-		if !inClass && len(extra) > 0 {
-			self.writeByte('[')
+		if units := classUnits([]string{name}, extra, false); name == "" || c.units <= units {
+			self.expandGo(c.units)
+			self.writeString(c.text)
+			return
+		}
+		if negate {
+			self.writeString(`[\P{`)
+		} else {
+			self.writeString(`[\p{`)
+		}
+		self.writeString(name)
+		self.writeByte('}')
+		writeRanges(&self.goRegexp, extra, `\x`)
+		self.writeByte(']')
+		self.expandGo(classUnits([]string{name}, extra, false))
+		return
+	}
+	if name != "" {
+		if inClass {
+			self.expandGo(expansionClassTable * prop.ranges())
+		} else {
+			self.expandGo(2 * prop.ranges() / 5)
 		}
 		if negate {
 			self.writeString(`\P{`)
@@ -1628,26 +1606,15 @@ func (self *_RegExp_parser) writeGoProperty(prop regexpProperty, negate, inClass
 		}
 		self.writeString(name)
 		self.writeByte('}')
-		writeRanges(&self.goRegexp, extra, `\x`)
-		if !inClass && len(extra) > 0 {
-			self.writeByte(']')
-		}
 		return
 	}
+	var c propertyClass
 	if inClass {
-		c := prop.classItems(negate, false)
-		self.expandGo(c.units)
-		self.writeString(c.text)
-		return
+		c = prop.classItems(negate, false)
+	} else {
+		c = prop.class(negate, false, false)
 	}
-	c := prop.class(negate, self.ignoreCase, false)
 	self.expandGo(c.units)
-	if self.ignoreCase {
-		self.writeString(`(?-i:`)
-		self.writeString(c.text)
-		self.writeByte(')')
-		return
-	}
 	self.writeString(c.text)
 }
 

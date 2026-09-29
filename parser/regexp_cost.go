@@ -1,7 +1,6 @@
 package parser
 
 import (
-	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -21,16 +20,10 @@ import (
 // r2Fold); a class of n items costs it more per item the more it has (see
 // regexp2TextUnits).
 //
-// Ignoring case, Go's regexp adds the case variants of a class by trying
-// every code point of its ranges between A and U+1E943 (about 50 ns each:
-// [A-\uffef] takes 3 ms), and regexp2 of every code point of its ranges
-// and class escapes (about 40 ns each; \W, \S and \D stand for over a
-// million, and take 50 ms each, . 25 ms). So a class whose case variants
-// would cost more than rewriting it (classFoldUnits) is given to both as
-// the set it stands for, closed under case folding and matched
-// case-sensitively (see foldClass); and regexp2 gets the escapes that stand
-// for most of Unicode, and \w, matched case-sensitively as the sets they
-// stand for ignoring case, which they are closed under.
+// Ignoring case, both engines get the pattern case-sensitively, with each
+// character that has case variants written as the class of them, and each
+// class as its set closed under case folding (see canonFold), which costs
+// them the more; regexp2 compares a backreference ignoring case.
 type termCost struct {
 	goUnits, goInsts int
 	r2, r2Fold       int
@@ -59,26 +52,17 @@ const (
 	// A class costs Go's regexp goClassUnits, and goClassItemUnits an item.
 	goClassUnits     = 5
 	goClassItemUnits = 3
-	// Ignoring case, Go's regexp adds the case variants of \w and \W in
-	// about 4 µs, and of \s and \S (written as a class of 25) in 3 µs.
+	// Ignoring case, Go's regexp parses \w and \W, written as their sets
+	// ignoring case, in about 4 µs, and \s and \S (written as a class of
+	// 25) in 3 µs.
 	goFoldWordUnits  = 40
 	goFoldSpaceUnits = 30
 	// A negated class costs Go's regexp goNegatedUnits more.
 	goNegatedUnits = 5
-	// Case variants are added to ranges between these (Go's regexp/syntax
-	// minFold and maxFold).
-	goMinFold = 0x41
-	goMaxFold = 0x1e943
-	// regexp2 adds the case variants of a class ignoring case in about 4 µs,
-	// 1 µs an item, 30 ns a code point and 200 ns one with case variants
-	// (Go's regexp in 50 ns a code point and 50 ns one with case variants).
-	r2FoldClassUnits = 40
-	r2FoldItemUnits  = 10
 	// classFoldUnits is what rewriting a class as its set closed under case
-	// folding costs, for both engines; a class is rewritten when adding its
-	// case variants would cost them more. The closure takes one pass over
-	// the set and the table of case variants, however wide the set is:
-	// about 7 µs with Canonicalize (canonClosure) and 14 µs with simple case
+	// folding costs, for both engines. The closure takes one pass over the
+	// set and the table of case variants, however wide the set is: about
+	// 7 µs with Canonicalize (canonClosure) and 14 µs with simple case
 	// folding (caseClosure), which the units round up; writing the set is
 	// counted by its ranges.
 	classFoldUnits = 400
@@ -142,98 +126,14 @@ func (self *_RegExp_parser) countQuantifier(min, max int) {
 	}
 }
 
-// classItem counts an item of a class ignoring case: what adding its case
-// variants costs each engine, from its set; wide is a class escape standing
-// for most of Unicode, and word \w or \W.
-func (self *_RegExp_parser) classItem(set runeSet, wide, word bool) {
+// classItem counts an item of a class, and without the u flag, ignoring
+// case, adds its set to the class's (with the u flag the class's set is
+// kept anyway).
+func (self *_RegExp_parser) classItem(set runeSet) {
 	self.classItems++
-	if !self.ignoreCase {
-		return
-	}
-	if !self.unicode {
-		// With the u flag the class's set is kept anyway.
+	if self.ignoreCase && !self.unicode {
 		self.classSet = self.classSet.union(set)
 	}
-	if word {
-		self.classGoFold += goFoldWordUnits
-	}
-	if wide {
-		self.classR2Span += unicode.MaxRune + 1
-		return
-	}
-	for i := 0; i < len(set); i += 2 {
-		lo, hi := set[i], set[i+1]
-		cased := int64(casedIn(lo, hi))
-		self.classR2Span += int64(hi-lo) + 1 + 6*cased
-		if lo <= goMinFold && hi >= goMaxFold || hi < goMinFold || lo > goMaxFold {
-			continue
-		}
-		self.classGoFold += int(min(hi, goMaxFold)-max(lo, goMinFold)+1)/2 + int(cased)/2
-	}
-}
-
-// CasedIn returns how many code points from lo to hi have case variants
-// (under simple case folding).
-func CasedIn(lo, hi rune) int {
-	return casedIn(lo, hi)
-}
-
-func casedIn(lo, hi rune) int {
-	runes, _ := caseFoldOrbits()
-	i := sort.Search(len(runes), func(i int) bool { return runes[i] >= lo })
-	j := sort.Search(len(runes), func(i int) bool { return runes[i] > hi })
-	return j - i
-}
-
-// foldClass counts what adding the case variants of the class just scanned
-// costs the engines, or rewrites it for both when that would cost them more
-// than its set (see termCost). The set is closed under simple case folding,
-// which is what Go's regexp matches ignoring case, and ECMAScript with the u
-// flag.
-func (self *_RegExp_parser) foldClass(negated bool) {
-	r2Fold := r2FoldClassUnits + r2FoldItemUnits*self.classItems + int(min(self.classR2Span/3, maxRegexpExpansion+1))
-	if self.classGoFold+r2Fold <= classFoldUnits {
-		if self.goUsed() {
-			self.goExpansion += self.classGoFold
-		}
-		self.expandRegexp2(r2Fold)
-		return
-	}
-	end := self.chrOffset // after the ]
-	text := self.str[self.classStart:end]
-	rw, ok := self.foldedClasses[text]
-	if !ok {
-		set := caseClosure(self.classSet)
-		if negated {
-			set = set.complement()
-		}
-		var goText, r2Text strings.Builder
-		goText.WriteString(`(?-i:`)
-		rw.goUnits = writeClass(&goText, set, false)
-		goText.WriteByte(')')
-		r2Text.WriteString(`(?-i:`)
-		if self.unicode {
-			rw.r2Units = writeClass(&r2Text, set, true)
-		} else {
-			rw.r2Units = writeBMPClass(&r2Text, set)
-		}
-		r2Text.WriteByte(')')
-		rw.goText, rw.r2Text = goText.String(), r2Text.String()
-		if self.foldedClasses == nil {
-			self.foldedClasses = make(map[string]foldedClass)
-		}
-		self.foldedClasses[text] = rw
-		self.expandGo(classFoldUnits)
-		self.expandRegexp2(classFoldUnits)
-	}
-	if self.goUsed() && self.classGoStart >= 0 {
-		self.goRegexp.Truncate(self.classGoStart)
-		self.goRegexp.WriteString(rw.goText)
-		self.expandGo(rw.goUnits)
-	}
-	self.restartRegexp2Class()
-	self.writeRegexp2(self.classStart, end, rw.r2Text)
-	self.expandRegexp2(rw.r2Units)
 }
 
 // foldedClass is a class rewritten for both engines as its set closed under
@@ -297,14 +197,15 @@ func writeBMPClass(b *strings.Builder, s runeSet) int {
 	return regexp2TextUnits(len(bmp) / 2)
 }
 
-// Case-insensitive regexp2 is given these for the class escapes \w and \W,
-// and those standing for most of Unicode: the sets they stand for ignoring
-// case, which they are closed under (\w and \W include the characters whose
-// case variants are word characters, U+017F and U+212A, as Go's regexp and ECMAScript
-// with the u flag have them).
+// With the u and i flags the engines are given these for the class escapes
+// \w and \W: the sets they stand for ignoring case, which they are closed
+// under (\w includes the characters whose case variants are word
+// characters, U+017F and U+212A, and \W does not).
 const (
-	regexp2FoldWord    = `(?-i:[\w\u017f\u212a])`
-	regexp2FoldNonWord = `(?-i:[^\w\u017f\u212a])`
+	goFoldWord         = `[0-9A-Z_a-z\x{17f}\x{212a}]`
+	goFoldNonWord      = `[^0-9A-Z_a-z\x{17f}\x{212a}]`
+	regexp2FoldWord    = `[\w\u017f\u212a]`
+	regexp2FoldNonWord = `[^\w\u017f\u212a]`
 )
 
 // regexp2Boundary returns what regexp2 is given for \b (or \B, negated):

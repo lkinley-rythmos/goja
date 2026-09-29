@@ -6,7 +6,6 @@ import (
 	"regexp"
 	"regexp/syntax"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,7 +15,6 @@ import (
 	"unsafe"
 
 	"github.com/dlclark/regexp2/v2"
-	"github.com/dop251/goja/parser"
 	"github.com/dop251/goja/unistring"
 )
 
@@ -226,7 +224,7 @@ func regexpNestingTooDeep(src string) bool {
 	return false
 }
 
-func compileRegexp2(src string, multiline, dotAll, ignoreCase, unicode bool) (*regexp2Wrapper, error) {
+func compileRegexp2(src string, multiline, dotAll, unicode bool) (*regexp2Wrapper, error) {
 	if regexpNestingTooDeep(src) {
 		return nil, fmt.Errorf("Invalid regular expression (regexp2): %s (expression nests too deeply)", src)
 	}
@@ -236,9 +234,6 @@ func compileRegexp2(src string, multiline, dotAll, ignoreCase, unicode bool) (*r
 	}
 	if dotAll {
 		opts |= regexp2.Singleline
-	}
-	if ignoreCase {
-		opts |= regexp2.IgnoreCase
 	}
 	if unicode {
 		opts |= regexp2.Unicode
@@ -261,13 +256,13 @@ const maxRegexp2Units = 1 << 20
 // pattern, from its text, and its compile time in units of about 100 ns.
 // Measured on a 64-bit platform (a 32-bit one holds about half as much,
 // but for runs of literal runes): a literal character in a run holds about
-// 5 bytes (17 ignoring case), a node (an escape, an operator, the first literal of a run) 30 to
+// 5 bytes, a node (an escape, an operator, the first literal of a run) 30 to
 // 60, a lookaround 64, a capturing group 125; a class is stored once
 // however often it is used, in under 2 bytes of its text. Compiling takes
-// under 0.5 µs a byte (0.9 µs ignoring case), and a class's ranges more
-// (see parser.regexp2TextUnits). Ignoring case, regexp2 adds the case
-// variants of the characters each class lists (see regexp2Fold).
-func regexp2Estimate(src string, ignoreCase, unicode bool) (size int64, units int) {
+// under 0.5 µs a byte, and a class's ranges more (see
+// parser.regexp2TextUnits). regexp2 is given every pattern case-sensitively
+// (see parser.TransformRegExp2).
+func regexp2Estimate(src string) (size int64, units int) {
 	const (
 		word      = int64(unsafe.Sizeof(uintptr(0)))
 		base      = 512 * word
@@ -280,11 +275,10 @@ func regexp2Estimate(src string, ignoreCase, unicode bool) (size int64, units in
 		classByte = 2            // a byte of each distinct class's text
 		classNode = 24 * word    // each distinct class
 	)
-	run := int64(10) // a further literal in a run
-	unitsByte := 5   // compile time, a byte outside classes
-	if ignoreCase {
-		run, unitsByte = 25*word/8, 10
-	}
+	const (
+		run       = int64(10) // a further literal in a run
+		unitsByte = 5         // compile time, a byte outside classes
+	)
 	size = base
 	var classes map[string]bool
 	inRun := false
@@ -329,13 +323,6 @@ func regexp2Estimate(src string, ignoreCase, unicode bool) (size int64, units in
 			if !classes[cls] {
 				classes[cls] = true
 				size += classNode + classByte*int64(len(cls))
-				// The parser's classes that ignoring case would change
-				// are matched case-sensitively.
-				if ignoreCase && !strings.HasSuffix(src[:i], "(?-i:") {
-					bytes, foldUnits := regexp2Fold(cls)
-					size += bytes
-					units += foldUnits
-				}
 			}
 			n := max(items, 0)
 			units += 10 + 5*n + n*n/30
@@ -382,97 +369,6 @@ func regexp2Estimate(src string, ignoreCase, unicode bool) (size int64, units in
 	return
 }
 
-// regexp2Fold bounds what regexp2 holds for the case variants of a class
-// ignoring case, and the time it takes to add them, in units of 100 ns (see
-// parser.TransformRegExp2, which gives it the classes that would take the
-// longest closed under case folding, matched case-sensitively). Measured:
-// about 16 bytes a character the class lists that has case variants
-// (negated or not), and 200 bytes a class; 4 µs a class, 30 ns a character
-// and 200 ns one with case variants.
-func regexp2Fold(cls string) (bytes int64, units int) {
-	span, cased := regexp2ClassSpan(cls)
-	return min(32<<10, 200+16*int64(cased)), min(1<<20, 40+span/3+2*cased)
-}
-
-// regexp2ClassSpan returns how many characters a class's text lists, and
-// how many of them have case variants: a range's, a character's, and for a
-// class escape, about its size (those standing for most of Unicode count
-// as all of it, and all of them as having case variants).
-func regexp2ClassSpan(cls string) (span, cased int) {
-	const all = 1 << 16
-	body := strings.TrimSuffix(strings.TrimPrefix(cls, "["), "]")
-	body = strings.TrimPrefix(body, "^")
-	for i := 0; i < len(body); {
-		lo, n, single := regexp2ClassAtom(body[i:])
-		i += n
-		if !single {
-			span += lo
-			cased += lo
-			continue
-		}
-		if i+1 < len(body) && body[i] == '-' {
-			if hi, m, ok := regexp2ClassAtom(body[i+1:]); ok {
-				i += 1 + m
-				span += max(hi-lo+1, 1)
-				if hi >= lo {
-					cased += parser.CasedIn(rune(lo), rune(hi))
-				}
-				continue
-			}
-		}
-		span++
-		cased += parser.CasedIn(rune(lo), rune(lo))
-	}
-	return min(span, all), min(cased, all)
-}
-
-// regexp2ClassAtom decodes the class item that s starts with: a character
-// (single), or a class escape and about how many characters it stands for.
-// It returns the item's length.
-func regexp2ClassAtom(s string) (r, n int, single bool) {
-	const all = 1 << 16
-	if s[0] != '\\' || len(s) < 2 {
-		c, w := utf8.DecodeRuneInString(s)
-		return int(c), w, true
-	}
-	hex := func(h string) int {
-		v, err := strconv.ParseUint(h, 16, 32)
-		if err != nil {
-			return 0
-		}
-		return int(v)
-	}
-	switch s[1] {
-	case 'u':
-		if len(s) > 2 && s[2] == '{' {
-			if j := strings.IndexByte(s, '}'); j > 0 {
-				return hex(s[3:j]), j + 1, true
-			}
-		}
-		if len(s) >= 6 {
-			return hex(s[2:6]), 6, true
-		}
-	case 'x':
-		if len(s) >= 4 {
-			return hex(s[2:4]), 4, true
-		}
-	case 'p', 'P':
-		if j := strings.IndexByte(s, '}'); j > 0 {
-			return all, j + 1, false
-		}
-	case 'd':
-		return 10, 2, false
-	case 'w':
-		return 64, 2, false
-	case 's':
-		return 32, 2, false
-	case 'D', 'W', 'S':
-		return all, 2, false
-	}
-	c, w := utf8.DecodeRuneInString(s[1:])
-	return int(c), 1 + w, true
-}
-
 // createRegexp2 compiles regexp2 for a match Go's regexp cannot make, for
 // a pattern that has Go's regexp. The parser bounds what regexp2's compile
 // costs for every pattern (see parser.TransformRegExp2), so it takes as
@@ -482,9 +378,9 @@ func (p *regexpPattern) createRegexp2(vm *vm) {
 	if p.regexp2Wrapper != nil {
 		return
 	}
-	size, _ := regexp2Estimate(p.src, p.ignoreCase && p.unicode, p.unicode)
+	size, _ := regexp2Estimate(p.src)
 	vm.r.countAlloc(size)
-	rx, err := compileRegexp2(p.src, p.multiline, p.dotAll, p.ignoreCase && p.unicode, p.unicode)
+	rx, err := compileRegexp2(p.src, p.multiline, p.dotAll, p.unicode)
 	if err != nil {
 		// At this point the regexp should have been successfully converted to re2, if it fails now, it's a bug.
 		panic(err)

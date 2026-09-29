@@ -2,9 +2,11 @@ package goja
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/dop251/goja/parser"
 )
@@ -316,4 +318,151 @@ func distinctClassesFrom(n int, lo rune) string {
 		b.WriteByte(']')
 	}
 	return b.String()
+}
+
+func TestRegexpFoldOrbitsMatchNode18(t *testing.T) {
+	// With the u and i flags a character matches the characters of its case
+	// folding orbit as V8 relates them (recorded with Node.js 18.20.3, see
+	// parser/regexp_fold_gen.js), whatever the Unicode version of the Go
+	// toolchain: as a literal, an escape, a class and a negated class, with
+	// both engines. Every character Go's unicode tables fold is checked too:
+	// Go 1.27 (Unicode 17) folds U+019B and U+A7DC, which Node.js 18 does
+	// not, and Go 1.26 (Unicode 15.0) does not relate U+0390 and U+1FD3,
+	// which V8 does (their full case foldings are the same).
+	vm := New()
+	if _, err := vm.RunString(`function check(c, members, others) {
+		var res = [];
+		var ch = String.fromCodePoint(c), esc = "\\u{" + c.toString(16) + "}";
+		var lit = ch.replace(/[\\^$.*+?()[\]{}|\/-]/g, "\\$&");
+		var res1 = [new RegExp("^" + lit + "$", "iu"), new RegExp("^" + esc + "$", "iu"), new RegExp("^(?=)" + esc + "$", "iu"),
+			new RegExp("^[" + esc + "]$", "iu"), new RegExp("^(?=)[" + lit + "]$", "iu")];
+		var neg = [new RegExp("^[^" + esc + "]$", "iu"), new RegExp("^(?=)[^" + lit + "]$", "iu")];
+		for (var k = 0; k < res1.length; k++) {
+			for (var j = 0; j < members.length; j++) if (!res1[k].test(String.fromCodePoint(members[j]))) res.push(res1[k].source + " misses " + members[j].toString(16));
+			for (var j = 0; j < others.length; j++) if (res1[k].test(String.fromCodePoint(others[j]))) res.push(res1[k].source + " matches " + others[j].toString(16));
+		}
+		for (var k = 0; k < neg.length; k++) {
+			for (var j = 0; j < members.length; j++) if (neg[k].test(String.fromCodePoint(members[j]))) res.push(neg[k].source + " matches " + members[j].toString(16));
+			for (var j = 0; j < others.length; j++) if (!neg[k].test(String.fromCodePoint(others[j]))) res.push(neg[k].source + " misses " + others[j].toString(16));
+		}
+		return res.join("; ");
+	}`); err != nil {
+		t.Fatal(err)
+	}
+	check, _ := AssertFunction(vm.Get("check"))
+	orbitOf := make(map[rune][]rune)
+	for _, o := range parser.FoldOrbits() {
+		for _, r := range o {
+			orbitOf[r] = o
+		}
+	}
+	chars := make(map[rune]bool)
+	for r := range orbitOf {
+		chars[r] = true
+	}
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if unicode.SimpleFold(r) != r {
+			chars[r] = true
+		}
+	}
+	checked := 0
+	for r := range chars {
+		members := orbitOf[r]
+		if members == nil {
+			members = []rune{r}
+		}
+		in := make(map[rune]bool)
+		for _, m := range members {
+			in[m] = true
+		}
+		// The characters Go's tables fold r to, and neighbours.
+		var others []rune
+		add := func(o rune) {
+			if o >= 0 && o <= unicode.MaxRune && !(o >= 0xd800 && o <= 0xdfff) && !in[o] {
+				in[o] = true
+				others = append(others, o)
+			}
+		}
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			add(f)
+		}
+		for _, d := range []rune{-1, 1, 0x20, -0x20} {
+			add(r + d)
+		}
+		v, err := check(nil, vm.ToValue(r), vm.ToValue(members), vm.ToValue(others))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v.String() != "" {
+			t.Errorf("%U: %s", r, v)
+		}
+		checked++
+	}
+	if checked < 2800 {
+		t.Errorf("%d characters checked", checked)
+	}
+	// And no character outside the orbits matches one of them.
+	var all, cls strings.Builder
+	n := 0
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if r < 0xd800 || r > 0xdfff {
+			all.WriteRune(r)
+		}
+	}
+	for r := range orbitOf {
+		fmt.Fprintf(&cls, `\u{%x}`, r)
+		n++
+	}
+	vm.Set("all", all.String())
+	vm.Set("cls", cls.String())
+	for _, prefix := range []string{"", "(?=)"} {
+		v, err := vm.RunString(`all.match(new RegExp("` + prefix + `[" + cls + "]", "giu")).length`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v.ToInteger() != int64(n) {
+			t.Errorf("%q: %d characters match the orbits' %d", prefix, v.ToInteger(), n)
+		}
+	}
+}
+
+func TestRegexpFoldOrbitsNode18Cases(t *testing.T) {
+	// Recorded with Node.js 18.20.3.
+	for _, tc := range []struct {
+		script string
+		want   bool
+	}{
+		{`/[\u1f00-\u1fff]/iu.test("\u0390")`, true},
+		{`/[\u0380-\u03ff]/iu.test("\u1fd3")`, true},
+		{`/[^\u1f00-\u1fff]/iu.test("\u0390")`, false},
+		{`/[\u3000-\ufb05]/iu.test("\ufb06")`, true},
+		{`/(?=[^])[\u13f7-\u5bb4]/iu.test("\u03b0")`, true},
+		{`/\u0390/iu.test("\u1fd3")`, true},
+		{`/\u03b0/iu.test("\u1fe3")`, true},
+		{`/\ufb05/iu.test("\ufb06")`, true},
+		{`/(?=)\ufb05/iu.test("\ufb06")`, true},
+		{`/\u019b/iu.test("\ua7dc")`, false},
+		{`/\ua7dc/iu.test("\u019b")`, false},
+		{`/[\u0180-\u01ff]/iu.test("\ua7dc")`, false},
+		{`/\u0264/iu.test("\ua7cb")`, false},
+		{`/\u1c89/iu.test("\u1c8a")`, false},
+		{`/\u{16ea0}/iu.test("\u{16ebb}")`, false},
+		{`/\u{10d50}/iu.test("\u{10d70}")`, false},
+		{`/\u2160/iu.test("\u2170")`, true},
+		{`/\u0345/iu.test("\u1fbe")`, true},
+		{`/\u00df/iu.test("\u1e9e")`, true},
+		{`/\u0130/iu.test("i")`, false},
+		{`/\u017f/iu.test("S")`, true},
+		{`/\u212a/iu.test("k")`, true},
+		{`/(a)\1/iu.test("aA")`, true},
+		{`/(?<n>\u00e9)\k<n>/iu.test("\u00e9\u00c9")`, true},
+	} {
+		v, err := New().RunString(tc.script)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.script, err)
+		}
+		if v.ToBoolean() != tc.want {
+			t.Errorf("%s: %v", tc.script, v)
+		}
+	}
 }

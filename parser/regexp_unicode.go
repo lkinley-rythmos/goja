@@ -89,7 +89,7 @@ type regexpPropertySets struct {
 	once                      sync.Once
 	set, closure, compClosure runeSet
 	foldExtra, compFoldExtra  runeSet
-	notClosed, goFoldMissing  runeSet
+	notClosed                 runeSet
 	goRegexpKnowsName         bool
 }
 
@@ -111,17 +111,6 @@ func (p regexpProperty) sets() *regexpPropertySets {
 		s.notClosed = s.set.minus(s.compClosure.complement())
 		s.compFoldExtra = s.foldExtra.union(s.notClosed)
 		if name := p.goName(); name != "" {
-			// The case variants Go's regexp adds from its tables.
-			var fold *unicode.RangeTable
-			if p.kind == propGeneralCategory {
-				fold = unicode.FoldCategory[name]
-			} else {
-				fold = unicode.FoldScript[name]
-			}
-			s.goFoldMissing = s.foldExtra
-			if fold != nil {
-				s.goFoldMissing = s.goFoldMissing.minus(tableSet(fold))
-			}
 			// Older versions of Go's regexp do not know every script name.
 			_, err := syntax.Parse(`\p{`+name+`}`, syntax.Perl)
 			s.goRegexpKnowsName = err == nil
@@ -147,8 +136,6 @@ func (p regexpProperty) goRegexpName() string {
 // foldExtra returns what, with the property (negated if negate), makes up
 // its closure under case folding: the case variants of its characters, and
 // for negate, also the characters some of whose case variants are not in it.
-// Go's regexp, ignoring case, given the property by name and these
-// characters, adds the variants of the latter and matches the closure.
 func (p regexpProperty) foldExtra(negate bool) runeSet {
 	if negate {
 		return p.sets().compFoldExtra
@@ -156,16 +143,19 @@ func (p regexpProperty) foldExtra(negate bool) runeSet {
 	return p.sets().foldExtra
 }
 
+// closed reports whether the property's set (its complement if negate) is
+// closed under case folding.
+func (p regexpProperty) closed(negate bool) bool {
+	if negate {
+		return len(p.sets().notClosed) == 0
+	}
+	return len(p.sets().foldExtra) == 0
+}
+
 // notClosed returns the property's characters some of whose case variants
 // are not in it: those its negation's closure under case folding adds.
 func (p regexpProperty) notClosed() runeSet {
 	return p.sets().notClosed
-}
-
-// goFoldMissing returns the case variants of the property's characters that
-// Go's regexp, ignoring case, does not add when given the property by name.
-func (p regexpProperty) goFoldMissing() runeSet {
-	return p.sets().goFoldMissing
 }
 
 // charSet returns the characters an escape stands for; with ignoreCase, it is
@@ -419,65 +409,57 @@ func (s runeSet) minus(o runeSet) runeSet {
 	return res
 }
 
-// The case folding orbits: the code points that simple case folding relates
-// to another one, sorted, each with the index of its orbit (the code points
-// it is related to).
+// The case folding orbits: the code points that a pattern with the u and i
+// flags matches as another one (see regexp_fold_gen.js), sorted, each with
+// the index of its orbit (the code points it is related to). They come from
+// Node.js 18, not from Go's unicode package, whose version depends on the
+// toolchain goja is built with.
 var foldOrbits struct {
 	once   sync.Once
 	runes  []rune
 	orbit  []int32
 	orbits int
+	sets   []runeSet // each orbit's code points
 }
 
 func caseFoldOrbits() ([]rune, []int32) {
 	foldOrbits.once.Do(func() {
-		var runes []rune
-		for _, cr := range unicode.CaseRanges {
-			for r := rune(cr.Lo); r <= rune(cr.Hi); r++ {
-				if unicode.SimpleFold(r) != r {
-					runes = append(runes, r)
-				}
+		type entry struct {
+			r     rune
+			orbit int32
+		}
+		var entries []entry
+		var sets []runeSet
+		for i := 0; i < len(regexpFoldOrbits); {
+			n := int(regexpFoldOrbits[i])
+			var set runeSet
+			for _, r := range regexpFoldOrbits[i+1 : i+1+n] {
+				set = set.appendRange(r, r)
+				entries = append(entries, entry{r, int32(len(sets))})
 			}
+			sets = append(sets, set)
+			i += 1 + n
 		}
-		// An orbit can have members outside CaseRanges (SimpleFold has its
-		// own table of orbits), so add every orbit's members, then drop the
-		// duplicates.
-		for _, r := range append([]rune(nil), runes...) {
-			for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
-				runes = append(runes, f)
-			}
+		sort.Slice(entries, func(i, j int) bool { return entries[i].r < entries[j].r })
+		runes := make([]rune, len(entries))
+		orbit := make([]int32, len(entries))
+		for i, e := range entries {
+			runes[i], orbit[i] = e.r, e.orbit
 		}
-		sort.Slice(runes, func(i, j int) bool { return runes[i] < runes[j] })
-		var uniq []rune
-		for i, r := range runes {
-			if i == 0 || r != runes[i-1] {
-				uniq = append(uniq, r)
-			}
-		}
-		runes = uniq
-		index := func(r rune) int {
-			return sort.Search(len(runes), func(i int) bool { return runes[i] >= r })
-		}
-		orbit := make([]int32, len(runes))
-		for i := range orbit {
-			orbit[i] = -1
-		}
-		n := 0
-		for i, r := range runes {
-			if orbit[i] >= 0 {
-				continue
-			}
-			orbit[i] = int32(n)
-			for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
-				if j := index(f); j < len(runes) && runes[j] == f {
-					orbit[j] = int32(n)
-				}
-			}
-			n++
-		}
-		foldOrbits.runes, foldOrbits.orbit, foldOrbits.orbits = runes, orbit, n
+		foldOrbits.runes, foldOrbits.orbit, foldOrbits.orbits, foldOrbits.sets = runes, orbit, len(sets), sets
 	})
 	return foldOrbits.runes, foldOrbits.orbit
+}
+
+// caseClass returns the code points a pattern with the u and i flags
+// matches r as.
+func caseClass(r rune) runeSet {
+	runes, orbit := caseFoldOrbits()
+	i := sort.Search(len(runes), func(i int) bool { return runes[i] >= r })
+	if i < len(runes) && runes[i] == r {
+		return foldOrbits.sets[orbit[i]]
+	}
+	return runeSet{r, r}
 }
 
 // foldMembership reports, for each code point that case folding relates to
@@ -676,8 +658,10 @@ func classUnits(names []string, rest runeSet, regexp2 bool) int {
 	for _, name := range names {
 		tables += namedTableRanges(name)
 	}
-	if len(names) == 1 && len(rest) == 0 {
-		return 2 * tables / 3
+	if len(names) == 1 && len(rest) <= 2*coverMinGain {
+		// A table and a few ranges, which are sorted into it (\p{L} and
+		// U+0345, its closure under case folding, take about 36 µs).
+		return 2*tables/3 + 9*len(rest)/4
 	}
 	return 3*tables + 9*len(rest)/4
 }

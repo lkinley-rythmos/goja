@@ -6,14 +6,17 @@ import (
 	"sync"
 )
 
-// Without the u flag, a pattern that ignores case matches a character
-// against another if Canonicalize (ECMA-262 22.2.2.7.3) makes them the same:
-// toUpperCase, unless that is not one code unit or maps a code unit from 128
-// up to one below 128 (so U+017F and U+212A are not variants of s and k).
-// Go's regexp and regexp2 fold case otherwise, so both engines get such a
-// pattern case-sensitively, with each character and class written as the
-// set of code units Canonicalize makes it equivalent to (see
-// regexpCanonClasses); a backreference is left to regexp2 ignoring case.
+// A pattern that ignores case matches a character against another if
+// Canonicalize (ECMA-262 22.2.2.7.3) makes them the same. Without the u
+// flag that is toUpperCase, unless that is not one code unit or maps a code
+// unit from 128 up to one below 128 (so U+017F and U+212A are not variants
+// of s and k); with it, simple case folding, which V8 widens to the
+// characters whose full case foldings are the same (see regexpFoldOrbits).
+// Go's regexp and regexp2 fold case otherwise, and by the tables of the
+// toolchain goja is built with, so both engines get such a pattern
+// case-sensitively, with each character and class written as the set
+// Canonicalize makes it equivalent to (see regexpCanonClasses and
+// regexpFoldOrbits); a backreference is left to regexp2 ignoring case.
 
 var canonTable struct {
 	once  sync.Once
@@ -95,13 +98,24 @@ func canonClosure(s runeSet) runeSet {
 func (self *_RegExp_parser) writeCanonChar(start, end int, r rune) {
 	cc, ok := self.canonChars[r]
 	if !ok {
-		set := canonClass(r)
+		var set runeSet
+		if self.unicode {
+			set = caseClass(r)
+		} else {
+			set = canonClass(r)
+		}
 		if len(set) > 2 || set[0] != set[1] {
 			var goText, r2Text strings.Builder
 			goText.WriteByte('[')
 			writeRanges(&goText, set, `\x`)
 			goText.WriteByte(']')
-			writeBMPClass(&r2Text, set)
+			if self.unicode {
+				r2Text.WriteByte('[')
+				writeRanges(&r2Text, set, `\u`)
+				r2Text.WriteByte(']')
+			} else {
+				writeBMPClass(&r2Text, set)
+			}
 			cc = canonChar{goText.String(), r2Text.String(), len(set) / 2}
 		}
 		if self.canonChars == nil {
@@ -112,17 +126,24 @@ func (self *_RegExp_parser) writeCanonChar(start, end int, r rune) {
 	if cc.goText == "" {
 		return
 	}
+	self.rewriteAtom(start, end, cc.goText, cc.r2Text)
+	self.expandGo(goClassUnits + goClassItemUnits*cc.items)
+}
+
+// rewriteAtom writes, for both engines, the atom just scanned (the input
+// from start to end) as goText and r2Text, in place of what its scan wrote
+// (see markCanon).
+func (self *_RegExp_parser) rewriteAtom(start, end int, goText, r2Text string) {
 	if self.goUsed() {
 		self.goRegexp.Truncate(self.canonGoStart)
-		self.goRegexp.WriteString(cc.goText)
-		self.goExpansion += goClassUnits + goClassItemUnits*cc.items
+		self.goRegexp.WriteString(goText)
 	}
 	if self.regexp2Offset > start {
 		// The escape was written for regexp2 already.
 		self.regexp2.Truncate(self.canonR2Len)
 		self.regexp2Offset = self.canonR2Offset
 	}
-	self.writeRegexp2(start, end, cc.r2Text)
+	self.writeRegexp2(start, end, r2Text)
 }
 
 // canonChar is a character written as the class Canonicalize makes it
@@ -142,10 +163,10 @@ func (self *_RegExp_parser) markCanon() {
 	self.canonR2Len, self.canonR2Offset = self.regexp2.Len(), self.regexp2Offset
 }
 
-// canonFold reports whether the pattern is matched with Canonicalize
-// (without the u flag, ignoring case).
+// canonFold reports whether the pattern is matched with Canonicalize: it
+// ignores case.
 func (self *_RegExp_parser) canonFold() bool {
-	return self.ignoreCase && !self.unicode
+	return self.ignoreCase
 }
 
 // canonFoldClass writes the class just scanned for both engines as the set
@@ -156,13 +177,22 @@ func (self *_RegExp_parser) canonFoldClass(negated bool) {
 	text := self.str[self.classStart:end]
 	rw, ok := self.foldedClasses[text]
 	if !ok {
-		set := canonClosure(self.classSet)
+		var set runeSet
+		if self.unicode {
+			set = caseClosure(self.classSet)
+		} else {
+			set = canonClosure(self.classSet)
+		}
 		if negated {
 			set = set.complement()
 		}
 		var goText, r2Text strings.Builder
 		rw.goUnits = writeClass(&goText, set, false)
-		rw.r2Units = writeBMPClass(&r2Text, set)
+		if self.unicode {
+			rw.r2Units = writeClass(&r2Text, set, true)
+		} else {
+			rw.r2Units = writeBMPClass(&r2Text, set)
+		}
 		rw.goText, rw.r2Text = goText.String(), r2Text.String()
 		if self.foldedClasses == nil {
 			self.foldedClasses = make(map[string]foldedClass)
@@ -188,6 +218,18 @@ func CanonClasses() [][]uint16 {
 	for i := 0; i < len(regexpCanonClasses); {
 		n := int(regexpCanonClasses[i])
 		res = append(res, regexpCanonClasses[i+1:i+1+n])
+		i += 1 + n
+	}
+	return res
+}
+
+// FoldOrbits returns the classes of more than one code point that a pattern
+// with the u and i flags matches as the same character.
+func FoldOrbits() [][]rune {
+	var res [][]rune
+	for i := 0; i < len(regexpFoldOrbits); {
+		n := int(regexpFoldOrbits[i])
+		res = append(res, regexpFoldOrbits[i+1:i+1+n])
 		i += 1 + n
 	}
 	return res

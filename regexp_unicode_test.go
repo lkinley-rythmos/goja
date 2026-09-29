@@ -602,7 +602,7 @@ func TestRegexpUnicodePropertiesLazyRegexp2(t *testing.T) {
 // regexp2Size is what regexp2 is charged for a pattern (see
 // regexp2Estimate).
 func regexp2Size(src string) int64 {
-	size, _ := regexp2Estimate(src, false, true)
+	size, _ := regexp2Estimate(src)
 	return size
 }
 

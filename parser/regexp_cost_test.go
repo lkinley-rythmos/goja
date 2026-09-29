@@ -5,7 +5,6 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/debug"
-	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -65,8 +64,8 @@ func TestTransformRegExpCostLimits(t *testing.T) {
 	}{
 		{term: "x", limit: 520000, past: "too large"},
 		{term: "é", limit: 520000, past: "too large"},
-		{term: "x", flags: "iu", limit: 150000, past: "too large"},
-		// Without the u flag a character with case variants is a class.
+		// Ignoring case a character with case variants is a class.
+		{term: "x", flags: "iu", limit: 100000, past: "too large"},
 		{term: "x", flags: "i", limit: 100000, past: "too large"},
 		{term: `(x)`, limit: 70000, past: "too large"},
 		{term: `(?:x)`, limit: 68000, past: "too large"},
@@ -134,36 +133,32 @@ func TestTransformRegExpCostAfterIncompatible(t *testing.T) {
 			}
 			continue
 		}
-		if _, ok := err.(RegexpErrorIncompatible); !ok || !strings.HasSuffix(r2, regexp2FoldNonWord+`(?-i:.)`) {
+		if _, ok := err.(RegexpErrorIncompatible); !ok || !strings.HasSuffix(r2, regexp2FoldNonWord+`.`) {
 			t.Errorf("%s: %q, %v", prefix, r2, err)
 		}
 	}
 }
 
 func TestTransformRegExpRegexp2FoldEscapes(t *testing.T) {
-	// Ignoring case, regexp2 adds the case variants of every code point of
-	// a class escape standing for most of Unicode (\W took it 50 ms, . 25
-	// ms), and of \w (13 µs), so it gets them matched case-sensitively as
-	// the sets they stand for, which they are closed under.
-	for _, unicode := range []bool{true} {
-		for _, tc := range []struct{ pattern, want string }{
-			{`a.b`, `a(?-i:.)b`},
-			{`\w+\W*`, regexp2FoldWord + `+` + regexp2FoldNonWord + `*`},
-			{`\S\D\s\d`, `(?-i:\S)(?-i:\D)\s\d`},
-			{`[\W]\w`, `(?-i:[^\u0030-\u0039\u0041-\u005a\u005f\u0061-\u007a\u017f\u212a])` + regexp2FoldWord},
-		} {
-			_, r2, err := TransformRegExp2(tc.pattern, false, unicode, true)
-			want := tc.want
-			if unicode {
-				want = strings.ReplaceAll(want, `\u0030-\u0039\u0041-\u005a\u005f\u0061-\u007a\u017f\u212a`, `\u{30}-\u{39}\u{41}-\u{5a}\u{5f}\u{61}-\u{7a}\u{17f}\u{212a}`)
-			}
-			if err != nil || r2 != want {
-				t.Errorf("/%s/ (u: %v): %q, %v; want %q", tc.pattern, unicode, r2, err, want)
-			}
-			// Matching case-sensitively, nothing changes.
-			if _, r2, _ := TransformRegExp2(tc.pattern, false, unicode, false); r2 != tc.pattern {
-				t.Errorf("/%s/ (u: %v) without i: %q", tc.pattern, unicode, r2)
-			}
+	// Ignoring case, regexp2 matches case-sensitively, and gets each
+	// character and class as the set case folding makes it equivalent to
+	// (see regexp_canon.go); \w and \W as the sets they stand for, which
+	// have U+017F and U+212A with the u flag, and the other escapes as
+	// they are, which they are closed under.
+	for _, tc := range []struct{ pattern, want string }{
+		{`a.b`, `[\u{41}\u{61}].[\u{42}\u{62}]`},
+		{`\w+\W*`, regexp2FoldWord + `+` + regexp2FoldNonWord + `*`},
+		{`\S\D\s\d`, `\S\D\s\d`},
+		{`[\W]\w`, `[^\u{30}-\u{39}\u{41}-\u{5a}\u{5f}\u{61}-\u{7a}\u{17f}\u{212a}]` + regexp2FoldWord},
+		{`(k)\1\k<a>(?<a>)`, `([\u{4b}\u{6b}\u{212a}])(?i:\1)(?i:\k<a>)(?<a>)`},
+	} {
+		_, r2, err := TransformRegExp2(tc.pattern, false, true, true)
+		if _, incompat := err.(RegexpErrorIncompatible); err != nil && !incompat || r2 != tc.want {
+			t.Errorf("/%s/iu: %q, %v; want %q", tc.pattern, r2, err, tc.want)
+		}
+		// Matching case-sensitively, nothing changes.
+		if _, r2, _ := TransformRegExp2(tc.pattern, false, true, false); r2 != tc.pattern {
+			t.Errorf("/%s/u: %q", tc.pattern, r2)
 		}
 	}
 	// Without the u flag regexp2 matches case-sensitively, and gets each
@@ -182,102 +177,74 @@ func TestTransformRegExpRegexp2FoldEscapes(t *testing.T) {
 	}
 }
 
-// foldedClassCases are classes whose case variants would cost the engines
-// more than their sets closed under case folding (see foldClass), and some
-// that would not.
-var foldedClassCases = []struct {
-	class    string // the class, without the u flag
-	uClass   string // with it, if different
-	rewrite  bool
-	nonASCII bool // the class has non-ASCII characters
-}{
-	{class: `[A-\uffef]`, rewrite: true},
-	{class: `[^A-\uffef]`, rewrite: true},
-	{class: `[\u0080-\uffff]`, rewrite: true},
-	{class: `[\u0100-\u01ff]`, rewrite: true},
-	{class: `[\u0400-\u04ff\u1e00-\u1eff]`, rewrite: true},
-	{class: `[\u4e00-\u9fa5]`, rewrite: true},
-	{class: `[\W\d]`, rewrite: true},
-	{class: `[^\W\d]`, rewrite: true},
-	{class: `[\w\u0100-\u0fff]`, rewrite: true},
-	{class: `[\u0000-\uffff]`, uClass: `[\u0000-\u{10ffff}]`, rewrite: true},
-	{class: `[a-z\u212a]`},
-	{class: `[\u0100-\u013f]`},
-	{class: `[^a-z]`},
-	{class: `[\w-]`},
-}
-
-// inFoldOrbits reports whether simple case folding relates r to no other
-// code point, or caseFoldOrbits has its orbit: Go's unicode tables since
-// Unicode 15.1 (Go 1.27) have orbits none of whose members has a case
-// mapping (U+0390 and U+1FD3), which Node.js 18 (Unicode 15.0) does not.
-func inFoldOrbits(r rune) bool {
-	if unicode.SimpleFold(r) == r {
-		return true
-	}
-	runes, _ := caseFoldOrbits()
-	i := sort.Search(len(runes), func(i int) bool { return runes[i] >= r })
-	return i < len(runes) && runes[i] == r
+// foldedClassCases are classes the engines get, ignoring case, as their
+// sets closed under case folding (\W, which then has neither U+017F nor
+// U+212A, is checked against Node.js 18 in goja's regexp_cost_test.go).
+var foldedClassCases = []string{
+	`[A-\uffef]`, `[^A-\uffef]`, `[\u0080-\uffff]`, `[\u0100-\u01ff]`, `[\u0400-\u04ff\u1e00-\u1eff]`,
+	`[\u4e00-\u9fa5]`, `[\w\u0100-\u0fff]`, `[\u0000-\u{10ffff}]`, `[a-z\u212a]`,
+	`[\u0100-\u013f]`, `[^a-z]`, `[\w-]`, `[\u1f00-\u1fff]`, `[^\u0380-\u03ff]`, `[\ufb00-\ufb06]`,
+	`[\u0180-\u01ff]`, `[\u{10400}-\u{1044f}]`,
 }
 
 func TestTransformRegExpFoldedClasses(t *testing.T) {
-	// A class rewritten as its set closed under case folding stands for
-	// what Go's regexp matches ignoring case with the u flag.
-	for _, tc := range foldedClassCases {
-		for _, unicode := range []bool{true} {
-			class := tc.class
-			if unicode && tc.uClass != "" {
-				class = tc.uClass
+	// With the u and i flags, a class is written for both engines as the
+	// set of the characters one of whose case variants (see caseClass) it
+	// has, or for a negated class, the others, matched case-sensitively.
+	for _, class := range foldedClassCases {
+		out, r2, err := TransformRegExp2(class, false, true, true)
+		if err != nil {
+			t.Fatalf("%s: %v", class, err)
+		}
+		plain, _, err := TransformRegExp2(strings.Replace(class, "[^", "[", 1), false, true, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		negated := strings.HasPrefix(class, "[^")
+		in, got := regexp.MustCompile(`^(?:`+plain+`)$`), regexp.MustCompile(`^(?:`+out+`)$`)
+		for r := rune(0); r <= unicode.MaxRune; r++ {
+			if r >= 0xd800 && r <= 0xdfff || r > 0x1ffff && r < 0xe0000 {
+				continue
 			}
-			out, _, err := TransformRegExp2(class, false, unicode, true)
-			if err != nil {
-				t.Fatalf("%s (u: %v): %v", class, unicode, err)
-			}
-			if got := strings.HasPrefix(out, "(?-i:"); got != tc.rewrite {
-				t.Errorf("%s (u: %v): %q", class, unicode, out)
-			}
-			// The class as it would be written unfolded, for Go's regexp to
-			// fold.
-			plain, _, err := TransformRegExp2(class, false, unicode, false)
-			if err != nil {
-				t.Fatal(err)
-			}
-			want, got := regexp.MustCompile(`^(?i:`+plain+`)$`), regexp.MustCompile(`^(?i:`+out+`)$`)
-			for r := rune(0); r <= 0x1ffff; r++ {
-				if r >= 0xd800 && r <= 0xdfff || !inFoldOrbits(r) {
-					continue
-				}
-				if s := string(r); got.MatchString(s) != want.MatchString(s) {
-					t.Errorf("%s (u: %v): %U: %v", class, unicode, r, got.MatchString(s))
-					break
+			want := false
+			set := caseClass(r)
+			for k := 0; k < len(set) && !want; k += 2 {
+				for m := set[k]; m <= set[k+1] && !want; m++ {
+					want = in.MatchString(string(m))
 				}
 			}
+			if s := string(r); got.MatchString(s) != (want != negated) {
+				t.Errorf("%s: %U: %v", class, r, got.MatchString(s))
+				break
+			}
+		}
+		if strings.Contains(r2, "(?i") {
+			t.Errorf("%s: regexp2 %q", class, r2)
 		}
 	}
 }
 
 func TestTransformRegExpFoldedClassesCost(t *testing.T) {
-	// A rewritten class costs the engines its set's text, and is rewritten
-	// once however often the pattern has it: [A-\uffef] with the i flag
-	// took Go's regexp 3 ms and regexp2 2.5 ms a copy.
+	// A class ignoring case is rewritten as its closed set once however
+	// often the pattern has it, and costs the engines its set's text: [A-\uffef]
+	// with the i flag took Go's regexp 3 ms and regexp2 2.5 ms a copy when
+	// they added its case variants themselves.
 	for _, unicode := range []bool{false, true} {
-		p := parsePattern(strings.Repeat(`[A-\uffef]`, 1000), unicode, true)
-		if p.err != nil || p.incompat != nil {
-			t.Fatalf("u: %v: %v %v", unicode, p.err, p.incompat)
+		for _, class := range []string{`[A-\uffef]`, `[\u0100-\u013f]`} {
+			p := parsePattern(strings.Repeat(class, 1000), unicode, true)
+			if p.err != nil || p.incompat != nil {
+				t.Fatalf("u: %v: %v %v", unicode, p.err, p.incompat)
+			}
+			if n := len(p.foldedClasses); n != 1 {
+				t.Errorf("u: %v: %s: %d classes rewritten", unicode, class, n)
+			}
+			if c := p.goCost(); c > 100000 || p.regexp2Expansion > 100000 {
+				t.Errorf("u: %v: %s: Go's regexp %d units, regexp2 %d", unicode, class, c, p.regexp2Expansion)
+			}
 		}
-		if n := len(p.foldedClasses); n != 1 {
-			t.Errorf("u: %v: %d classes rewritten", unicode, n)
-		}
-		if c := p.goCost(); c > 100000 || p.regexp2Expansion > 100000 {
-			t.Errorf("u: %v: Go's regexp %d units, regexp2 %d", unicode, c, p.regexp2Expansion)
-		}
-		// What adding the case variants of classes not rewritten costs is
-		// counted.
-		if !unicode {
-			continue
-		}
-		if plain, folded := parsePattern(strings.Repeat(`[\u0100-\u013f]`, 1000), unicode, false), parsePattern(strings.Repeat(`[\u0100-\u013f]`, 1000), unicode, true); folded.goCost() < plain.goCost()+50000 || folded.regexp2Expansion < plain.regexp2Expansion+150000 {
-			t.Errorf("u: %v: [\\u0100-\\u013f] costs Go's regexp %d units ignoring case, %d not; regexp2 %d, %d", unicode, folded.goCost(), plain.goCost(), folded.regexp2Expansion, plain.regexp2Expansion)
+		// Distinct classes are each charged their closure.
+		if p := parsePattern(distinctWideClasses(100), unicode, true); p.goCost() < 100*classFoldUnits || p.regexp2Expansion < 100*classFoldUnits {
+			t.Errorf("u: %v: 100 distinct classes cost Go's regexp %d units, regexp2 %d", unicode, p.goCost(), p.regexp2Expansion)
 		}
 	}
 }

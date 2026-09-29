@@ -28,22 +28,22 @@ func TestTransformRegExpUnicodeProperties(t *testing.T) {
 		{pattern: `[^\P{L}\p{N}x]`, unicode: true, re2: `[^\P{L}\p{N}x]`, regexp2: `[^\p{C}\p{Mn}\p{S}\p{P}\p{Mc}\p{N}\u{20}\u{78}\u{a0}...`},
 		{pattern: `[\P{Lu}\p{L}]`, unicode: true, re2: `[\P{Lu}\p{L}]`, regexp2: `[\u{0}-\u{10ffff}]`},
 		{pattern: `[\p{L}\P{Nd}]`, unicode: true, re2: `[\p{L}\P{Nd}]`, regexp2: `[^\p{Nd}]`},
-		// Ignoring case, Go's regexp gets the case variants its tables lack
-		// (U+0345 folds to U+03B9, in LC), and regexp2 a set matched
-		// case-sensitively.
-		{pattern: `\p{Lu}`, unicode: true, icase: true, re2: `\p{Lu}`, regexp2: `(?-i:[\u{41}-\u{5a}\u{61}-\u{7a}\u{b5}...`},
+		// Ignoring case, both engines get a set closed under case folding,
+		// matched case-sensitively: the table and the case variants it
+		// lacks (U+0345 folds to U+03B9, in LC), or the whole set.
+		{pattern: `\p{Lu}`, unicode: true, icase: true, re2: `[\x{41}-\x{5a}\x{61}-\x{7a}\x{b5}...`, regexp2: `(?-i:[\u{41}-\u{5a}\u{61}-\u{7a}\u{b5}...`},
 		{pattern: `\p{LC}`, unicode: true, icase: true, re2: `[\p{LC}\x{345}]`, regexp2: `(?-i:[\p{LC}\u{345}])`},
 		{pattern: `\p{sc=Arabic}`, unicode: true, icase: true, re2: `\p{Arabic}`, regexp2: `(?-i:\p{Arabic})`},
 		// Negated, ECMAScript adds the case variants of what is left: the
 		// negation of LC, and the letters U+0345 folds to.
-		{pattern: `\P{LC}`, unicode: true, icase: true, re2: `(?-i:[\P{LC}\x{399}\x{3b9}\x{1fbe}])`, regexp2: `(?-i:[^\p{LC}]|[\u{345}\u{399}\u{3b9}\u{1fbe}])`},
-		{pattern: `[\P{LC}]`, unicode: true, icase: true, re2: `[\P{LC}\x{345}\x{399}\x{3b9}\x{1fbe}]`, regexp2: `(?-i:[^\u{41}-\u{5a}\u{61}-\u{7a}\u{b5}...`},
-		{pattern: `x[\p{Lu}a]`, unicode: true, icase: true, re2: `x[\p{Lu}a]`, regexp2: `x(?-i:[\u{41}-\u{5a}\u{61}-\u{7a}\u{b5}\u{c0}-\u{d6}...`},
-		// Ignoring case, a class with property escapes is given to regexp2
-		// as the set it stands for.
+		{pattern: `\P{LC}`, unicode: true, icase: true, re2: `[\P{LC}\x{399}\x{3b9}\x{1fbe}]`, regexp2: `(?-i:[^\p{LC}]|[\u{345}\u{399}\u{3b9}\u{1fbe}])`},
+		{pattern: `[\P{LC}]`, unicode: true, icase: true, re2: `(?-i:[^\x{41}-\x{5a}\x{61}-\x{7a}\x{b5}...`, regexp2: `(?-i:[^\u{41}-\u{5a}\u{61}-\u{7a}\u{b5}...`},
+		{pattern: `x[\p{Lu}a]`, unicode: true, icase: true, re2: `[\x{58}\x{78}](?-i:[\x{41}-\x{5a}\x{61}-\x{7a}\x{b5}...`, regexp2: `[\u{58}\u{78}](?-i:[\u{41}-\u{5a}\u{61}-\u{7a}\u{b5}\u{c0}-\u{d6}...`},
+		// Ignoring case, a class with property escapes is given to both
+		// engines as the set it stands for.
 		{pattern: `[^a\P{Any}]`, unicode: true, icase: true, re2: `(?-i:[^\x{41}\x{61}])`, regexp2: `(?-i:[^\u{41}\u{61}])`},
 		{pattern: `[\w\p{AHex}]`, unicode: true, icase: true, re2: `(?-i:[\x{30}-\x{39}\x{41}-\x{5a}\x{5f}\x{61}-\x{7a}\x{17f}\x{212a}])`, regexp2: `(?-i:[\u{30}-\u{39}\u{41}-\u{5a}\u{5f}\u{61}-\u{7a}\u{17f}\u{212a}])`},
-		{pattern: `[\w\p{Nd}]`, unicode: true, icase: true, re2: `[\w\p{Nd}]`, regexp2: `(?-i:[\p{Nd}\u{41}-\u{5a}\u{5f}\u{61}-\u{7a}\u{17f}\u{212a}])`},
+		{pattern: `[\w\p{Nd}]`, unicode: true, icase: true, re2: `(?-i:[\p{Nd}\x{41}-\x{5a}\x{5f}\x{61}-\x{7a}\x{17f}\x{212a}])`, regexp2: `(?-i:[\p{Nd}\u{41}-\u{5a}\u{5f}\u{61}-\u{7a}\u{17f}\u{212a}])`},
 		// Other properties are sets: written with the tables the engine
 		// knows by name that they contain (regexp2 knows the binary
 		// properties of Go's unicode package too), and the rest as ranges,
@@ -51,13 +51,13 @@ func TestTransformRegExpUnicodeProperties(t *testing.T) {
 		{pattern: `\p{ASCII_Hex_Digit}`, unicode: true, re2: `[\x{30}-\x{39}\x{41}-\x{46}\x{61}-\x{66}]`, regexp2: `[\u{30}-\u{39}\u{41}-\u{46}\u{61}-\u{66}]`},
 		{pattern: `\p{Alphabetic}`, unicode: true, re2: `[\p{L}\x{345}...`, regexp2: `[\p{L}\p{Other_Alphabetic}\u{16ee}-\u{16f0}...`},
 		{pattern: `\P{Alphabetic}`, unicode: true, re2: `[^\p{L}\x{345}...`, regexp2: `[^\p{L}\p{Other_Alphabetic}\u{16ee}-\u{16f0}...`},
-		{pattern: `\P{Alphabetic}`, unicode: true, icase: true, re2: `(?-i:[^\p{L}\x{345}...`, regexp2: `(?-i:[^\p{L}\p{Other_Alphabetic}\u{16ee}-\u{16f0}...`},
+		{pattern: `\P{Alphabetic}`, unicode: true, icase: true, re2: `[^\p{L}\x{345}...`, regexp2: `(?-i:[^\p{L}\p{Other_Alphabetic}\u{16ee}-\u{16f0}...`},
 		{pattern: `\p{scx=Latn}`, unicode: true, re2: `[\p{Latin}\x{363}-\x{36f}...`, regexp2: `[\p{Latin}\u{363}-\u{36f}...`},
 		{pattern: `[\P{Assigned}]`, unicode: true, re2: `[\p{Cn}]`, regexp2: `[\p{Cn}]`},
 		{pattern: `[^\P{Assigned}]`, unicode: true, re2: `[^\p{Cn}]`, regexp2: `[^\p{Cn}]`},
 		{pattern: `[\p{AHex}_]`, unicode: true, re2: `[\x{30}-\x{39}\x{41}-\x{46}\x{61}-\x{66}_]`, regexp2: `[\u{30}-\u{39}\u{41}-\u{46}\u{61}-\u{66}_]`},
 		{pattern: `[^\P{AHex}_]`, unicode: true, re2: `[^\x{0}-\x{2f}\x{3a}-\x{40}\x{47}-\x{60}\x{67}-\x{10ffff}_]`, regexp2: `[\u{30}-\u{39}\u{41}-\u{46}\u{61}-\u{66}]`},
-		{pattern: `\p{AHex}`, unicode: true, icase: true, re2: `(?-i:[\x{30}-\x{39}\x{41}-\x{46}\x{61}-\x{66}])`, regexp2: `(?-i:[\u{30}-\u{39}\u{41}-\u{46}\u{61}-\u{66}])`},
+		{pattern: `\p{AHex}`, unicode: true, icase: true, re2: `[\x{30}-\x{39}\x{41}-\x{46}\x{61}-\x{66}]`, regexp2: `(?-i:[\u{30}-\u{39}\u{41}-\u{46}\u{61}-\u{66}])`},
 		{pattern: `\P{Any}[\P{Any}]`, unicode: true, re2: `\P{Any}[\P{Any}]`, regexp2: `[][]`},
 		{pattern: `\p{Any}`, unicode: true, re2: `[\x{0}-\x{10ffff}]`, regexp2: `[\u{0}-\u{10ffff}]`},
 		// With a construct Go's regexp lacks, only the regexp2 pattern is made.
@@ -89,11 +89,7 @@ func TestTransformRegExpUnicodeProperties(t *testing.T) {
 		}
 		if tc.incompatibleWith == "" {
 			match("Go", re2, tc.re2)
-			flags := ""
-			if tc.icase {
-				flags = "(?i)"
-			}
-			if _, err := regexp.Compile(flags + re2); err != nil {
+			if _, err := regexp.Compile(re2); err != nil {
 				t.Errorf("%s: Go's regexp: %v", tc.pattern, err)
 			}
 		}
@@ -445,7 +441,6 @@ func TestTransformRegExpExpansionModel(t *testing.T) {
 		{`[\p{L}\p{N}]`, []string{"L", "N"}},
 		{`[\p{Lu}\p{sc=Greek}\p{Nd}]`, []string{"Lu", "Greek", "Nd"}},
 		{`\p{Alphabetic}`, []string{"L"}},
-		{`\p{Uppercase}`, []string{"Lu"}},
 	} {
 		p := parseUnicode(tc.pattern, false)
 		ranges := 0
@@ -459,18 +454,23 @@ func TestTransformRegExpExpansionModel(t *testing.T) {
 			t.Errorf("/%s/ costs Go's regexp %d units for named tables of %d ranges", tc.pattern, p.goExpansion, ranges)
 		}
 	}
+	// A table and a few ranges, which sort into it, cost it about 45 ns a
+	// range (\p{Uppercase}, \p{Lu} and 11 ranges, 28 µs).
+	if p := parseUnicode(`\p{Uppercase}`, false); !strings.Contains(p.ResultString(), `\p{Lu}`) || p.goExpansion < 2*namedTableRanges("Lu")/3 {
+		t.Errorf("/\\p{Uppercase}/ is %.40s and costs Go's regexp %d units", p.ResultString(), p.goExpansion)
+	}
 	class, escapes := parseUnicode(`[\p{L}\p{N}]`, false), parseUnicode(`\p{L}\p{N}`, false)
 	if class.goExpansion < 4*escapes.goExpansion {
 		t.Errorf("[\\p{L}\\p{N}] costs Go's regexp %d units, \\p{L}\\p{N} %d", class.goExpansion, escapes.goExpansion)
 	}
 	// An escape of a named table costs Go's regexp its ranges, about 35 ns
-	// each (\p{L}, 684 ranges, 23 µs), and with the i flag also the case
-	// variants it adds: \p{Lu} then takes about 11 times as long.
+	// each (\p{L}, 684 ranges, 23 µs); with the i flag \p{Lu} is its set
+	// closed under case folding, about 200 ranges written out (20 µs).
 	if p := parseUnicode(`\p{L}`, false); p.goExpansion < namedTableRanges("L")/3 {
 		t.Errorf("\\p{L} costs Go's regexp %d units", p.goExpansion)
 	}
-	if fold, plain := parseUnicode(`\p{Lu}`, true), parseUnicode(`\p{Lu}`, false); fold.goExpansion < 4*plain.goExpansion {
-		t.Errorf("\\p{Lu} costs Go's regexp %d units with the i flag, %d without", fold.goExpansion, plain.goExpansion)
+	if fold := parseUnicode(`\p{Lu}`, true); fold.goExpansion < expansionTextRange*strings.Count(fold.ResultString(), `\x{`)/2 {
+		t.Errorf("\\p{Lu} costs Go's regexp %d units with the i flag, written %.40s", fold.goExpansion, fold.ResultString())
 	}
 	// Every escape costs each engine at least 1.5 to 3 µs, whatever it
 	// stands for: \p{Any} is one range, and regexp2 knows Diacritic.
