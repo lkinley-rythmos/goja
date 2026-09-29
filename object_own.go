@@ -1,0 +1,89 @@
+package goja
+
+import "github.com/dop251/goja/unistring"
+
+// AppendOwnPropertyKeys appends the object's own property keys, the ones
+// Reflect.ownKeys lists and in the same order, without running any
+// JavaScript: every string key, hidden (non-enumerable) ones included, to
+// names (integer-like keys first in ascending order, then the others in
+// creation order), and every symbol key, enumerable or not, to symbols (in
+// creation order). Reflect.ownKeys(o) is names followed by symbols.
+//
+// ok is false, and names and symbols are returned unchanged, for a Proxy:
+// only its ownKeys trap can give its keys, and the trap is never run.
+//
+// For an ordinary object (an object literal, new Object(), Object.create
+// and the like) the call allocates nothing when names and symbols have
+// capacity for the keys and every string key is ASCII; a non-ASCII key is
+// converted to a Go string, which allocates. Every other object (arrays,
+// functions, typed arrays, String and arguments objects, Go-backed and
+// dynamic objects) lists its keys as Reflect.ownKeys would, which may
+// allocate; a Go-backed or dynamic object's keys come from Go code, never
+// from JavaScript.
+// This method will panic with an *Exception if a JavaScript exception is thrown in the process. Use Runtime.Try to catch these.
+func (o *Object) AppendOwnPropertyKeys(names []string, symbols []*Symbol) (namesOut []string, symbolsOut []*Symbol, ok bool) {
+	switch impl := o.self.(type) {
+	case *proxyObject:
+		return names, symbols, false
+	case *baseObject:
+		impl.ensurePropOrder()
+		for _, k := range impl.propNames {
+			names = append(names, k.String())
+		}
+		if impl.symValues != nil {
+			for e := impl.symValues.iterFirst; e != nil; e = e.iterNext {
+				if s, isSym := e.key.(*Symbol); isSym {
+					symbols = append(symbols, s)
+				}
+			}
+		}
+		return names, symbols, true
+	}
+	for _, k := range o.self.stringKeys(true, nil) {
+		names = append(names, k.String())
+	}
+	for _, k := range o.self.symbols(true, nil) {
+		if s, isSym := k.(*Symbol); isSym {
+			symbols = append(symbols, s)
+		}
+	}
+	return names, symbols, true
+}
+
+// GetOwnDataProperty returns the object's own data property name, as
+// Object.getOwnPropertyDescriptor describes it: its value and its
+// writable, enumerable and configurable attributes. ok is false when the
+// object has no own property name, when the property is an accessor, and
+// for a Proxy, whose own properties only its getOwnPropertyDescriptor trap
+// can describe. It never runs JavaScript: no getter, setter or Proxy trap.
+//
+// For an ordinary object and an ASCII name the lookup allocates nothing.
+// Other objects describe the property as Object.getOwnPropertyDescriptor
+// would, which may allocate; a Go-backed or dynamic object's property
+// comes from Go code, never from JavaScript.
+// This method will panic with an *Exception if a JavaScript exception is thrown in the process. Use Runtime.Try to catch these.
+func (o *Object) GetOwnDataProperty(name string) (v Value, writable, enumerable, configurable, ok bool) {
+	var prop Value
+	switch impl := o.self.(type) {
+	case *proxyObject:
+		return nil, false, false, false, false
+	case *baseObject:
+		prop = impl.values[unistring.NewFromString(name)]
+	default:
+		prop = o.self.getOwnPropStr(unistring.NewFromString(name))
+	}
+	switch p := prop.(type) {
+	case nil:
+		return nil, false, false, false, false
+	case *valueProperty:
+		if p.accessor {
+			return nil, false, false, false, false
+		}
+		if p.value == nil {
+			return _undefined, p.writable, p.enumerable, p.configurable, true
+		}
+		return p.value, p.writable, p.enumerable, p.configurable, true
+	default:
+		return p, true, true, true, true
+	}
+}
