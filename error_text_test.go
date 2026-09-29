@@ -111,7 +111,11 @@ func TestCallSiteParseBounded(t *testing.T) {
 	throws := func(expr string) string {
 		return `var msg; for (var i = 0; i < 20; i++) { try { ` + expr + ` } catch (e) { msg = e.message } } msg`
 	}
-	for _, size := range []int{1 << 20, 10 << 20} {
+	sizes := []int{1 << 20, 10 << 20}
+	if testing.Short() || raceDetectorEnabled {
+		sizes = sizes[:1]
+	}
+	for _, size := range sizes {
 		body := strings.Repeat("var super_ = 1; ", size/16)
 		for _, tc := range []struct{ name, src, want string }{
 			{"parenthesized super", throws(`((((((((0 || function(){` + body + `})))))))).x()`), "undefined is not a function"},
