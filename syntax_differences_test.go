@@ -3,6 +3,7 @@ package goja
 import (
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -150,5 +151,28 @@ func TestDynamicImport(t *testing.T) {
 	got, _ := json.Marshal(vm.Get("log").Export())
 	if string(got) != want {
 		t.Fatalf("got  %s\nwant %s", got, want)
+	}
+}
+
+// TestClassOctalLeniency runs testdata/v8_class_octal.json: V8 takes a
+// string's octal escapes and legacy octal and decimal literals in a class
+// body in sloppy code (its keys, field initializers, static blocks and the
+// classes in them), though a class body is strict, but not in the functions
+// in it (methods, their parameters, function expressions and arrows), nor
+// in a class in strict code, nor in eval code. The results are Node.js
+// 18.20.3's, each script compiled as a vm.Script and run in a new context.
+func TestClassOctalLeniency(t *testing.T) {
+	data, err := os.ReadFile("testdata/v8_class_octal.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases [][2]string
+	if err := json.Unmarshal(data, &cases); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cases {
+		if got := runForNode(New(), c[0]); got != c[1] {
+			t.Errorf("%s\n got: %s\nwant: %s", c[0], got, c[1])
+		}
 	}
 }

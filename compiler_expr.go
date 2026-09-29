@@ -1384,6 +1384,9 @@ func (e *compiledFunctionLiteral) compile() (prg *Program, name unistring.String
 	e.c.newScope()
 	s := e.c.scope
 	s.funcType = e.typ
+	if e.typ != funcClsInit {
+		s.octalLenient = false
+	}
 
 	if e.name != nil {
 		name = e.name.Name
@@ -1861,6 +1864,9 @@ type clsElement struct {
 func (e *compiledClassLiteral) emitGetter(putOnStack bool) {
 	e.c.newBlockScope()
 	s := e.c.scope
+	if !s.strict {
+		s.octalLenient = true
+	}
 	s.strict = true
 
 	enter := &enterBlock{}
@@ -3264,7 +3270,7 @@ func (c *compiler) compileIdentifierExpression(v *ast.Identifier) compiledExpr {
 }
 
 func (c *compiler) compileNumberLiteral(v *ast.NumberLiteral) compiledExpr {
-	if c.scope.strict && len(v.Literal) > 1 && v.Literal[0] == '0' && v.Literal[1] <= '9' && v.Literal[1] >= '0' {
+	if c.octalStrict() && len(v.Literal) > 1 && v.Literal[0] == '0' && v.Literal[1] <= '9' && v.Literal[1] >= '0' {
 		if strings.IndexAny(strings.TrimLeft(v.Literal, "01234567"), "89") == 0 {
 			c.throwSyntaxError(int(v.Idx)-1, "Decimals with leading zeros are not allowed in strict mode.")
 		}
@@ -3290,8 +3296,15 @@ func (c *compiler) compileNumberLiteral(v *ast.NumberLiteral) compiledExpr {
 	return r
 }
 
+// octalStrict reports whether a string's octal escapes and legacy octal and
+// decimal literals are SyntaxErrors: in strict code, but, as in V8, not in
+// a class body in sloppy code outside the functions in it (octalLenient).
+func (c *compiler) octalStrict() bool {
+	return c.scope.strict && !c.scope.octalLenient
+}
+
 func (c *compiler) compileStringLiteral(v *ast.StringLiteral) compiledExpr {
-	if c.scope.strict {
+	if c.octalStrict() {
 		if msg := legacyOctalEscape(v.Literal); msg != "" {
 			c.throwSyntaxError(int(v.Idx)-1, msg)
 		}

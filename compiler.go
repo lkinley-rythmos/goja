@@ -358,6 +358,10 @@ type scope struct {
 
 	// in strict mode
 	strict bool
+	// strict only as a class body in sloppy code is, outside the functions
+	// in it (but for its field initializers and static blocks): V8 takes
+	// octal escapes and legacy octal and decimal literals there.
+	octalLenient bool
 	// eval top-level scope
 	eval bool
 	// at least one inner scope has direct eval() which can lookup names dynamically (by name)
@@ -425,15 +429,16 @@ func (e *CompilerReferenceError) Error() string {
 }
 
 func (c *compiler) newScope() {
-	strict := false
+	strict, octalLenient := false, false
 	if c.scope != nil {
-		strict = c.scope.strict
+		strict, octalLenient = c.scope.strict, c.scope.octalLenient
 	}
 	c.scope = &scope{
-		c:      c,
-		prg:    c.p,
-		outer:  c.scope,
-		strict: strict,
+		c:            c,
+		prg:          c.p,
+		outer:        c.scope,
+		strict:       strict,
+		octalLenient: octalLenient,
 	}
 }
 
