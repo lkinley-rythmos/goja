@@ -1,6 +1,7 @@
 package goja
 
 import (
+	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -693,3 +694,28 @@ func (r *Runtime) importAssertions(options Value) {
 		panic(r.newTypeErrorString("Import assertion value must be a string"))
 	}
 }
+
+// V8Message is the error's message as V8 words it, which is the message of
+// the SyntaxError eval and new Function throw: without where Goja found it
+// ("<eval>: Line 1:5 ...") and how many more errors it found, and with the
+// token of "Unexpected token x" quoted (an illegal one and the end of the
+// input have messages of their own). Error keeps Goja's format.
+func (e *CompilerSyntaxError) V8Message() string {
+	msg := syntaxErrorLocation.ReplaceAllString(e.Message, "")
+	msg = syntaxErrorCount.ReplaceAllString(msg, "")
+	if token, ok := strings.CutPrefix(msg, "Unexpected token "); ok {
+		switch token {
+		case "ILLEGAL":
+			return "Invalid or unexpected token"
+		case "EOF":
+			return "Unexpected end of input"
+		}
+		return "Unexpected token '" + token + "'"
+	}
+	return msg
+}
+
+var (
+	syntaxErrorLocation = regexp.MustCompile(`(?s)^.*?Line \d+:\d+ `)
+	syntaxErrorCount    = regexp.MustCompile(` \(and \d+ more errors?\)$`)
+)

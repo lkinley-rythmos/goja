@@ -1478,8 +1478,14 @@ func (r *Runtime) compile(name, src string, strict, inGlobal bool, evalVm *vm) (
 				}
 				break
 			}
+			msg := x1.Error()
+			if evalVm != nil {
+				// eval and new Function throw it with V8's message, which
+				// scripts written for Node.js may show or compare.
+				msg = x1.V8Message()
+			}
 			err = &Exception{
-				val: r.builtin_new(r.getSyntaxError(), []Value{newStringValue(x1.Error())}),
+				val: r.builtin_new(r.getSyntaxError(), []Value{newStringValue(msg)}),
 			}
 		case *CompilerReferenceError:
 			err = &Exception{
