@@ -2596,7 +2596,13 @@ func (c *compiler) compileUnaryExpression(v *ast.UnaryExpression) compiledExpr {
 		operator: v.Operator,
 		postfix:  v.Postfix,
 	}
-
+	if call, ok := v.Operand.(*ast.CallExpression); ok && (v.Operator == token.INCREMENT || v.Operator == token.DECREMENT) {
+		msg := "Invalid left-hand side expression in prefix operation"
+		if v.Postfix {
+			msg = "Invalid left-hand side expression in postfix operation"
+		}
+		r.operand = c.invalidTarget(r.operand, call, msg)
+	}
 	r.init(c, v.Idx0())
 	return r
 }
@@ -3332,7 +3338,9 @@ func (c *compiler) compileAssignExpression(v *ast.AssignExpression) compiledExpr
 		right:    c.compileExpression(v.Right),
 		operator: v.Operator,
 	}
-
+	if call, ok := v.Left.(*ast.CallExpression); ok {
+		r.left = c.invalidTarget(r.left, call, "Invalid left-hand side in assignment")
+	}
 	if p, ok := r.left.(*compiledObjectAssignmentPattern); ok {
 		p.src = v.Right
 	}
@@ -3750,6 +3758,47 @@ func legacyOctalEscape(raw string) string {
 		}
 	}
 	return ""
+}
+
+// compiledInvalidTarget is a call assigned to (f() = 1, f()++, for (f() of
+// a)): as in V8, the call is made, then a ReferenceError thrown before
+// anything is assigned.
+type compiledInvalidTarget struct {
+	baseCompiledExpr
+	call compiledExpr
+	msg  string
+}
+
+func (c *compiler) invalidTarget(call compiledExpr, node ast.Node, msg string) compiledExpr {
+	r := &compiledInvalidTarget{call: call, msg: msg}
+	r.init(c, node.Idx0())
+	return r
+}
+
+func (e *compiledInvalidTarget) emitGetter(putOnStack bool) {
+	e.call.emitGetter(putOnStack)
+}
+
+func (e *compiledInvalidTarget) emitThrow(putOnStack bool) {
+	e.call.emitGetter(false)
+	e.addSrcMap()
+	e.c.emit(throwReferenceError(e.msg))
+	if putOnStack {
+		// Not reached; it keeps the stack as the caller expects it.
+		e.c.emit(loadUndef)
+	}
+}
+
+func (e *compiledInvalidTarget) emitSetter(_ compiledExpr, putOnStack bool) {
+	e.emitThrow(putOnStack)
+}
+
+func (e *compiledInvalidTarget) emitUnary(_, _ func(), _, putOnStack bool) {
+	e.emitThrow(putOnStack)
+}
+
+func (e *compiledInvalidTarget) emitRef() {
+	e.emitThrow(false)
 }
 
 // compiledImportCall is import(specifier): a runtime has no module loader,

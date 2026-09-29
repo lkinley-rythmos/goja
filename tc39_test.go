@@ -32,6 +32,18 @@ var (
 
 	skipList = map[string]bool{
 
+		// A call as an assignment target is an early SyntaxError in the
+		// specification, but V8 (and so Node.js, which goja follows)
+		// throws a ReferenceError when it runs, for web compatibility.
+		"test/language/expressions/assignmenttargettype/direct-callexpression.js":                               true,
+		"test/language/expressions/assignmenttargettype/direct-callexpression-in-compound-assignment.js":        true,
+		"test/language/expressions/assignmenttargettype/direct-callexpression-in-prefix-update.js":              true,
+		"test/language/expressions/assignmenttargettype/direct-callexpression-in-postfix-update.js":             true,
+		"test/language/expressions/assignmenttargettype/direct-callexpression-as-for-in-lhs.js":                 true,
+		"test/language/expressions/assignmenttargettype/direct-callexpression-as-for-of-lhs.js":                 true,
+		"test/language/expressions/assignmenttargettype/parenthesized-callexpression.js":                        true,
+		"test/language/expressions/assignmenttargettype/parenthesized-callexpression-in-compound-assignment.js": true,
+
 		// out-of-date (https://github.com/tc39/test262/issues/3407)
 		"test/language/expressions/prefix-increment/S11.4.4_A6_T3.js":        true,
 		"test/language/expressions/prefix-increment/S11.4.4_A6_T2.js":        true,

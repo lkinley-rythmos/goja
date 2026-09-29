@@ -362,7 +362,11 @@ func (c *compiler) compileForInStatement(v *ast.ForInStatement, needResult bool)
 func (c *compiler) compileForInto(into ast.ForInto, needResult bool) (enter *enterBlock) {
 	switch into := into.(type) {
 	case *ast.ForIntoExpression:
-		c.compileExpression(into.Expression).emitSetter(&c.enumGetExpr, false)
+		target := c.compileExpression(into.Expression)
+		if call, ok := into.Expression.(*ast.CallExpression); ok {
+			target = c.invalidTarget(target, call, "Invalid left-hand side in for-loop")
+		}
+		target.emitSetter(&c.enumGetExpr, false)
 	case *ast.ForIntoVar:
 		if c.scope.strict && into.Binding.Initializer != nil {
 			c.throwSyntaxError(int(into.Binding.Initializer.Idx0())-1, "for-in loop variable declaration may not have an initializer.")

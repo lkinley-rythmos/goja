@@ -758,8 +758,9 @@ func (self *_parser) parseForOrForInStatement() ast.Statement {
 			}
 			if forIn || forOf {
 				switch e := expr.(type) {
-				case *ast.Identifier, *ast.DotExpression, *ast.PrivateDotExpression, *ast.BracketExpression, *ast.Binding:
-					// These are all acceptable
+				case *ast.Identifier, *ast.DotExpression, *ast.PrivateDotExpression, *ast.BracketExpression, *ast.Binding, *ast.CallExpression:
+					// These are all acceptable (a call as a ReferenceError
+					// when it is assigned to)
 				case *ast.ObjectLiteral:
 					expr = self.reinterpretAsObjectAssignmentPattern(e)
 				case *ast.ArrayLiteral:

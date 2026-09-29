@@ -10,7 +10,7 @@ import (
 // TestNodeSyntaxDifferences: what Node.js 18.20.3 does, compiling each
 // script as a vm.Script and running it in a new context, where goja did
 // otherwise: strict octal escapes are SyntaxErrors, sloppy 08 and 09.5 are
-// decimals, a var of
+// decimals, a call assigned to is a ReferenceError when it runs, a var of
 // eval code must not redeclare a lexical binding around it, and import()
 // parses (and rejects, TestDynamicImport).
 func TestNodeSyntaxDifferences(t *testing.T) {
@@ -54,9 +54,26 @@ func TestNodeSyntaxDifferences(t *testing.T) {
 		{"08.5e2", "ok: 850"},
 		{"09.", "ok: 9"},
 		{"09.e1", "ok: 90"},
+		{"function f(){ return 1 } f() = 1", "ReferenceError: Invalid left-hand side in assignment"},
+		{"var n = 0; function f(){ n++ } try { f() = 1 } catch (e) {} n", "ok: 1"},
+		{"var n = 0; function f(){ n++ } try { f() = (n += 10) } catch (e) {} n", "ok: 1"},
+		{"function f(){} f() += 1", "ReferenceError: Invalid left-hand side in assignment"},
+		{"var n = 0; function f(){ n++; return 1 } try { f() += 1 } catch (e) {} n", "ok: 1"},
+		{"function f(){} f()++", "ReferenceError: Invalid left-hand side expression in postfix operation"},
+		{"function f(){} ++f()", "ReferenceError: Invalid left-hand side expression in prefix operation"},
+		{"function f(){} for (f() in {a: 1}) {}", "ReferenceError: Invalid left-hand side in for-loop"},
+		{"function f(){} for (f() of [1]) {}", "ReferenceError: Invalid left-hand side in for-loop"},
+		{"function f(){} for (f() in {}) {} 'done'", "ok: \"done\""},
+		{"function f(){} for (f() of []) {} 'done'", "ok: \"done\""},
+		{"'use strict'; function f(){} f() = 1", "ReferenceError: Invalid left-hand side in assignment"},
 		{"function f(){} [f()] = [1]", "SyntaxError: Invalid destructuring assignment target"},
 		{"function f(){} ({a: f()} = {})", "SyntaxError: Invalid destructuring assignment target"},
+		{"function f(){} f() &&= 1", "SyntaxError: Invalid left-hand side in assignment"},
+		{"function f(){} f() ??= 1", "SyntaxError: Invalid left-hand side in assignment"},
+		{"var o = {f(){}}; o.f() = 1", "ReferenceError: Invalid left-hand side in assignment"},
 		{"new Date() = 1", "SyntaxError: Invalid left-hand side in assignment"},
+		{"function f(){} (f()) = 1", "ReferenceError: Invalid left-hand side in assignment"},
+		{"function f(){} f()--", "ReferenceError: Invalid left-hand side expression in postfix operation"},
 		{"let x = 1; eval('var x')", "SyntaxError: Identifier 'x' has already been declared"},
 		{"let x = 1; eval('var y'); typeof y", "ok: \"undefined\""},
 		{"function g(){ let x; eval('var x') } g()", "SyntaxError: Identifier 'x' has already been declared"},

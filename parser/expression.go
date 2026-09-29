@@ -861,7 +861,7 @@ func (self *_parser) parseUpdateExpression() ast.Expression {
 		self.next()
 		operand := self.parseUnaryExpression()
 		switch operand.(type) {
-		case *ast.Identifier, *ast.DotExpression, *ast.PrivateDotExpression, *ast.BracketExpression:
+		case *ast.Identifier, *ast.DotExpression, *ast.PrivateDotExpression, *ast.BracketExpression, *ast.CallExpression:
 		default:
 			self.error(idx, "Invalid left-hand side expression in prefix operation")
 			self.nextStatement()
@@ -883,7 +883,7 @@ func (self *_parser) parseUpdateExpression() ast.Expression {
 			idx := self.idx
 			self.next()
 			switch operand.(type) {
-			case *ast.Identifier, *ast.DotExpression, *ast.PrivateDotExpression, *ast.BracketExpression:
+			case *ast.Identifier, *ast.DotExpression, *ast.PrivateDotExpression, *ast.BracketExpression, *ast.CallExpression:
 			default:
 				self.error(idx, "Invalid left-hand side expression in postfix operation")
 				self.nextStatement()
@@ -1395,7 +1395,14 @@ func (self *_parser) parseAssignmentExpression() ast.Expression {
 		switch l := left.(type) {
 		case *ast.Identifier, *ast.DotExpression, *ast.PrivateDotExpression, *ast.BracketExpression:
 			ok = true
-
+		case *ast.CallExpression:
+			// f() = 1 is a ReferenceError when it runs, as web browsers
+			// have it (V8's), but f() &&= 1 an early error.
+			switch operator {
+			case token.LOGICAL_AND, token.LOGICAL_OR, token.COALESCE:
+			default:
+				ok = true
+			}
 		case *ast.ArrayLiteral:
 			if !parenthesis && operator == token.ASSIGN {
 				left = self.reinterpretAsArrayAssignmentPattern(l)

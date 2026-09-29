@@ -6148,6 +6148,13 @@ func (vm *vm) resetAfterAbort() {
 	vm.nativeDepth = 0
 }
 
+// throwReferenceError throws a ReferenceError with its message.
+type throwReferenceError string
+
+func (t throwReferenceError) exec(vm *vm) {
+	vm.throw(vm.r.newError(vm.r.getReferenceError(), string(t)))
+}
+
 type importDynamic struct{}
 
 func (importDynamic) exec(vm *vm) {

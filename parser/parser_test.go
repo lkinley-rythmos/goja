@@ -160,7 +160,7 @@ func TestParserErr(t *testing.T) {
 
 		test("0 = 1", "(anonymous): Line 1:1 Invalid left-hand side in assignment")
 
-		test("func() = 1", "(anonymous): Line 1:1 Invalid left-hand side in assignment")
+		test("func() = 1", nil) // a ReferenceError when it runs, as in V8
 
 		test("(1 + 1) = 2", "(anonymous): Line 1:2 Invalid left-hand side in assignment")
 
