@@ -465,6 +465,18 @@ func toNumeric(value Value) Value {
 // and uninterruptible) fails with that RangeError instead.
 const maxValueStackSlots = 1 << 25
 
+// slotCount is a block's or a function's stack or stash size as a number
+// of slots. A size of maxValueStackSlots or more (which a miscompiled size
+// would be) fails with V8's RangeError before anything is allocated: on
+// 32-bit platforms one of 2^31 or more would otherwise convert to a
+// negative int, which expand would not see.
+func slotCount(n uint32) int {
+	if n >= maxValueStackSlots {
+		panic(rangeError("Maximum call stack size exceeded"))
+	}
+	return int(n)
+}
+
 func (s *valueStack) expand(idx int) {
 	if idx < len(*s) {
 		return
@@ -3792,12 +3804,12 @@ type enterBlock struct {
 func (e *enterBlock) exec(vm *vm) {
 	if e.stashSize > 0 {
 		vm.newStash()
-		vm.stash.values = make([]Value, e.stashSize)
+		vm.stash.values = make([]Value, slotCount(e.stashSize))
 		if len(e.names) > 0 {
 			vm.stash.names = e.names
 		}
 	}
-	ss := int(e.stackSize)
+	ss := slotCount(e.stackSize)
 	vm.stack.expand(vm.sp + ss - 1)
 	vv := vm.stack[vm.sp : vm.sp+ss]
 	for i := range vv {
@@ -3815,13 +3827,13 @@ type enterCatchBlock struct {
 
 func (e *enterCatchBlock) exec(vm *vm) {
 	vm.newStash()
-	vm.stash.values = make([]Value, e.stashSize)
+	vm.stash.values = make([]Value, slotCount(e.stashSize))
 	if len(e.names) > 0 {
 		vm.stash.names = e.names
 	}
 	vm.sp--
 	vm.stash.values[0] = vm.stack[vm.sp]
-	ss := int(e.stackSize)
+	ss := slotCount(e.stackSize)
 	vm.stack.expand(vm.sp + ss - 1)
 	vv := vm.stack[vm.sp : vm.sp+ss]
 	for i := range vv {
@@ -3841,7 +3853,7 @@ func (l *leaveBlock) exec(vm *vm) {
 		vm.stash = vm.stash.outer
 	}
 	if ss := l.stackSize; ss > 0 {
-		vm.sp -= int(ss)
+		vm.sp -= slotCount(ss)
 	}
 	vm.pc++
 }
@@ -3876,7 +3888,7 @@ func (e *enterFunc) exec(vm *vm) {
 	vm.newStash()
 	stash := vm.stash
 	stash.funcType = e.funcType
-	stash.values = make([]Value, e.stashSize)
+	stash.values = make([]Value, slotCount(e.stashSize))
 	if len(e.names) > 0 {
 		if e.extensible {
 			m := make(map[unistring.String]uint32, len(e.names))
@@ -3889,7 +3901,7 @@ func (e *enterFunc) exec(vm *vm) {
 		}
 	}
 
-	ss := int(e.stackSize)
+	ss := slotCount(e.stackSize)
 	ea := 0
 	if e.argsToStash {
 		offset := vm.args - int(e.numArgs)
@@ -3945,7 +3957,7 @@ func (e *enterFunc1) exec(vm *vm) {
 	vm.newStash()
 	stash := vm.stash
 	stash.funcType = e.funcType
-	stash.values = make([]Value, e.stashSize)
+	stash.values = make([]Value, slotCount(e.stashSize))
 	if len(e.names) > 0 {
 		if e.extensible {
 			m := make(map[unistring.String]uint32, len(e.names))
@@ -3992,7 +4004,7 @@ func (e *enterFuncBody) exec(vm *vm) {
 		vm.newStash()
 		stash := vm.stash
 		stash.funcType = e.funcType
-		stash.values = make([]Value, e.stashSize)
+		stash.values = make([]Value, slotCount(e.stashSize))
 		if len(e.names) > 0 {
 			if e.extensible {
 				m := make(map[unistring.String]uint32, len(e.names))
@@ -4009,7 +4021,7 @@ func (e *enterFuncBody) exec(vm *vm) {
 	if e.adjustStack {
 		sp -= vm.args
 	}
-	nsp := sp + int(e.stackSize)
+	nsp := sp + slotCount(e.stackSize)
 	if e.stackSize > 0 {
 		vm.stack.expand(nsp - 1)
 		vv := vm.stack[sp:nsp]
@@ -4053,7 +4065,7 @@ func (e *enterFuncStashless) exec(vm *vm) {
 	vm.sb = sp - vm.args - 1
 	d := int(e.args) - vm.args
 	if d > 0 {
-		ss := sp + int(e.stackSize) + d
+		ss := sp + slotCount(e.stackSize) + d
 		vm.stack.expand(ss)
 		vv := vm.stack[sp : sp+d]
 		for i := range vv {
@@ -4067,7 +4079,7 @@ func (e *enterFuncStashless) exec(vm *vm) {
 		vm.sp = ss
 	} else {
 		if e.stackSize > 0 {
-			ss := sp + int(e.stackSize)
+			ss := sp + slotCount(e.stackSize)
 			vm.stack.expand(ss)
 			vv := vm.stack[sp:ss]
 			for i := range vv {

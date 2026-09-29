@@ -75,14 +75,40 @@ func sameDuplicateError(got, want string) bool {
 }
 
 // TestValueStackBounded: no instruction can grow the value stack past
-// maxValueStackSlots; it throws V8's RangeError instead of allocating.
+// maxValueStackSlots, nor make a stash or a block of that size, on 32-bit
+// platforms too; it throws V8's RangeError instead of allocating.
 func TestValueStackBounded(t *testing.T) {
-	var s valueStack
-	defer func() {
-		if x := recover(); x != rangeError("Maximum call stack size exceeded") {
-			t.Fatalf("recovered %v", x)
-		}
-	}()
-	s.expand(1 << 32)
-	t.Fatal("the stack grew to 2^32 slots")
+	rangeErr := rangeError("Maximum call stack size exceeded")
+	for _, tc := range []struct {
+		name string
+		f    func()
+	}{
+		{"expand", func() { var s valueStack; s.expand(maxValueStackSlots) }},
+		{"a wrapped size", func() { slotCount(1<<32 - 1) }},
+		{"the bound", func() { slotCount(maxValueStackSlots) }},
+		// A block of the wrapped size, entered: on 32-bit platforms its
+		// size converted to -1.
+		{"enterBlock", func() {
+			vm := New().vm
+			vm.sp = 0
+			(&enterBlock{stackSize: 1<<32 - 1}).exec(vm)
+		}},
+		{"enterBlock's stash", func() {
+			vm := New().vm
+			(&enterBlock{stashSize: 1<<32 - 1}).exec(vm)
+		}},
+	} {
+		func() {
+			defer func() {
+				if x := recover(); x != rangeErr {
+					t.Errorf("%s: recovered %v", tc.name, x)
+				}
+			}()
+			tc.f()
+			t.Errorf("%s: no RangeError", tc.name)
+		}()
+	}
+	if n := slotCount(maxValueStackSlots - 1); n != maxValueStackSlots-1 {
+		t.Fatalf("slotCount(%d) = %d", maxValueStackSlots-1, n)
+	}
 }
