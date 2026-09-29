@@ -327,3 +327,15 @@ func TestTransformRegExpInvalidUTF8(t *testing.T) {
 		}
 	}
 }
+
+func TestRegExpReadInvalidUTF8AfterError(t *testing.T) {
+	// Reading invalid UTF-8 ends the scan even when an error was reported
+	// already, so that a scan that went back cannot loop.
+	p := &_RegExp_parser{str: "a\xff", length: 2}
+	p.error(true, "earlier")
+	p.chr = 'a' // as a scan that went back has it
+	p.seek(1)
+	if p.chr != -1 {
+		t.Fatalf("read %q", p.chr)
+	}
+}

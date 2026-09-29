@@ -49,3 +49,21 @@ func TestLexerCodePointEscapes(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestParseStringLiteralUncountedUnicode(t *testing.T) {
+	// A literal decoded as ASCII that turns out to have a character that is
+	// not is decoded again as UTF-16, whatever the scan counted.
+	for _, tc := range []struct {
+		literal string
+		want    unistring.String
+	}{
+		{`é`, unistring.FromUtf16([]uint16{unistring.BOM, 0xe9})},
+		{`a\u{1F600}`, unistring.FromUtf16([]uint16{unistring.BOM, 'a', 0xd83d, 0xde00})},
+		{`\x41`, "A"},
+	} {
+		got, err := parseStringLiteral(tc.literal, 1, false, false)
+		if err != "" || got != tc.want {
+			t.Errorf("%s: %q, %q", tc.literal, got, err)
+		}
+	}
+}
