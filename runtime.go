@@ -1468,7 +1468,12 @@ func compileAST(prg *js_ast.Program, strict, inGlobal bool, evalVm *vm) (p *Prog
 }
 
 func (r *Runtime) compile(name, src string, strict, inGlobal bool, evalVm *vm) (p *Program, err error) {
-	p, err = compile(name, src, strict, inGlobal, evalVm, r.parserOptions...)
+	opts := r.parserOptions
+	if evalVm != nil && evalVm.privEnv != nil {
+		// A direct eval in a class body sees the class's private names.
+		opts = append(opts[:len(opts):len(opts)], parser.WithPrivateNamesInScope)
+	}
+	p, err = compile(name, src, strict, inGlobal, evalVm, opts...)
 	if err != nil {
 		switch x1 := err.(type) {
 		case *CompilerSyntaxError:

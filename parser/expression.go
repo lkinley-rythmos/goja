@@ -153,6 +153,11 @@ func (self *_parser) parseSuperProperty() ast.Expression {
 	switch self.token {
 	case token.PERIOD:
 		self.next()
+		if self.token == token.PRIVATE_IDENTIFIER {
+			self.error(self.idx, "Unexpected private field")
+			self.nextStatement()
+			return &ast.BadExpression{From: idx, To: self.idx}
+		}
 		if !token.IsId(self.token) {
 			self.expect(token.IDENTIFIER)
 			self.nextStatement()
@@ -442,6 +447,10 @@ func (self *_parser) parseObjectProperty() ast.Property {
 		generator = true
 		self.next()
 	}
+	if self.token == token.PRIVATE_IDENTIFIER {
+		// Only a class has private names.
+		self.errorUnexpectedToken(self.token)
+	}
 	literal, parsedLiteral, value, tkn := self.parseObjectPropertyKey()
 	if value == nil {
 		return nil
@@ -483,6 +492,9 @@ func (self *_parser) parseObjectProperty() ast.Property {
 				self.errorUnexpectedToken(self.token)
 			}
 		case (literal == "get" || literal == "set" || tkn == token.ASYNC) && self.token != token.COLON:
+			if self.token == token.PRIVATE_IDENTIFIER {
+				self.errorUnexpectedToken(self.token)
+			}
 			_, _, keyValue, tkn1 := self.parseObjectPropertyKey()
 			if keyValue == nil {
 				return nil
@@ -694,6 +706,7 @@ func (self *_parser) parseDotMember(left ast.Expression) ast.Expression {
 	idx := self.idx
 
 	if self.token == token.PRIVATE_IDENTIFIER {
+		self.referPrivateName(literal, idx)
 		self.next()
 		return &ast.PrivateDotExpression{
 			Left: left,
@@ -912,10 +925,21 @@ func (self *_parser) parseUnaryExpression() ast.Expression {
 		tkn := self.token
 		idx := self.idx
 		self.next()
+		operand := self.parseUnaryExpression()
+		if tkn == token.DELETE {
+			target := operand
+			if chain, ok := target.(*ast.OptionalChain); ok {
+				target = chain.Expression
+			}
+			if _, ok := target.(*ast.PrivateDotExpression); ok {
+				// V8 reports it here, before the end of the class.
+				self.error(idx, "Private fields can not be deleted")
+			}
+		}
 		return &ast.UnaryExpression{
 			Operator: tkn,
 			Idx:      idx,
-			Operand:  self.parseUnaryExpression(),
+			Operand:  operand,
 		}
 	case token.AWAIT:
 		if self.scope.allowAwait {
@@ -942,6 +966,15 @@ func (self *_parser) parseUnaryExpression() ast.Expression {
 }
 
 func (self *_parser) parseExponentiationExpression() ast.Expression {
+	if self.token == token.PRIVATE_IDENTIFIER {
+		// An operand of a binary operator ("a + #x"). V8 parses these
+		// operands, and a relational expression's first one, as it does the
+		// left of "#x in o".
+		idx := self.idx
+		self.unexpectedPrivateName(self.parsedLiteral, idx)
+		self.next()
+		return &ast.BadExpression{From: idx, To: self.idx}
+	}
 	parenthesis := self.token == token.LEFT_PARENTHESIS
 
 	left := self.parseUnaryExpression()
@@ -1019,25 +1052,36 @@ func (self *_parser) parseShiftExpression() ast.Expression {
 }
 
 func (self *_parser) parseRelationalExpression() ast.Expression {
-	if self.scope.allowIn && self.token == token.PRIVATE_IDENTIFIER {
-		left := &ast.PrivateIdentifier{
+	return self.parseRelational(true)
+}
+
+// parseRelational parses a relational expression; "#x in o" may begin it if
+// privateIn, which the right operand of a relational operator may not
+// ("a < #x in o"), as in V8.
+func (self *_parser) parseRelational(privateIn bool) ast.Expression {
+	var left ast.Expression
+	if self.token == token.PRIVATE_IDENTIFIER {
+		id := &ast.PrivateIdentifier{
 			Identifier: ast.Identifier{
 				Idx:  self.idx,
 				Name: self.parsedLiteral,
 			},
 		}
 		self.next()
-		if self.token == token.IN {
-			self.next()
-			return &ast.BinaryExpression{
-				Operator: self.token,
-				Left:     left,
-				Right:    self.parseShiftExpression(),
-			}
+		if !privateIn || !self.scope.allowIn || self.token != token.IN {
+			self.unexpectedPrivateName(id.Name, id.Idx)
+			return &ast.BadExpression{From: id.Idx, To: self.idx}
 		}
-		return left
+		self.referPrivateName(id.Name, id.Idx)
+		self.next()
+		left = &ast.BinaryExpression{
+			Operator: token.IN,
+			Left:     id,
+			Right:    self.parseShiftExpression(),
+		}
+	} else {
+		left = self.parseShiftExpression()
 	}
-	left := self.parseShiftExpression()
 
 	allowIn := self.scope.allowIn
 	self.scope.allowIn = true
@@ -1052,7 +1096,7 @@ func (self *_parser) parseRelationalExpression() ast.Expression {
 		return &ast.BinaryExpression{
 			Operator:   tkn,
 			Left:       left,
-			Right:      self.parseRelationalExpression(),
+			Right:      self.parseRelational(false),
 			Comparison: true,
 		}
 	case token.INSTANCEOF:
@@ -1061,7 +1105,7 @@ func (self *_parser) parseRelationalExpression() ast.Expression {
 		return &ast.BinaryExpression{
 			Operator: tkn,
 			Left:     left,
-			Right:    self.parseRelationalExpression(),
+			Right:    self.parseRelational(false),
 		}
 	case token.IN:
 		if !allowIn {
@@ -1072,7 +1116,7 @@ func (self *_parser) parseRelationalExpression() ast.Expression {
 		return &ast.BinaryExpression{
 			Operator: tkn,
 			Left:     left,
-			Right:    self.parseRelationalExpression(),
+			Right:    self.parseRelational(false),
 		}
 	}
 

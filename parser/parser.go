@@ -52,12 +52,13 @@ const (
 )
 
 type options struct {
-	disableSourceMaps bool
-	sourceMapLoader   func(path string) ([]byte, error)
+	disableSourceMaps   bool
+	sourceMapLoader     func(path string) ([]byte, error)
+	privateNamesInScope bool
 }
 
 // Option represents one of the options for the parser to use in the Parse methods. Currently supported are:
-// WithDisableSourceMaps and WithSourceMapLoader.
+// WithDisableSourceMaps, WithSourceMapLoader and WithPrivateNamesInScope.
 type Option func(*options)
 
 // WithDisableSourceMaps is an option to disable source maps support. May save a bit of time when source maps
@@ -77,6 +78,16 @@ func WithSourceMapLoader(loader func(path string) ([]byte, error)) Option {
 	}
 }
 
+// WithPrivateNamesInScope is an option to parse source that runs inside a
+// class body, as the source of a direct eval() called there does. A private
+// name that no class in the source declares may then be the enclosing
+// class's; resolving it is left to the compiler, and a private name in an
+// invalid place is "Unexpected identifier" rather than "must be declared in
+// an enclosing class".
+func WithPrivateNamesInScope(opts *options) {
+	opts.privateNamesInScope = true
+}
+
 type _parser struct {
 	str    string
 	length int
@@ -92,9 +103,10 @@ type _parser struct {
 	parsedLiteral unistring.String
 
 	scope             *_scope
-	insertSemicolon   bool // If we see a newline, then insert an implicit semicolon
-	implicitSemicolon bool // An implicit semicolon exists
-	lineStart         bool // Only white space and comments since the start of the input or a line terminator
+	privateScope      *_privateScope // the class bodies being parsed, innermost first
+	insertSemicolon   bool           // If we see a newline, then insert an implicit semicolon
+	implicitSemicolon bool           // An implicit semicolon exists
+	lineStart         bool           // Only white space and comments since the start of the input or a line terminator
 
 	errors ErrorList
 

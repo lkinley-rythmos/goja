@@ -106,7 +106,7 @@ func (self *_parser) errorUnexpectedToken(tkn token.Token) error {
 	switch tkn {
 	case token.BOOLEAN, token.NULL:
 		value = self.literal
-	case token.IDENTIFIER:
+	case token.IDENTIFIER, token.PRIVATE_IDENTIFIER:
 		return self.error(self.idx, "Unexpected identifier")
 	case token.KEYWORD:
 		// TODO Might be a future reserved word

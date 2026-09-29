@@ -337,6 +337,8 @@ func (self *_parser) parseClass(declaration bool) *ast.ClassLiteral {
 	}
 
 	self.expect(token.LEFT_BRACE)
+	// The heritage is outside the class's private names; its body is inside.
+	self.openPrivateScope()
 
 	for self.token != token.RIGHT_BRACE && self.token != token.EOF {
 		if self.token == token.SEMICOLON {
@@ -395,7 +397,7 @@ func (self *_parser) parseClass(declaration bool) *ast.ClassLiteral {
 			continue
 		}
 		computed := tkn == token.ILLEGAL
-		_, private := value.(*ast.PrivateIdentifier)
+		privateName, private := value.(*ast.PrivateIdentifier)
 
 		if static && !private && keyName == "prototype" {
 			self.error(value.Idx0(), "Classes may not have a static property named 'prototype'")
@@ -408,7 +410,9 @@ func (self *_parser) parseClass(declaration bool) *ast.ClassLiteral {
 		if kind != "" {
 			// method
 			if keyName == "constructor" && !computed {
-				if !static {
+				if private {
+					self.error(value.Idx0(), "Class constructor may not be a private method")
+				} else if !static {
 					if kind != ast.PropertyKindMethod {
 						self.error(value.Idx0(), "Class constructor may not be an accessor")
 					} else if async {
@@ -416,8 +420,6 @@ func (self *_parser) parseClass(declaration bool) *ast.ClassLiteral {
 					} else if generator {
 						self.error(value.Idx0(), "Class constructor may not be a generator")
 					}
-				} else if private {
-					self.error(value.Idx0(), "Class constructor may not be a private method")
 				}
 			}
 			md := &ast.MethodDefinition{
@@ -427,6 +429,9 @@ func (self *_parser) parseClass(declaration bool) *ast.ClassLiteral {
 				Body:     self.parseMethodDefinition(methodBodyStart, kind, generator, async),
 				Static:   static,
 				Computed: computed,
+			}
+			if private {
+				self.declarePrivateName(privateName, kind, static)
 			}
 			node.Body = append(node.Body, md)
 		} else {
@@ -450,6 +455,9 @@ func (self *_parser) parseClass(declaration bool) *ast.ClassLiteral {
 				self.errorUnexpectedToken(self.token)
 				break
 			}
+			if private {
+				self.declarePrivateName(privateName, ast.PropertyKindValue, static)
+			}
 			node.Body = append(node.Body, &ast.FieldDefinition{
 				Idx:         start,
 				Key:         value,
@@ -461,6 +469,7 @@ func (self *_parser) parseClass(declaration bool) *ast.ClassLiteral {
 	}
 
 	node.RightBrace = self.expect(token.RIGHT_BRACE)
+	self.closePrivateScope()
 	node.Source = self.slice(node.Class, node.RightBrace+1)
 
 	return node
