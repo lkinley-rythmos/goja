@@ -227,6 +227,7 @@ func (self *_RegExp_parser) foldClass(negated bool) {
 		self.goRegexp.WriteString(rw.goText)
 		self.expandGo(rw.goUnits)
 	}
+	self.restartRegexp2Class()
 	self.writeRegexp2(self.classStart, end, rw.r2Text)
 	self.expandRegexp2(rw.r2Units)
 }

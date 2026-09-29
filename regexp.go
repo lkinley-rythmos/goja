@@ -278,6 +278,7 @@ func regexp2Estimate(src string, ignoreCase, unicode bool) (size int64, units in
 		around    = 8 * word     // a lookaround
 		classUse  = 5 * word     // a class where it is used
 		classByte = 2            // a byte of each distinct class's text
+		classNode = 24 * word    // each distinct class
 	)
 	run := int64(10) // a further literal in a run
 	unitsByte := 5   // compile time, a byte outside classes
@@ -327,7 +328,7 @@ func regexp2Estimate(src string, ignoreCase, unicode bool) (size int64, units in
 			}
 			if !classes[cls] {
 				classes[cls] = true
-				size += classByte * int64(len(cls))
+				size += classNode + classByte*int64(len(cls))
 				// The parser's classes that ignoring case would change
 				// are matched case-sensitively.
 				if ignoreCase && !strings.HasSuffix(src[:i], "(?-i:") {
@@ -481,9 +482,9 @@ func (p *regexpPattern) createRegexp2(vm *vm) {
 	if p.regexp2Wrapper != nil {
 		return
 	}
-	size, _ := regexp2Estimate(p.src, p.ignoreCase, p.unicode)
+	size, _ := regexp2Estimate(p.src, p.ignoreCase && p.unicode, p.unicode)
 	vm.r.countAlloc(size)
-	rx, err := compileRegexp2(p.src, p.multiline, p.dotAll, p.ignoreCase, p.unicode)
+	rx, err := compileRegexp2(p.src, p.multiline, p.dotAll, p.ignoreCase && p.unicode, p.unicode)
 	if err != nil {
 		// At this point the regexp should have been successfully converted to re2, if it fails now, it's a bug.
 		panic(err)

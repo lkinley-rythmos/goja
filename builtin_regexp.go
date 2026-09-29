@@ -536,7 +536,9 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 		if dotAll {
 			re2flags += "s"
 		}
-		if ignoreCase {
+		if ignoreCase && unicode {
+			// Without the u flag the text is written for case already
+			// (see parser.TransformRegExp2).
 			re2flags += "i"
 		}
 		if len(re2flags) > 0 {
@@ -571,7 +573,7 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 				// Go's regexp expands repeats, which regexp2 does not: a
 				// pattern too large for Go's regexp may be small for
 				// regexp2, which then compiles it (see below), as V8 does.
-				if _, units := regexp2Estimate(regexp2Str, ignoreCase, unicode); units > maxRegexp2Units {
+				if _, units := regexp2Estimate(regexp2Str, ignoreCase && unicode, unicode); units > maxRegexp2Units {
 					err = errors.New("Invalid regular expression: /" + source + "/: Regular expression too large")
 					return
 				}
@@ -595,10 +597,10 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 		// regexp2 is the only engine for patterns Go's regexp rejects, and
 		// the engine used for any match starting at lastIndex > 0 (global or
 		// sticky). Build it once here, on the template, so clones share it.
-		size2, _ := regexp2Estimate(regexp2Str, ignoreCase, unicode)
+		size2, _ := regexp2Estimate(regexp2Str, ignoreCase && unicode, unicode)
 		chargeRegexp(r, size2)
 		size += size2
-		wrapper2, err = compileRegexp2(regexp2Str, multiline, dotAll, ignoreCase, unicode)
+		wrapper2, err = compileRegexp2(regexp2Str, multiline, dotAll, ignoreCase && unicode, unicode)
 		if err != nil {
 			err = fmt.Errorf("Invalid regular expression (regexp2): %s (%v)", source, err)
 			return

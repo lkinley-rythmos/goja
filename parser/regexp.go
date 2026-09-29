@@ -69,7 +69,7 @@ type _RegExp_parser struct {
 
 	// The pattern for regexp2, which differs from the input when it has
 	// property escapes: regexp2 gets them as explicit character sets.
-	regexp2       strings.Builder
+	regexp2       bytes.Buffer
 	regexp2Offset int // the input before it has been copied to regexp2
 	regexp2Used   bool
 
@@ -100,6 +100,16 @@ type _RegExp_parser struct {
 	refused  bool
 
 	depth int // of the group being scanned
+
+	// Without the u flag, ignoring case (see canonFold): where the Go text
+	// of the atom being scanned starts, and where the escape being scanned
+	// starts in the input, and whether it is a backreference.
+	canonGoStart              int
+	canonR2Len, canonR2Offset int
+	classR2Len, classR2Offset int // the regexp2 text before the class
+	escStart                  int
+	canonChars                map[rune]canonChar
+	backref                   bool
 
 	// The class being scanned ignoring case: its items, and what adding
 	// their case variants costs Go's regexp (in units) and regexp2 (in code
@@ -313,11 +323,20 @@ func (self *_RegExp_parser) scanTerm() {
 		self.startAtom()
 		esc := self.chr
 		self.countEscape()
+		if self.canonFold() {
+			self.markCanon()
+		}
+		self.escStart, self.backref = start, false
 		self.scanEscape(false)
 		if (esc == 'b' || esc == 'B') && self.err == nil {
 			self.writeRegexp2(start, self.chrOffset, self.regexp2Boundary(esc == 'B'))
 		}
-		if self.ignoreCase && self.err == nil {
+		if self.canonFold() && self.err == nil && !self.backref && !isCharacterClassEscape(esc) && esc != 'b' && esc != 'B' {
+			if set, isClass := nonUnicodeClassAtom(self.str[start:self.chrOffset], false); !isClass {
+				self.writeCanonChar(start, self.chrOffset, set[0])
+			}
+		}
+		if self.ignoreCase && self.unicode && self.err == nil {
 			// See termCost.
 			switch esc {
 			case 'w':
@@ -341,7 +360,7 @@ func (self *_RegExp_parser) scanTerm() {
 	case '.':
 		self.startAtom()
 		self.count(costDot)
-		if self.ignoreCase {
+		if self.ignoreCase && self.unicode {
 			self.writeRegexp2(self.chrOffset, self.offset, `(?-i:.)`)
 		}
 		if self.dotAll {
@@ -431,7 +450,14 @@ func (self *_RegExp_parser) scanNonUnicodeTermChar() {
 	default:
 		self.startAtom()
 		self.count(costLiteral)
-		self.pass()
+		if self.canonFold() {
+			chr, start := self.chr, self.chrOffset
+			self.markCanon()
+			self.pass()
+			self.writeCanonChar(start, self.chrOffset, chr)
+		} else {
+			self.pass()
+		}
 		self.prev = termAtom
 	}
 }
@@ -768,6 +794,7 @@ func (self *_RegExp_parser) scanBracket() {
 	}
 
 	self.classStart = self.chrOffset
+	self.classR2Len, self.classR2Offset = self.regexp2.Len(), self.regexp2Offset
 	self.classSet = nil
 	self.classProps = self.classProps[:0]
 	self.classGoStart = -1
@@ -865,6 +892,8 @@ func (self *_RegExp_parser) scanBracket() {
 	if len(self.classProps) > 0 {
 		self.writeGoClass(negated)
 		self.writeRegexp2Class(negated)
+	} else if self.canonFold() {
+		self.canonFoldClass(negated)
 	} else if self.ignoreCase {
 		self.foldClass(negated)
 	}
@@ -877,7 +906,8 @@ func (self *_RegExp_parser) nonUnicodeClassItem(atom string) {
 		self.classItems++
 		return
 	}
-	set, isClass := nonUnicodeClassAtom(atom, true)
+	// Canonicalize takes no variants of \w's characters for word characters.
+	set, isClass := nonUnicodeClassAtom(atom, false)
 	self.classItem(set, isClass && isWideClassEscape(atom), isClass && isWordClassEscape(atom))
 }
 
@@ -956,6 +986,7 @@ type classProperty struct {
 // properties are items of the class. With negated ones, or ignoring case,
 // regexp2 gets the set the class stands for (see writeClass).
 func (self *_RegExp_parser) writeRegexp2Class(negated bool) {
+	self.restartRegexp2Class()
 	b := &self.regexp2
 	end := self.chrOffset // after the ]
 	b.WriteString(self.str[self.regexp2Offset:self.classStart])
@@ -1000,6 +1031,15 @@ func (self *_RegExp_parser) writeRegexp2Class(negated bool) {
 		b.WriteByte(')')
 	}
 	self.classProps = self.classProps[:0]
+}
+
+// restartRegexp2Class drops what the class's items wrote for regexp2 (see
+// writeRegexp2), so that the class can be written whole.
+func (self *_RegExp_parser) restartRegexp2Class() {
+	if self.regexp2Offset > self.classStart {
+		self.regexp2.Truncate(self.classR2Len)
+		self.regexp2Offset = self.classR2Offset
+	}
 }
 
 // classAtomSet returns the set a validated class atom stands for, with the u
@@ -1340,9 +1380,11 @@ skip:
 		}
 		return
 	}
-	// Annex B: an identity escape of x or u.
-	self.passString(offset, self.chrOffset)
-	self.writeRegexp2(offset-1, self.chrOffset, self.str[offset:self.chrOffset])
+	// Annex B: an identity escape of x or u; the digits after it are read
+	// again, as themselves.
+	self.seek(offset + 1)
+	self.passString(offset, offset+1)
+	self.writeRegexp2(offset-1, offset+1, self.str[offset:offset+1])
 }
 
 // scanLegacyDecimalEscape scans \ and a digit without the u flag (Annex B):
@@ -1363,6 +1405,11 @@ func (self *_RegExp_parser) scanLegacyDecimalEscape(inClass bool) {
 		if value <= self.captureCount {
 			self.seek(i)
 			self.error(false, "re2: Invalid \\%d <backreference>", value)
+			self.backref = true
+			if self.canonFold() {
+				// regexp2 compares it ignoring case.
+				self.writeRegexp2(self.escStart, i, "(?i:"+self.str[self.escStart:i]+")")
+			}
 			return
 		}
 	}
@@ -1460,7 +1507,11 @@ func (self *_RegExp_parser) scanUnicodeNamedReference(inClass bool) {
 	if !found && self.deferred == "" {
 		self.deferred = "Invalid named capture referenced"
 	}
-	if strings.IndexByte(self.str[self.offset:self.offset+end], '\\') >= 0 {
+	self.backref = true
+	if self.canonFold() {
+		// regexp2 compares it ignoring case.
+		self.writeRegexp2(self.escStart, self.offset+end+1, `(?i:\k<`+name+`>)`)
+	} else if strings.IndexByte(self.str[self.offset:self.offset+end], '\\') >= 0 {
 		self.writeRegexp2(self.offset, self.offset+end, name)
 	}
 	self.seek(self.offset + end + 1)

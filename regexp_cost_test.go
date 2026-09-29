@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/dop251/goja/parser"
 )
 
 // foldChars are the characters foldedClassesNode18 tests classes on.
@@ -48,17 +50,27 @@ func TestRegexpFoldedClassesMatchNode18(t *testing.T) {
 	}
 }
 
-func TestRegexpFoldedClassesEnginesAgree(t *testing.T) {
-	// Without the u flag Go's regexp matches ignoring case by simple case
-	// folding, which differs from ECMAScript's (U+212A and U+017F are not variants of
-	// k and s in Node.js); regexp2 matches as Go's regexp does, where it
-	// matched every letter with [\W\d].
+// foldedClassesNonUnicodeNode18 is whether each of foldChars matches a class
+// with the i flag in Node.js 18.20.3. Without the u flag Canonicalize makes
+// characters equivalent (U+212A and U+017F are not variants of k and s).
+var foldedClassesNonUnicodeNode18 = []struct{ class, want string }{
+	{`[A-\uffef]`, "1111111111111111111111011101000"},
+	{`[\u0080-\uffff]`, "0010011111111001111100011101000"},
+	{`[^\x00-\x7f]`, "0010011111111001111100011101000"},
+	{`[\u0100-\u01ff]`, "0000010000011001000000001000000"},
+	{`[\u0400-\u04ff]`, "0000000000000000000000000000000"},
+	{`[\u4e00-\u9fa5]`, "0000000000000000000000000100000"},
+	{`[\W\d]`, "0010011111111001111100111111001"},
+	{`[^\S\r\n]`, "0000000000000000000000100001000"},
+	{`[\w\u0100-\u0fff]`, "1101111110011111000111001000001"},
+	{`[^A-\uffef]`, "0000000000000000000000100010001"},
+}
+
+func TestRegexpFoldedClassesNonUnicodeMatchNode18(t *testing.T) {
+	// With Go's regexp and regexp2 (through an empty lookahead), which
+	// folded case otherwise.
 	vm := New()
-	for _, tc := range foldedClassesNode18 {
-		if strings.Contains(tc.class, `\u{`) {
-			continue
-		}
-		var results []string
+	for _, tc := range foldedClassesNonUnicodeNode18 {
 		for _, prefix := range []string{"", "(?=)"} {
 			for _, flags := range []string{"i", "gi"} {
 				vm.Set("src", "^"+prefix+tc.class+"$")
@@ -67,38 +79,87 @@ func TestRegexpFoldedClassesEnginesAgree(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				results = append(results, v.String())
-			}
-		}
-		for _, r := range results[1:] {
-			if r != results[0] {
-				t.Errorf("/%s/i: %v", tc.class, results)
-				break
+				if v.String() != tc.want {
+					t.Errorf("/%s%s/%s: %s, want %s", prefix, tc.class, flags, v, tc.want)
+				}
 			}
 		}
 	}
 }
 
+func TestRegexpCanonicalizeClasses(t *testing.T) {
+	// Every class of code units Canonicalize makes equivalent (recorded
+	// with Node.js 18.20.3, see parser/regexp_canon_gen.js) is matched by a
+	// character of it ignoring case without the u flag, and no neighbour
+	// outside it is, with both engines.
+	vm := New()
+	if _, err := vm.RunString(`function check(members, others) {
+		var res = [];
+		for (var i = 0; i < members.length; i++) {
+			var src = "\\u" + ("000" + members[i].toString(16)).slice(-4);
+			var res1 = [new RegExp("^" + src + "$", "i"), new RegExp("^(?=)" + src + "$", "i"), new RegExp("^[" + src + "]$", "i")];
+			for (var k = 0; k < res1.length; k++) {
+				for (var j = 0; j < members.length; j++) if (!res1[k].test(String.fromCharCode(members[j]))) res.push(res1[k].source + " misses " + members[j]);
+				for (var j = 0; j < others.length; j++) if (res1[k].test(String.fromCharCode(others[j]))) res.push(res1[k].source + " matches " + others[j]);
+			}
+		}
+		return res.join("; ");
+	}`); err != nil {
+		t.Fatal(err)
+	}
+	check, _ := AssertFunction(vm.Get("check"))
+	classes := parser.CanonClasses()
+	for _, members := range classes {
+		in := make(map[uint16]bool)
+		for _, m := range members {
+			in[m] = true
+		}
+		var others []uint16
+		for _, m := range members {
+			for _, d := range []int{-2, -1, 1, 2, 0x20, -0x20} {
+				if o := int(m) + d; o >= 0 && o <= 0xffff && !in[uint16(o)] {
+					others = append(others, uint16(o))
+				}
+			}
+		}
+		v, err := check(nil, vm.ToValue(members), vm.ToValue(others))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v.String() != "" {
+			t.Errorf("%v: %s", members, v)
+		}
+	}
+	if len(classes) < 1000 {
+		t.Errorf("%d classes", len(classes))
+	}
+}
+
 func TestRegexpCaseInsensitiveEscapesMatchNode18(t *testing.T) {
 	// Ignoring case, regexp2 matched \W, [\W] and [^\w] with every
-	// character, and [^\W] with none; with the u flag they match as in
-	// Node.js 18.20.3, and without it as with Go's regexp.
+	// character, and [^\W] with none; they match as in Node.js 18.20.3,
+	// which without the u flag takes U+017F and U+212A for no variants of s
+	// and k (Go's regexp did).
 	vm := New()
 	const chars = `["s", "S", "\u017f", "k", "K", "\u212a", "\u00e9", " "]`
-	for _, tc := range []struct{ pattern, want string }{
-		{`\W`, "00000011"}, {`\w`, "11111100"}, {`[\W]`, "00000011"}, {`[\w]`, "11111100"},
-		{`[^\w]`, "00000011"}, {`[^\W]`, "11111100"}, {`\S`, "11111110"}, {`\D`, "11111111"}, {`.`, "11111111"},
+	for _, tc := range []struct{ pattern, want, wantNonUnicode string }{
+		{`\W`, "00000011", "00100111"}, {`\w`, "11111100", "11011000"}, {`[\W]`, "00000011", "00100111"}, {`[\w]`, "11111100", "11011000"},
+		{`[^\w]`, "00000011", "00100111"}, {`[^\W]`, "11111100", "11011000"}, {`\S`, "11111110", "11111110"}, {`\D`, "11111111", "11111111"}, {`.`, "11111111", "11111111"},
 	} {
 		for _, prefix := range []string{"", "(?=)"} {
 			for _, flags := range []string{"iu", "i"} {
+				want := tc.want
+				if flags == "i" {
+					want = tc.wantNonUnicode
+				}
 				vm.Set("src", prefix+tc.pattern)
 				vm.Set("f", flags)
 				v, err := vm.RunString(`var re = new RegExp(src, f); ` + chars + `.map(function(c) { return re.test(c) ? 1 : 0; }).join("")`)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if v.String() != tc.want {
-					t.Errorf("/%s%s/%s: %s, want %s", prefix, tc.pattern, flags, v, tc.want)
+				if v.String() != want {
+					t.Errorf("/%s%s/%s: %s, want %s", prefix, tc.pattern, flags, v, want)
 				}
 			}
 		}
