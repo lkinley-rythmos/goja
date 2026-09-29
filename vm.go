@@ -488,11 +488,14 @@ func (s *valueStack) expand(idx int) {
 	if idx < cap(*s) {
 		*s = (*s)[:idx]
 	} else {
+		// Geometric growth: a spread of millions of values into a call
+		// pushes them one by one, and growing by 1,024 slots at a time
+		// copied the stack quadratically (4 million took 93 s).
 		var newCap int
 		if idx < 1024 {
 			newCap = idx * 2
 		} else {
-			newCap = (idx + 1025) &^ 1023
+			newCap = min((idx+idx/2+1023)&^1023, maxValueStackSlots)
 		}
 		n := make([]Value, idx, newCap)
 		copy(n, *s)
@@ -2931,7 +2934,11 @@ var pushSpread _pushSpread
 func (_pushSpread) exec(vm *vm) {
 	vm.sp--
 	obj := vm.stack[vm.sp]
+	n := 0
 	vm.getIterator(obj, iterSiteCallSpread).iterate(func(val Value) {
+		if n++; n%interruptCheckInterval == 0 {
+			vm.checkInterrupt()
+		}
 		vm.push(val)
 	})
 	vm.pc++
@@ -5150,6 +5157,10 @@ func (formalArgs createArgsMapped) exec(vm *vm) {
 	}
 
 	for _, v := range vm.stash.extraArgs {
+		// A spread can pass millions (see pushSpread).
+		if i%interruptCheckInterval == 0 {
+			vm.checkInterrupt()
+		}
 		args._put(unistring.String(strconv.Itoa(i)), v)
 		i++
 	}
@@ -5175,6 +5186,10 @@ func (formalArgs createArgsUnmapped) exec(vm *vm) {
 	}
 
 	for _, v := range vm.stash.extraArgs {
+		// A spread can pass millions (see pushSpread).
+		if i%interruptCheckInterval == 0 {
+			vm.checkInterrupt()
+		}
 		args._put(unistring.String(strconv.Itoa(i)), v)
 		i++
 	}
