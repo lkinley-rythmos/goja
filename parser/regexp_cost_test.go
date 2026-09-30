@@ -141,12 +141,12 @@ func TestTransformRegExpCostAfterIncompatible(t *testing.T) {
 		if prefix == `[\S]` {
 			// Invalid with the u flag.
 			_, r2, err = TransformRegExp2(prefix+`\W.`, false, false, false)
-			if _, ok := err.(RegexpErrorIncompatible); !ok || !strings.HasSuffix(r2, `\W.`) {
+			if _, ok := err.(RegexpErrorIncompatible); !ok || !strings.HasSuffix(r2, `\W`+regexp2Dot) {
 				t.Errorf("%s: %q, %v", prefix, r2, err)
 			}
 			continue
 		}
-		if _, ok := err.(RegexpErrorIncompatible); !ok || !strings.HasSuffix(r2, regexp2FoldNonWord+`.`) {
+		if _, ok := err.(RegexpErrorIncompatible); !ok || !strings.HasSuffix(r2, regexp2FoldNonWord+regexp2Dot) {
 			t.Errorf("%s: %q, %v", prefix, r2, err)
 		}
 	}
@@ -157,28 +157,28 @@ func TestTransformRegExpRegexp2FoldEscapes(t *testing.T) {
 	// character and class as the set case folding makes it equivalent to
 	// (see regexp_canon.go); \w and \W as the sets they stand for, which
 	// have U+017F and U+212A with the u flag, and the other escapes as
-	// they are, which they are closed under.
-	for _, tc := range []struct{ pattern, want string }{
-		{`a.b`, `[\u{41}\u{61}].[\u{42}\u{62}]`},
-		{`\w+\W*`, regexp2FoldWord + `+` + regexp2FoldNonWord + `*`},
-		{`\S\D\s\d`, `\S\D\s\d`},
-		{`[\W]\w`, `[^\u{30}-\u{39}\u{41}-\u{5a}\u{5f}\u{61}-\u{7a}\u{17f}\u{212a}]` + regexp2FoldWord},
-		{`(k)\1\k<a>(?<a>)`, `([\u{4b}\u{6b}\u{212a}])(?i:\1)(?i:\k<a>)(?<a>)`},
+	// they are, which they are closed under. A class with \W, \D or \S is
+	// its set in any case, and . a class without the line terminators.
+	for _, tc := range []struct{ pattern, want, plain string }{
+		{`a.b`, `[\u{41}\u{61}]` + regexp2Dot + `[\u{42}\u{62}]`, `a` + regexp2Dot + `b`},
+		{`\w+\W*`, regexp2FoldWord + `+` + regexp2FoldNonWord + `*`, `\w+\W*`},
+		{`\S\D\s\d`, `\S\D\s\d`, `\S\D\s\d`},
+		{`[\W]\w`, `[^\u{30}-\u{39}\u{41}-\u{5a}\u{5f}\u{61}-\u{7a}\u{17f}\u{212a}]` + regexp2FoldWord, `[^\u{30}-\u{39}\u{41}-\u{5a}\u{5f}\u{61}-\u{7a}]\w`},
+		{`(k)\1\k<a>(?<a>)`, `([\u{4b}\u{6b}\u{212a}])(?i:\1)(?i:\k<a>)(?<a>)`, `(k)\1\k<a>(?<a>)`},
 	} {
 		_, r2, err := TransformRegExp2(tc.pattern, false, true, true)
 		if _, incompat := err.(RegexpErrorIncompatible); err != nil && !incompat || r2 != tc.want {
 			t.Errorf("/%s/iu: %q, %v; want %q", tc.pattern, r2, err, tc.want)
 		}
-		// Matching case-sensitively, nothing changes.
-		if _, r2, _ := TransformRegExp2(tc.pattern, false, true, false); r2 != tc.pattern {
-			t.Errorf("/%s/u: %q", tc.pattern, r2)
+		if _, r2, _ := TransformRegExp2(tc.pattern, false, true, false); r2 != tc.plain {
+			t.Errorf("/%s/u: %q, want %q", tc.pattern, r2, tc.plain)
 		}
 	}
 	// Without the u flag regexp2 matches case-sensitively, and gets each
 	// character and class as the set Canonicalize makes it equivalent to
 	// (see regexp_canon.go); the escapes are closed under it.
 	for _, tc := range []struct{ pattern, want string }{
-		{`a.b`, `[\u0041\u0061].[\u0042\u0062]`},
+		{`a.b`, `[\u0041\u0061]` + regexp2Dot + `[\u0042\u0062]`},
 		{`\w+\W*`, `\w+\W*`},
 		{`\S\D\s\d`, `\S\D\s\d`},
 		{`[\W]\w`, `[^\u0030-\u0039\u0041-\u005a\u005f\u0061-\u007a]\w`},

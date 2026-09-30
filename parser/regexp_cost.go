@@ -35,7 +35,7 @@ var (
 	costEscape    = termCost{goUnits: 1, goInsts: 1, r2: 5, r2Fold: 10}  // an escape standing for a character
 	costClassEsc  = termCost{goUnits: 8, goInsts: 1, r2: 7, r2Fold: 30}  // \d \D \w \W
 	costSpaceEsc  = termCost{goUnits: 25, goInsts: 1, r2: 7, r2Fold: 45} // \s \S
-	costDot       = termCost{goUnits: 12, goInsts: 1, r2: 3, r2Fold: 15}
+	costDot       = termCost{goUnits: 12, goInsts: 1, r2: 6, r2Fold: 15} // a class for regexp2 (see regexp2Dot)
 	costAssertion = termCost{goUnits: 11, goInsts: 1, r2: 6, r2Fold: 6}
 	costBoundary  = termCost{goUnits: 11, goInsts: 1, r2: 105, r2Fold: 125} // \b \B (see regexp2Boundary)
 	costCapture   = termCost{goUnits: 17, goInsts: 2, r2: 15, r2Fold: 25}
@@ -132,12 +132,11 @@ func (self *_RegExp_parser) countQuantifier(min, max int) {
 	}
 }
 
-// classItem counts an item of a class, and without the u flag, ignoring
-// case, adds its set to the class's (with the u flag the class's set is
-// kept anyway).
+// classItem counts an item of a class, and without the u flag adds its set
+// to the class's (with the u flag the class's set is kept anyway).
 func (self *_RegExp_parser) classItem(set runeSet) {
 	self.classItems++
-	if self.ignoreCase && !self.unicode {
+	if !self.unicode {
 		self.addClassSet(set)
 	}
 }

@@ -13,6 +13,7 @@ import (
 const (
 	WhitespaceChars = " \f\n\r\t\v\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
 	Re2Dot          = "[^\r\n\u2028\u2029]"
+	regexp2Dot      = `[^\n\r\u2028\u2029]`
 )
 
 type regexpParseError struct {
@@ -80,8 +81,10 @@ type _RegExp_parser struct {
 	classStart    int
 	classSet      runeSet
 	classUnsorted bool // classSet has ranges out of order (see addClassSet)
-	classProps    []classProperty
-	classGoStart  int
+	// The class has \D, \W or \S, and is written for regexp2 as its set.
+	classNegEscape bool
+	classProps     []classProperty
+	classGoStart   int
 
 	capturesScanned bool
 	captureCount    int
@@ -362,6 +365,8 @@ func (self *_RegExp_parser) scanTerm() {
 		if self.dotAll {
 			self.pass()
 		} else {
+			// regexp2's . takes U+2028 and U+2029, ECMAScript's does not.
+			self.writeRegexp2(self.chrOffset, self.offset, regexp2Dot)
 			self.writeString(Re2Dot)
 			self.read()
 		}
@@ -798,7 +803,7 @@ func (self *_RegExp_parser) scanBracket() {
 
 	self.classStart = self.chrOffset
 	self.classR2Len, self.classR2Offset = self.regexp2.Len(), self.regexp2Offset
-	self.classSet, self.classUnsorted = nil, false
+	self.classSet, self.classUnsorted, self.classNegEscape = nil, false, false
 	self.classProps = self.classProps[:0]
 	self.classGoStart = -1
 	self.classItems = 0
@@ -840,6 +845,7 @@ func (self *_RegExp_parser) scanBracket() {
 				}
 			} else if self.err == nil && !self.refused {
 				// Past the bound the pattern is only validated.
+				self.classNegEscape = self.classNegEscape || isNegatedClassEscape(left)
 				set := self.classAtomSet(left)
 				self.addClassSet(set)
 				self.classItem(set)
@@ -905,16 +911,44 @@ func (self *_RegExp_parser) scanBracket() {
 		self.writeRegexp2Class(negated)
 	} else if self.canonFold() {
 		self.canonFoldClass(negated)
+	} else if self.classNegEscape {
+		self.writeRegexp2Set(negated)
 	}
+}
+
+// writeRegexp2Set writes the class just scanned, which has \D, \W or \S,
+// for regexp2 as the set it stands for: regexp2 drops the items after
+// such an escape ([a\Dx] did not match x).
+func (self *_RegExp_parser) writeRegexp2Set(negated bool) {
+	set := self.classSet
+	if negated {
+		set = set.complement()
+	}
+	var b strings.Builder
+	var units int
+	if self.unicode {
+		units = writeClass(&b, set, true)
+	} else {
+		units = writeBMPClass(&b, set)
+	}
+	self.restartRegexp2Class()
+	self.writeRegexp2(self.classStart, self.chrOffset, b.String())
+	self.expandRegexp2(units)
+}
+
+// isNegatedClassEscape reports whether a class atom is \D, \W or \S.
+func isNegatedClassEscape(atom string) bool {
+	return len(atom) == 2 && atom[0] == '\\' && (atom[1] == 'D' || atom[1] == 'W' || atom[1] == 'S')
 }
 
 // nonUnicodeClassItem counts a class item without the u flag (see
 // classItem).
 func (self *_RegExp_parser) nonUnicodeClassItem(atom string) {
-	if !self.ignoreCase || atom == "" {
+	if atom == "" {
 		self.classItems++
 		return
 	}
+	self.classNegEscape = self.classNegEscape || isNegatedClassEscape(atom)
 	// Canonicalize takes no variants of \w's characters for word characters.
 	set, _ := nonUnicodeClassAtom(atom, false)
 	self.classItem(set)
@@ -981,7 +1015,7 @@ func (self *_RegExp_parser) writeRegexp2Class(negated bool) {
 	end := self.chrOffset // after the ]
 	b.WriteString(self.str[self.regexp2Offset:self.classStart])
 	self.regexp2Offset = end
-	whole := self.ignoreCase
+	whole := self.ignoreCase || self.classNegEscape
 	for _, p := range self.classProps {
 		whole = whole || p.negate
 	}
