@@ -102,6 +102,7 @@ func (c *compiler) updateEnterBlock(enter *enterBlock) {
 		}
 	}
 	enter.stashSize, enter.stackSize = uint32(stashSize), uint32(stackSize)
+	enter.dynLookup = scope.dynLookup
 }
 
 func (c *compiler) compileTryStatement(v *ast.TryStatement, needResult bool) {

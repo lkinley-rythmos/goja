@@ -410,7 +410,7 @@ func (c *compiler) leaveScopeBlock(enter *enterBlock) {
 	c.updateEnterBlock(enter)
 	leave := &leaveBlock{
 		stackSize: enter.stackSize,
-		popStash:  enter.stashSize > 0,
+		popStash:  enter.hasStash(),
 	}
 	c.emit(leave)
 	for _, pc := range c.block.breaks {

@@ -3820,10 +3820,20 @@ type enterBlock struct {
 	names     map[unistring.String]uint32
 	stashSize uint32
 	stackSize uint32
+	// dynLookup is set when a scope in the block has a direct eval(): the
+	// block has a stash even without bindings, as the scopes in it count
+	// it when they reach the stashes around them by level (see
+	// finaliseVarAlloc).
+	dynLookup bool
+}
+
+// hasStash reports whether the block has a stash of its own.
+func (e *enterBlock) hasStash() bool {
+	return e.stashSize > 0 || e.dynLookup
 }
 
 func (e *enterBlock) exec(vm *vm) {
-	if e.stashSize > 0 {
+	if e.hasStash() {
 		vm.newStash()
 		vm.stash.values = make([]Value, slotCount(e.stashSize))
 		if len(e.names) > 0 {
@@ -4021,7 +4031,7 @@ type enterFuncBody struct {
 }
 
 func (e *enterFuncBody) exec(vm *vm) {
-	if e.stashSize > 0 || e.extensible {
+	if e.hasStash() || e.extensible {
 		vm.newStash()
 		stash := vm.stash
 		stash.funcType = e.funcType
