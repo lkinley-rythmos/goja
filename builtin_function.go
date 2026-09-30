@@ -191,7 +191,7 @@ func (f *funcProtoApplyObject) vmCall(vm *vm, n int) {
 	vm.stack[base] = thisArg
 	vm.stack[base+1] = target
 	vm.sp = base + 2
-	vm.stack.expand(vm.sp + len(args))
+	vm.expandCharged(vm.sp + len(args))
 	for _, a := range args {
 		if a == nil {
 			a = _undefined

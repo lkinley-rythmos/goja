@@ -955,6 +955,18 @@ func (vm *vm) push(v Value) {
 	vm.sp++
 }
 
+// expandCharged is stack.expand for values a script chose how many of (a
+// spread's, apply's list): the stack is reused from call to call, and only
+// its growth, the array expand allocates, is charged (a spread of 30
+// million values grows it to over 500 MB).
+func (vm *vm) expandCharged(idx int) {
+	c := cap(vm.stack)
+	vm.stack.expand(idx)
+	if c1 := cap(vm.stack); c1 != c {
+		vm.r.countAlloc(int64(c1) * allocSizeValue)
+	}
+}
+
 func (vm *vm) pop() Value {
 	vm.sp--
 	return vm.stack[vm.sp]
@@ -2939,10 +2951,9 @@ func (_pushSpread) exec(vm *vm) {
 		if n++; n%interruptCheckInterval == 0 {
 			vm.checkInterrupt()
 		}
-		// Each value is charged, as apply charges its list (see
-		// createListFromArrayLike).
-		vm.r.countAlloc(allocSizeValue)
-		vm.push(val)
+		vm.expandCharged(vm.sp)
+		vm.stack[vm.sp] = val
+		vm.sp++
 	})
 	vm.pc++
 }

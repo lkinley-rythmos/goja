@@ -434,7 +434,7 @@ func (f *arrowFuncObject) Call(call FunctionCall) Value {
 func (f *baseJsFuncObject) __call(args []Value, newTarget, this Value) (Value, *Exception) {
 	vm := f.val.runtime.vm
 
-	vm.stack.expand(vm.sp + len(args) + 1)
+	vm.expandCharged(vm.sp + len(args) + 1)
 	vm.stack[vm.sp] = f.val
 	vm.sp++
 	vm.stack[vm.sp] = this
@@ -870,7 +870,7 @@ func (f *boundFuncObject) hasInstance(v Value) bool {
 func (f *baseJsFuncObject) prepareForVmCall(call FunctionCall) {
 	vm := f.val.runtime.vm
 	args := call.Arguments
-	vm.stack.expand(vm.sp + len(args) + 1)
+	vm.expandCharged(vm.sp + len(args) + 1)
 	vm.stack[vm.sp] = call.This
 	vm.sp++
 	vm.stack[vm.sp] = f.val

@@ -89,18 +89,23 @@ func TestSpreadCallInterrupt(t *testing.T) {
 }
 
 func TestSpreadCallAllocationLimit(t *testing.T) {
-	// The values a spread pushes, and the entries of an arguments object,
-	// are charged to the allocation limit as apply's list is: 30 million
-	// spread values reached 1.8 GB (3.2 GB with an arguments object) with
-	// nothing charged, where apply stops at the limit.
+	// The growth of the value stack that a spread's values, or apply's
+	// list, take it to, and the entries of an arguments object, are charged
+	// to the allocation limit: 30 million spread values reached 1.8 GB (3.2
+	// GB with an arguments object) with nothing charged, and apply of a
+	// dense array into a native function 1.6 GB, where apply of an array-like
+	// stops at the limit (createListFromArrayLike charges its list).
+	dense := `var a = new Array(5e6).fill(1)`
 	for _, tc := range []struct{ name, setup, script string }{
 		{"spread", ``, `function g() {} g(...new Array(3e7))`},
 		{"spread arguments", ``, `function f() { return arguments.length } f(...new Array(3e7))`},
 		{"spread strict arguments", ``, `function f() { 'use strict'; return arguments.length } f(...new Array(3e7))`},
 		{"spread native", ``, `Math.max(...new Array(3e7))`},
-		// The array is charged before the limit is set; apply takes a
-		// dense array's values as they are, so the arguments object is
-		// what is charged.
+		// The array is made before the limit is set; apply takes a dense
+		// array's values as they are.
+		{"apply native", dense, `Math.max.apply(null, a)`},
+		{"apply", dense, `function g() {} g.apply(null, a)`},
+		{"Reflect.apply", dense, `function g() {} Reflect.apply(g, null, a)`},
 		{"apply arguments", `var a = []; for (var i = 0; i < 3e6; i++) a.push(i)`, `function f() { return arguments.length } for (var i = 0; i < 10; i++) f.apply(null, a)`},
 		{"apply strict arguments", `var a = []; for (var i = 0; i < 3e6; i++) a.push(i)`, `function f() { 'use strict'; return arguments.length } for (var i = 0; i < 10; i++) f.apply(null, a)`},
 	} {
@@ -118,12 +123,22 @@ func TestSpreadCallAllocationLimit(t *testing.T) {
 			}
 		})
 	}
-	// Under the limit the same calls run.
+	// Under the limit the same calls run, and a stack that has grown is
+	// not charged again: a million spreads of ten values charged 160 MB.
 	vm := New()
 	vm.SetAllocationLimit(64 << 20)
 	v, err := vm.RunString(`function f() { return arguments.length } function g(a, b) { return b }
 		[f(...new Array(1e5)), g(...new Array(1e5).fill(7)), f.apply(null, new Array(1e5))].join()`)
 	if err != nil || v.String() != "100000,7,100000" {
 		t.Fatalf("%v %v", v, err)
+	}
+	vm = New()
+	vm.SetAllocationLimit(64 << 20)
+	v, err = vm.RunString(`var a = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], s = 0;
+		function g(x) { return x }
+		for (var i = 0; i < 1e6; i++) s += Math.max(...a) + Math.max.apply(null, a) + g(...a) + Reflect.apply(g, null, a);
+		s`)
+	if err != nil || v.String() != "22000000" {
+		t.Fatalf("%v %v, %d MB charged", v, err, vm.AllocatedBytes()>>20)
 	}
 }
