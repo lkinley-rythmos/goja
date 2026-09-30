@@ -516,7 +516,9 @@ func (r *Runtime) arrayproto_splice(call FunctionCall) Value {
 				values = src.values[:newLength]
 				copy(values[actualStart+itemCount:], values[actualStart+actualDeleteCount:length])
 			} else {
-				values = make([]Value, newLength)
+				// With room to grow, as a push has: a splice at each step of
+				// a loop copied the whole array at each.
+				values = make([]Value, newLength, growCap(int(newLength), len(src.values), cap(src.values)))
 				copy(values, src.values[:actualStart])
 				copy(values[actualStart+itemCount:], src.values[actualStart+actualDeleteCount:])
 			}
@@ -601,7 +603,8 @@ func (r *Runtime) arrayproto_unshift(call FunctionCall) Value {
 				arr.values = arr.values[:newSize]
 				copy(arr.values[argCount:], arr.values[:length])
 			} else {
-				values := make([]Value, newSize)
+				// With room to grow, as a push has (see arrayproto_splice).
+				values := make([]Value, newSize, growCap(int(newSize), len(arr.values), cap(arr.values)))
 				copy(values[argCount:], arr.values)
 				arr.values = values
 			}

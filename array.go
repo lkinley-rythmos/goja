@@ -390,7 +390,9 @@ func (a *arrayObject) hasPropertyIdx(idx valueInt) bool {
 func (a *arrayObject) expand(idx uint32) bool {
 	targetLen := idx + 1
 	if targetLen > uint32(len(a.values)) {
-		if targetLen < uint32(cap(a.values)) {
+		// A slice as long as its capacity is resliced too: it was moved to a
+		// larger one each time it was filled.
+		if targetLen <= uint32(cap(a.values)) {
 			a.values = a.values[:targetLen]
 		} else {
 			if idx > 4096 && (a.objCount == 0 || idx/uint32(a.objCount) > 10) {
