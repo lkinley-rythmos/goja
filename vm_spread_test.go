@@ -95,7 +95,9 @@ func TestSpreadCallAllocationLimit(t *testing.T) {
 	// GB with an arguments object) with nothing charged, and apply of a
 	// dense array into a native function 1.6 GB, where apply of an array-like
 	// stops at the limit (createListFromArrayLike charges its list).
-	dense := `var a = new Array(5e6).fill(1)`
+	// Ten million values: a stack of them is past 64 MB with 8-byte values
+	// too (GOARCH=386).
+	dense := `var a = new Array(1e7).fill(1)`
 	for _, tc := range []struct{ name, setup, script string }{
 		{"spread", ``, `function g() {} g(...new Array(3e7))`},
 		{"spread arguments", ``, `function f() { return arguments.length } f(...new Array(3e7))`},
