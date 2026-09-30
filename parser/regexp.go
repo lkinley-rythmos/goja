@@ -14,6 +14,10 @@ const (
 	WhitespaceChars = " \f\n\r\t\v\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
 	Re2Dot          = "[^\r\n\u2028\u2029]"
 	regexp2Dot      = `[^\n\r\u2028\u2029]`
+	// regexp2NoLandmarks starts a pattern for regexp2 that may start with an
+	// unbounded loop of a set (see leadingUnboundedLoop): an empty lookahead
+	// that always succeeds, which regexp2 does not drop.
+	regexp2NoLandmarks = `(?!(?!))`
 )
 
 type regexpParseError struct {
@@ -253,6 +257,10 @@ func (self *_RegExp_parser) regexp2Pattern() string {
 
 func (self *_RegExp_parser) parse() (err error) {
 	self.read() // Pull in the first character
+	if self.leadingUnboundedLoop() {
+		self.count(costAround)
+		self.writeRegexp2(0, 0, regexp2NoLandmarks)
+	}
 	self.scan()
 	if self.err == nil && self.deferred != "" {
 		self.syntaxError(self.deferred)

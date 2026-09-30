@@ -2,6 +2,7 @@ package parser
 
 import (
 	"sort"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -364,4 +365,116 @@ func (self *_RegExp_parser) groupNumber(num int) int {
 		return num
 	}
 	return self.iter.renumber[num]
+}
+
+// leadingUnboundedLoop reports whether the pattern may start with an
+// unbounded loop of a set of characters, perhaps in groups, and has a
+// bounded repeat of variable length or an alternative: regexp2 then looks
+// for a match by the "landmarks" after the loop, and takes each as often
+// as it can (or the first alternative that matches), so that it finds none
+// when a landmark's last character is the next one's (/[^\w]*?[ab]{1,2}b/
+// found nothing in "ab"). A lookahead that always succeeds before the loop
+// stops it from doing so (see regexp2NoLandmarks). Without such a repeat or
+// alternative the landmarks are literals and fixed repeats, which it finds
+// as they are (a pattern like /[\w.]+@[\w.]+\.\w+/ keeps the search).
+func (self *_RegExp_parser) leadingUnboundedLoop() bool {
+	s := self.str
+	n := len(s)
+	variable := false
+	for i := 0; i < n && !variable; i++ {
+		switch s[i] {
+		case '\\':
+			i++
+		case '|':
+			variable = true
+		case '{':
+			j := i + 1
+			lo := j
+			for j < n && s[j] >= '0' && s[j] <= '9' {
+				j++
+			}
+			if j == lo || j >= n || s[j] != ',' {
+				continue
+			}
+			j++
+			hi := j
+			for j < n && s[j] >= '0' && s[j] <= '9' {
+				j++
+			}
+			variable = j < n && s[j] == '}' && (j == hi || s[lo:hi-1] != s[hi:j])
+		}
+	}
+	if !variable {
+		return false
+	}
+	i := 0
+	for i < n && s[i] == '(' {
+		switch {
+		case strings.HasPrefix(s[i:], "(?=)") || strings.HasPrefix(s[i:], "(?:)"):
+			// regexp2 drops these.
+			i += 4
+		case strings.HasPrefix(s[i:], "(?<=)"):
+			i += 5
+		case i+2 < n && s[i+1] == '?' && s[i+2] == ':':
+			i += 3
+		case i+3 < n && s[i+1] == '?' && s[i+2] == '<' && s[i+3] != '=' && s[i+3] != '!':
+			j := strings.IndexByte(s[i:], '>')
+			if j < 0 {
+				return false
+			}
+			i += j + 1
+		case i+1 < n && s[i+1] == '?':
+			return false
+		default:
+			i++
+		}
+	}
+	if i >= n {
+		return false
+	}
+	switch c := s[i]; {
+	case c == '[':
+		i++
+		for i < n && s[i] != ']' {
+			if s[i] == '\\' {
+				i++
+			}
+			i++
+		}
+		i++
+	case c == '\\':
+		if i+1 >= n || s[i+1] >= '0' && s[i+1] <= '9' || strings.IndexByte("bBk", s[i+1]) >= 0 {
+			return false
+		}
+		i += 2
+		if i < n && s[i] == '{' {
+			for i < n && s[i] != '}' {
+				i++
+			}
+			i++
+		}
+	case strings.IndexByte("()|^$*+?{}", c) >= 0:
+		return false
+	default:
+		_, w := utf8.DecodeRuneInString(s[i:])
+		i += w
+	}
+	// The loop may be of the groups the atom is in.
+	for i < n && s[i] == ')' {
+		i++
+	}
+	if i >= n {
+		return false
+	}
+	if s[i] == '*' || s[i] == '+' {
+		return true
+	}
+	if s[i] != '{' {
+		return false
+	}
+	j := i + 1
+	for j < n && s[j] >= '0' && s[j] <= '9' {
+		j++
+	}
+	return j > i+1 && j+1 < n && s[j] == ',' && s[j+1] == '}'
 }

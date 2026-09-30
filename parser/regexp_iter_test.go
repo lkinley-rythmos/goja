@@ -57,3 +57,29 @@ func TestTransformRegExpIterations(t *testing.T) {
 		t.Errorf("wide: %d groups", len(iter.Groups))
 	}
 }
+
+func TestTransformRegExpLeadingLoop(t *testing.T) {
+	// A pattern that may start with an unbounded loop of a set of
+	// characters starts, for regexp2, with a lookahead that always succeeds
+	// (see leadingUnboundedLoop); Go's regexp gets it as it is.
+	for _, tc := range []struct {
+		pattern string
+		leading bool
+	}{
+		{`[^\w]*?[ab]{1,2}b`, true}, {`(?=)\W*[ab]{2,}b`, true}, {`(?:)(?<=)((?:.+(?:ab|a)b))`, true}, {`(?<n>[a-c]{2,}b{1,2})`, true},
+		{`a*b{0,1}`, true}, {`\p{L}*x{2,3}`, true}, {`(?<=)(?:[^x])*[ab]{2}[ab]{1,2}`, true},
+		// Without a bounded repeat of variable length or an alternative, or
+		// without a loop to start with, regexp2 finds the match by its
+		// landmarks.
+		{`[\w.]+@[\w.]+\.\w+`, false}, {`.*a{2}b`, false},
+		{`^.*a{1,2}`, false}, {`(?=a).*b{1,2}`, false}, {`a.*b{1,2}`, false}, {`[ab]{1,2}b`, false}, {`(a)\1*a{1,2}`, false}, {`\ba*b{1,2}`, false},
+	} {
+		goText, r2, _, err := TransformRegExpIter(tc.pattern, false, true, false)
+		if _, incompat := err.(RegexpErrorIncompatible); err != nil && !incompat {
+			t.Fatalf("%s: %v", tc.pattern, err)
+		}
+		if got := strings.HasPrefix(r2, regexp2NoLandmarks); got != tc.leading || strings.Contains(goText, "(?!") {
+			t.Errorf("%s: %q, %q", tc.pattern, goText, r2)
+		}
+	}
+}
