@@ -487,7 +487,9 @@ func (p *regexpPattern) findAllSubmatchIndex(vm *vm, s String, start int, limit 
 		}
 		if limit == 1 {
 			result := p.regexpWrapper.findSubmatchIndexUnicode(vm, u, p.unicode)
-			if result.indexes == nil {
+			// A sticky match must start at the start (the leftmost one
+			// starts after it if none does).
+			if result.indexes == nil || sticky && result.indexes[0] != 0 {
 				return nil
 			}
 			return []regexpResult{result}
@@ -814,6 +816,11 @@ func (r *regexp2Wrapper) findAllSubmatchIndexUnicode(vm *vm, s unicodeString, st
 
 		vm.r.countAlloc(result.allocSize() - allocSizeRegexpResult)
 		results = appendResult(vm, results, result)
+		// A replace without the g flag asks for one match.
+		limit--
+		if limit <= 0 {
+			break
+		}
 		match, err = r.findNext(vm, match)
 		if err != nil {
 			return nil
@@ -1303,8 +1310,20 @@ func (r *regexpObject) getLastIndex() int64 {
 	return lastIndex
 }
 
-func (r *regexpObject) execRegexp(target String) (match bool, result regexpResult) {
+// matchStart returns where a match on target starts: lastIndex for a global
+// or sticky pattern, and with the u flag, as V8 does, the start of the
+// surrogate pair lastIndex is in the middle of.
+func (r *regexpObject) matchStart(target String) int64 {
 	index := r.getLastIndex()
+	if r.pattern.unicode && index > 0 && index < int64(target.Length()) &&
+		isUTF16SecondSurrogate(target.CharAt(int(index))) && isUTF16FirstSurrogate(target.CharAt(int(index-1))) {
+		index--
+	}
+	return index
+}
+
+func (r *regexpObject) execRegexp(target String) (match bool, result regexpResult) {
+	index := r.matchStart(target)
 	if index >= 0 && index <= int64(target.Length()) {
 		result = r.pattern.findSubmatchIndex(r.val.runtime.vm, target, int(index))
 	}

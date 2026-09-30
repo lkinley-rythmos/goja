@@ -1547,7 +1547,7 @@ func (r *Runtime) regexpproto_stdReplacer(call FunctionCall) Value {
 	if rx.pattern.global {
 		find = -1
 	} else {
-		index = rx.getLastIndex()
+		index = rx.matchStart(s)
 	}
 	found := rx.pattern.findAllSubmatchIndex(r.vm, s, toIntStrict(index), find, rx.pattern.sticky)
 	if rx.pattern.global || rx.pattern.sticky {
