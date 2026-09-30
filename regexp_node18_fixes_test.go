@@ -305,3 +305,17 @@ func TestRegexpBackreferenceInOwnGroupNode18(t *testing.T) {
 `
 	testScript(script, newStringValue(`[[0,"xaab","a","a","b",[[0,4],[2,3],[2,3],[3,4]]],[1,"aab","a","a","b",[[1,4],[2,3],[2,3],[3,4]]],[0,"aab","a",null,null,null,"b"],[0,"abab","a",null,null,null,"b"],[0,"aaa","a",[[0,3],[2,3]]],[1,"ababc","ab","b"],[0,"aaa","a"]]`), t)
 }
+
+func TestRegexpClassesRewrittenByTextNode18(t *testing.T) {
+	// A class with property escapes, rewritten as its set ignoring case, is
+	// written once for each text: [^\p{Nd}] is not [\p{Nd}].
+	const script = `
+(function () {
+	var out = [];
+	var pats = [["[\\p{Nd}][^\\p{Nd}]", "iu", "1a"], ["[^\\p{Nd}][\\p{Nd}]", "iu", "a1"], ["[\\p{L}][^\\p{L}]", "iu", "a1"], ["[\\p{Nd}]+[^\\p{Nd}]+[\\p{Nd}]", "iu", "12ab3"], ["[\\p{Lu}][^\\p{Lu}]", "u", "Ab"], ["[\\P{Nd}][\\p{Nd}]", "iu", "x9"]];
+	for (var i = 0; i < pats.length; i++) out.push(new RegExp(pats[i][0], pats[i][1]).exec(pats[i][2]));
+	return JSON.stringify(out);
+})()
+`
+	testScript(script, newStringValue(`[["1a"],["a1"],["a1"],["12ab3"],["Ab"],["x9"]]`), t)
+}
