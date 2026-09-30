@@ -461,6 +461,19 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 	if r != nil {
 		r.checkInterrupt()
 	}
+	// The hidden groups of the loops (see parser.Iterations) nest a
+	// pattern's groups deeper: one they take past what an engine takes is
+	// compiled without them, its captures left as the engines give them.
+	withoutIterations := func() {
+		re2Str, regexp2Str, err = parser.TransformRegExpWithoutIterations(patternStr, dotAll, unicode, ignoreCase)
+		iter = nil
+		if r != nil {
+			r.checkInterrupt()
+		}
+	}
+	if iter != nil && len(iter.Hidden) > 0 && regexpNestingTooDeep(regexp2Str) {
+		withoutIterations()
+	}
 	if err == nil {
 		re2flags := ""
 		if multiline {
@@ -476,6 +489,16 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 		}
 
 		parsed, err1 := syntax.Parse(re2Str, syntax.Perl)
+		var syntaxError *syntax.Error
+		if iter != nil && len(iter.Hidden) > 0 && errors.As(err1, &syntaxError) && syntaxError.Code == syntax.ErrNestingDepth {
+			withoutIterations()
+			if err == nil {
+				if len(re2flags) > 0 {
+					re2Str = fmt.Sprintf("(?%s:%s)", re2flags, re2Str)
+				}
+				parsed, err1 = syntax.Parse(re2Str, syntax.Perl)
+			}
+		}
 		if err1 == nil {
 			// The program is charged before it is built.
 			simplified := parsed.Simplify()
@@ -498,7 +521,6 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 			}
 		}
 		if err1 != nil {
-			var syntaxError *syntax.Error
 			if errors.As(err1, &syntaxError) && syntaxError.Code == syntax.ErrLarge {
 				// Go's regexp expands repeats, which regexp2 does not: a
 				// pattern too large for Go's regexp may be small for

@@ -216,6 +216,19 @@ func TransformRegExp2(pattern string, dotAll, unicode, ignoreCase bool) (transfo
 // caller must drop the captures ECMAScript does not keep, and the hidden
 // groups, from a match.
 func TransformRegExpIter(pattern string, dotAll, unicode, ignoreCase bool) (transformed, regexp2Pattern string, iter *Iterations, err error) {
+	return transformRegExp(pattern, dotAll, unicode, ignoreCase, true)
+}
+
+// TransformRegExpWithoutIterations is TransformRegExp2 for a pattern whose
+// hidden groups (see TransformRegExpIter) take it past what an engine
+// takes (the depth its groups nest to): it is transformed without them, and
+// its captures are left as the engines give them.
+func TransformRegExpWithoutIterations(pattern string, dotAll, unicode, ignoreCase bool) (transformed, regexp2Pattern string, err error) {
+	transformed, regexp2Pattern, _, err = transformRegExp(pattern, dotAll, unicode, ignoreCase, false)
+	return
+}
+
+func transformRegExp(pattern string, dotAll, unicode, ignoreCase, iterations bool) (transformed, regexp2Pattern string, iter *Iterations, err error) {
 	if pattern == "" {
 		return "", "", nil, nil
 	}
@@ -227,7 +240,7 @@ func TransformRegExpIter(pattern string, dotAll, unicode, ignoreCase bool) (tran
 		unicode:    unicode,
 		ignoreCase: ignoreCase,
 	}
-	if strings.IndexByte(pattern, '(') >= 0 {
+	if iterations && strings.IndexByte(pattern, '(') >= 0 {
 		parser.iter = parser.planIterations()
 	}
 	if parser.iter != nil {

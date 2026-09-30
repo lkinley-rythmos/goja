@@ -319,3 +319,26 @@ func TestRegexpClassesRewrittenByTextNode18(t *testing.T) {
 `
 	testScript(script, newStringValue(`[["1a"],["a1"],["a1"],["12ab3"],["Ab"],["x9"]]`), t)
 }
+
+func TestRegexpDeepLoopsWithoutHiddenGroupsNode18(t *testing.T) {
+	// A pattern whose hidden groups (see parser.Iterations) would nest its
+	// groups past what Go's regexp takes is compiled without them, as it
+	// was before them: 400 nested quantified groups with alternatives and
+	// captures were refused ("expression nests too deeply").
+	const script = `
+(function () {
+	var out = [];
+	for (var n of [340, 400, 490]) {
+		var p = "(?:(x)|".repeat(n) + ")*".repeat(n);
+		var re = new RegExp(p), m = re.exec("xx");
+		out.push([n, m[0], m.length]);
+		re = new RegExp(p, "g");
+		re.lastIndex = 1;
+		m = re.exec("xx");
+		out.push([n, m.index, m[0], m.length]);
+	}
+	return JSON.stringify(out);
+})()
+`
+	testScript(script, newStringValue(`[[340,"xx",341],[340,1,"x",341],[400,"xx",401],[400,1,"x",401],[490,"xx",491],[490,1,"x",491]]`), t)
+}
