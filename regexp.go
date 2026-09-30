@@ -513,28 +513,7 @@ func (p *regexpPattern) dropEarlierIterations(res regexpResult, goRegexp bool) r
 		return res
 	}
 	if goRegexp {
-		// Go's regexp takes the optional copies of a bounded repeat's body
-		// that match nothing, where ECMAScript refuses an iteration past
-		// the minimum that does, and ends the loop before it. Which of its
-		// iterations it was cannot be told, nor which of the captures of
-		// the loops in it were made in it: the captures of such a loop,
-		// and of one whose last iteration is at where it is and matches
-		// nothing, are left to the loops they are in.
-		it := p.iter
-		dropIterations(it, idx, func(li int) bool {
-			l := &it.Loops[li]
-			hs := idx[2*l.Group]
-			if hs < 0 || idx[2*l.Group+1] != hs {
-				return false
-			}
-			for a := li; a >= 0; a = it.Loops[a].Parent {
-				outer := &it.Loops[a]
-				if outer.Max >= 0 && outer.Max > outer.Min && idx[2*outer.Group] == hs && idx[2*outer.Group+1] == hs {
-					return true
-				}
-			}
-			return false
-		})
+		dropIterations(p.iter, idx, skipGoBounded, nil)
 	}
 	if len(p.iter.Hidden) == 0 {
 		return res
@@ -658,7 +637,7 @@ type regexpObject struct {
 // parser.Iterations), but those of the loops skip reports. A capture is
 // checked against each loop it is in, but for those whose every iteration
 // has it (without alternatives), and those it is in a lookaround within.
-func dropIterations(it *parser.Iterations, idx []int, skip func(int) bool) {
+func dropIterations(it *parser.Iterations, idx []int, skip func(it *parser.Iterations, idx []int, li int, refused []int) bool, refused []int) {
 	for _, c := range it.Captures {
 		gs, ge := idx[2*c.Group], idx[2*c.Group+1]
 		if gs < 0 {
@@ -670,7 +649,7 @@ func dropIterations(it *parser.Iterations, idx []int, skip func(int) bool) {
 			if l.Depth < d.Around {
 				break
 			}
-			if !l.Reset || !l.Alternatives && l.Depth >= c.Missing || skip(li) {
+			if !l.Reset || !l.Alternatives && l.Depth >= c.Missing || skip(it, idx, li, refused) {
 				continue
 			}
 			// Where the last iteration starts, a capture is from it if it
@@ -682,6 +661,51 @@ func dropIterations(it *parser.Iterations, idx []int, skip func(int) bool) {
 			}
 		}
 	}
+}
+
+// skipGoBounded reports whether a loop's captures in a match of Go's
+// regexp are left to the loops it is in: its last iteration matches
+// nothing, and so does the last of it or a loop it is in with a maximum
+// over its minimum, at the same place. Go's regexp takes the optional
+// copies of a bounded repeat's body that match nothing, where ECMAScript
+// refuses an iteration past the minimum that does and ends the loop before
+// it: which of the iterations it was cannot be told, nor which of the
+// captures of the loops in it were made in it.
+func skipGoBounded(it *parser.Iterations, idx []int, li int, _ []int) bool {
+	l := &it.Loops[li]
+	hs := idx[2*l.Group]
+	if hs < 0 || idx[2*l.Group+1] != hs {
+		return false
+	}
+	for a := li; a >= 0; a = it.Loops[a].Parent {
+		outer := &it.Loops[a]
+		if outer.Max >= 0 && outer.Max > outer.Min && idx[2*outer.Group] == hs && idx[2*outer.Group+1] == hs {
+			return true
+		}
+	}
+	return false
+}
+
+// skipRefused reports whether a loop's captures in a match of regexp2 are
+// left to the loops it is in: its last iteration matches nothing, at where
+// a loop it is in had one refused (1 + its position in refused, see
+// dropEmptyIterations), so that it may have been in the refused one, whose
+// captures cannot all be told from those before it.
+func skipRefused(it *parser.Iterations, idx []int, li int, refused []int) bool {
+	if refused == nil {
+		return false
+	}
+	l := &it.Loops[li]
+	hs := idx[2*l.Group]
+	if hs < 0 || idx[2*l.Group+1] != hs {
+		return false
+	}
+	for a := l.Parent; a >= 0; a = it.Loops[a].Parent {
+		if refused[a] == hs+1 {
+			return true
+		}
+	}
+	return false
 }
 
 // appendGroups appends the groups of a regexp2 match to result: the last
@@ -714,22 +738,7 @@ func (r *regexp2Wrapper) appendGroups(result *regexpResult, groups []regexp2.Gro
 		// is in had one refused may have had it in the refused one, whose
 		// captures cannot all be told from those before it: its
 		// captures are left to the loops it is in.
-		dropIterations(it, idx, func(li int) bool {
-			if refused == nil {
-				return false
-			}
-			l := &it.Loops[li]
-			hs := idx[2*l.Group]
-			if hs < 0 || idx[2*l.Group+1] != hs {
-				return false
-			}
-			for a := l.Parent; a >= 0; a = it.Loops[a].Parent {
-				if refused[a] == hs+1 {
-					return true
-				}
-			}
-			return false
-		})
+		dropIterations(it, idx, skipRefused, refused)
 	}
 	if posMap != nil {
 		for i, pos := range idx {
@@ -757,27 +766,30 @@ func (r *regexp2Wrapper) appendGroups(result *regexpResult, groups []regexp2.Gro
 // So is a group a backreference is to: the engine matched with its capture
 // in such an iteration, and ECMAScript's match may be another.
 func dropEmptyIterations(it *parser.Iterations, groups []regexp2.Group) (kept, refused []int) {
-	// Where the last iteration of each loop starts, once those refused are
-	// dropped: an iteration of a loop in it that starts before is in an
-	// earlier iteration of it, and so of another run of the loop.
-	starts := make([]int, len(it.Loops))
+	// last is the last iteration of a loop, once those refused are
+	// dropped.
+	last := func(q int) []regexp2.Capture {
+		caps := groups[it.Loops[q].Group].Captures
+		if kept != nil {
+			caps = caps[:kept[it.Loops[q].Group]]
+		}
+		return caps
+	}
 	for i := range it.Loops {
 		l := &it.Loops[i]
-		caps := groups[l.Group].Captures
-		if kept != nil {
-			caps = caps[:kept[l.Group]]
-		}
+		caps := last(i)
 		k := len(caps)
-		starts[i] = -1
-		if k > 0 {
-			starts[i] = caps[k-1].RuneIndex
-		}
 		if k == 0 || caps[k-1].RuneLength != 0 {
 			continue
 		}
+		// An iteration that starts before the last iteration of the loop
+		// it is in is in an earlier iteration of that, and so of another
+		// run of the loop.
 		from := -1
 		if l.Parent >= 0 {
-			from = starts[l.Parent]
+			if p := last(l.Parent); len(p) > 0 {
+				from = p[len(p)-1].RuneIndex
+			}
 		}
 		n := 1
 		for j := k - 1; j > 0 && n <= l.Min && caps[j-1].RuneIndex >= from && caps[j-1].RuneIndex+caps[j-1].RuneLength == caps[j].RuneIndex; j-- {
@@ -796,10 +808,6 @@ func dropEmptyIterations(it *parser.Iterations, groups []regexp2.Group) (kept, r
 		at := caps[k-1].RuneIndex
 		refused[i] = at + 1
 		kept[l.Group]--
-		starts[i] = -1
-		if k > 1 {
-			starts[i] = caps[k-2].RuneIndex
-		}
 		// Last to first: the loops a group is in are told by groups before
 		// it, whose iterations ranRefused counts before they are dropped.
 		for g := l.Last; g > l.Group; g-- {
