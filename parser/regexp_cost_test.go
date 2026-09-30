@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"math/rand"
 	"regexp"
 	"runtime"
 	"runtime/debug"
@@ -67,7 +68,7 @@ func TestTransformRegExpCostLimits(t *testing.T) {
 		// Ignoring case a character with case variants is a class.
 		{term: "x", flags: "iu", limit: 100000, past: "too large"},
 		{term: "x", flags: "i", limit: 100000, past: "too large"},
-		{term: `(x)`, limit: 70000, past: "too large"},
+		{term: `(x)`, limit: 60000, past: "too large"},
 		{term: `(?:x)`, limit: 68000, past: "too large"},
 		{term: `x*`, limit: 98000, past: "too large"},
 		{term: `[ab]`, limit: 78000, past: "too large"},
@@ -80,7 +81,7 @@ func TestTransformRegExpCostLimits(t *testing.T) {
 		{term: `\W`, flags: "i", limit: 30000, past: "too large"},
 		{term: `.`, limit: 104000, past: "too large"},
 		{term: `.`, flags: "i", limit: 104000, past: "too large"},
-		{term: `\b`, limit: 16000, past: "too large"},
+		{term: `\b`, limit: 14000, past: "too large"},
 		{term: `x{2,5}`, limit: 28000, past: "too large"},
 		{term: `\u0041`, limit: 310000, past: "too large"},
 		{term: `(?=x)`, limit: 87000, accepted: "regexp2", past: "too large"},
@@ -95,7 +96,9 @@ func TestTransformRegExpCostLimits(t *testing.T) {
 		{repeatWith: func(n int) string { return "(?:" + strings.Repeat("x", n) + "){20}" }, limit: 20000, past: "regexp2"},
 		// regexp2 sorts a class's ranges again for each one it adds.
 		{repeatWith: func(n int) string { return distinct(n, 2000) }, flags: "u", limit: 10, past: "too large"},
-		{repeatWith: func(n int) string { return distinct(n, 20) }, flags: "u", limit: 12000, past: "too large"},
+		{repeatWith: func(n int) string { return distinct(n, 20) }, flags: "u", limit: 10000, past: "too large"},
+		// Distinct classes cost regexp2 more than one class repeated.
+		{repeatWith: distinctRanges, limit: 40000, past: "too large"},
 	} {
 		gen := tc.repeatWith
 		if gen == nil {
@@ -114,6 +117,16 @@ func TestTransformRegExpCostLimits(t *testing.T) {
 			t.Errorf("%s x%d: %s, want %s", name, tc.limit*7/5, got, tc.past)
 		}
 	}
+}
+
+// distinctRanges returns n distinct negated classes of a range.
+func distinctRanges(n int) string {
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		lo := 0x100 + i%40000
+		fmt.Fprintf(&b, `[^\u%04x-\u%04x]`, lo, lo+1+i/40000)
+	}
+	return b.String()
 }
 
 func TestTransformRegExpCostAfterIncompatible(t *testing.T) {
@@ -405,6 +418,85 @@ func TestValidateRegExpLiteralOnlyValidates(t *testing.T) {
 			if (err == nil) != (terr == nil) {
 				t.Errorf("/%s/%s: parse %v, transform %v", pattern, flags, err, terr)
 			}
+		}
+	}
+}
+
+func TestTransformRegExpReviewFamilies(t *testing.T) {
+	// Families of patterns that compiled in 170 to 240 ms, over the bound:
+	// they now take the engines up to about 120 ms, or are refused. A class
+	// of thousands of items took the transform itself 120 ms and 190 MB, a
+	// union per item.
+	items := func(n int, negated bool) string {
+		var b strings.Builder
+		b.WriteByte('[')
+		if negated {
+			b.WriteByte('^')
+		}
+		for i := 0; i < n; i++ {
+			if negated {
+				fmt.Fprintf(&b, `\u%04x-\u%04x`, 0x100+3*i, 0x101+3*i)
+			} else {
+				b.WriteRune(rune(0x100 + 2*i))
+			}
+		}
+		b.WriteByte(']')
+		return b.String()
+	}
+	wideNeg := func(n int) string {
+		var b strings.Builder
+		for i := 0; i < n; i++ {
+			fmt.Fprintf(&b, "[^A-\u2fff%c]", rune(0x4e00+i%20000)+rune(i/20000)*0x10000)
+		}
+		return b.String()
+	}
+	for _, tc := range []struct {
+		name, pattern string
+		unicode, i    bool
+		want          string
+	}{
+		{"6,784 items", items(6784, false), true, false, "go"},
+		{"6,784 negated ranges", items(6784, true), true, false, "go"},
+		{"75,000 distinct negated classes", wideNeg(75000), false, false, "too large"},
+		{"15,616 boundaries", strings.Repeat(`\b`, 15616), true, true, "too large"},
+		{"70,000 groups", strings.Repeat(`(a)`, 70000), true, false, "too large"},
+	} {
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		got := outcome(t, tc.pattern, tc.unicode, tc.i)
+		runtime.ReadMemStats(&after)
+		if got != tc.want {
+			t.Errorf("%s: %s", tc.name, got)
+		}
+		if alloc := after.TotalAlloc - before.TotalAlloc; alloc > 64<<20 {
+			t.Errorf("%s: allocated %d MB", tc.name, alloc>>20)
+		}
+	}
+}
+
+func TestAddClassSet(t *testing.T) {
+	// The class's set, appended range by range and sorted at its end, is
+	// the union of its items' sets.
+	rng := rand.New(rand.NewSource(1))
+	for n := 0; n < 200; n++ {
+		p := &_RegExp_parser{}
+		var want runeSet
+		for k := rng.Intn(30); k > 0; k-- {
+			var set runeSet
+			for j := rng.Intn(4); j >= 0; j-- {
+				lo := rune(rng.Intn(300))
+				set = set.union(runeSet{lo, lo + rune(rng.Intn(20))})
+			}
+			if rng.Intn(10) == 0 {
+				set = set.complement()
+			}
+			want = want.union(set)
+			p.addClassSet(set)
+		}
+		p.sortClassSet()
+		if !p.classSet.equal(want) && !(len(p.classSet) == 0 && len(want) == 0) {
+			t.Fatalf("%x, want %x", p.classSet, want)
 		}
 	}
 }

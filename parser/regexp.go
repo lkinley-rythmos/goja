@@ -77,10 +77,11 @@ type _RegExp_parser struct {
 	// property escapes, which regexp2 gets when the class ends; and where it
 	// starts in the output for Go's regexp, which gets it as a set when
 	// ignoring case (-1 if it does not).
-	classStart   int
-	classSet     runeSet
-	classProps   []classProperty
-	classGoStart int
+	classStart    int
+	classSet      runeSet
+	classUnsorted bool // classSet has ranges out of order (see addClassSet)
+	classProps    []classProperty
+	classGoStart  int
 
 	capturesScanned bool
 	captureCount    int
@@ -111,9 +112,10 @@ type _RegExp_parser struct {
 	canonChars                map[rune]canonChar
 	backref                   bool
 
-	// The items of the class being scanned, and the classes rewritten as
-	// their sets closed under case folding, by their text.
+	// The items of the class being scanned, the classes seen, and those
+	// rewritten as their sets closed under case folding, by their text.
 	classItems    int
+	classTexts    map[string]bool
 	foldedClasses map[string]foldedClass
 }
 
@@ -796,7 +798,7 @@ func (self *_RegExp_parser) scanBracket() {
 
 	self.classStart = self.chrOffset
 	self.classR2Len, self.classR2Offset = self.regexp2.Len(), self.regexp2Offset
-	self.classSet = nil
+	self.classSet, self.classUnsorted = nil, false
 	self.classProps = self.classProps[:0]
 	self.classGoStart = -1
 	self.classItems = 0
@@ -833,13 +835,13 @@ func (self *_RegExp_parser) scanBracket() {
 					return
 				}
 				if !self.refused {
-					self.classSet = self.classSet.union(runeSet{lo, hi})
+					self.addClassSet(runeSet{lo, hi})
 					self.classItem(runeSet{lo, hi})
 				}
 			} else if self.err == nil && !self.refused {
 				// Past the bound the pattern is only validated.
 				set := self.classAtomSet(left)
-				self.classSet = self.classSet.union(set)
+				self.addClassSet(set)
 				self.classItem(set)
 			}
 			continue
@@ -880,6 +882,7 @@ func (self *_RegExp_parser) scanBracket() {
 		self.fatal("Unterminated character class")
 		return
 	}
+	self.sortClassSet()
 	self.pass()
 	cost := termCost{goUnits: goClassUnits + goClassItemUnits*self.classItems, goInsts: 1}
 	if negated {
@@ -887,6 +890,13 @@ func (self *_RegExp_parser) scanBracket() {
 	}
 	self.count(cost)
 	self.expandRegexp2(regexp2TextUnits(self.classItems))
+	if text := self.str[self.classStart:self.chrOffset]; !self.classTexts[text] && !self.refused {
+		if self.classTexts == nil {
+			self.classTexts = make(map[string]bool)
+		}
+		self.classTexts[text] = true
+		self.expandRegexp2(r2DistinctClassUnits)
+	}
 	if self.refused {
 		return
 	}

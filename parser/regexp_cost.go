@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -36,8 +37,8 @@ var (
 	costSpaceEsc  = termCost{goUnits: 25, goInsts: 1, r2: 7, r2Fold: 45} // \s \S
 	costDot       = termCost{goUnits: 12, goInsts: 1, r2: 3, r2Fold: 15}
 	costAssertion = termCost{goUnits: 11, goInsts: 1, r2: 6, r2Fold: 6}
-	costBoundary  = termCost{goUnits: 11, goInsts: 1, r2: 90, r2Fold: 100} // \b \B (see regexp2Boundary)
-	costCapture   = termCost{goUnits: 13, goInsts: 2, r2: 15, r2Fold: 25}
+	costBoundary  = termCost{goUnits: 11, goInsts: 1, r2: 105, r2Fold: 125} // \b \B (see regexp2Boundary)
+	costCapture   = termCost{goUnits: 17, goInsts: 2, r2: 15, r2Fold: 25}
 	costNamed     = termCost{goUnits: 13, goInsts: 2, r2: 45, r2Fold: 65}
 	costGroup     = termCost{goUnits: 20, r2: 12, r2Fold: 20}
 	costAround    = termCost{r2: 17, r2Fold: 25}
@@ -66,6 +67,11 @@ const (
 	// folding (caseClosure), which the units round up; writing the set is
 	// counted by its ranges.
 	classFoldUnits = 400
+	// regexp2 keeps the sets of a pattern's classes in a table without
+	// duplicates, which a distinct class costs about 2 µs more to enter
+	// (78,000 distinct classes of two ranges took 175 ms, as many of one
+	// class 40 ms).
+	r2DistinctClassUnits = 20
 )
 
 // count counts a term's cost.
@@ -132,8 +138,42 @@ func (self *_RegExp_parser) countQuantifier(min, max int) {
 func (self *_RegExp_parser) classItem(set runeSet) {
 	self.classItems++
 	if self.ignoreCase && !self.unicode {
-		self.classSet = self.classSet.union(set)
+		self.addClassSet(set)
 	}
+}
+
+// addClassSet adds a set to the class's. A union per item was quadratic in
+// the items (a class of 6,784 took 120 ms); the ranges are appended, merged
+// with the last one when in order, and sorted when the class ends (see
+// sortClassSet).
+func (self *_RegExp_parser) addClassSet(set runeSet) {
+	for i := 0; i < len(set); i += 2 {
+		if n := len(self.classSet); n == 0 || set[i] >= self.classSet[n-2] {
+			self.classSet = self.classSet.appendRange(set[i], set[i+1])
+		} else {
+			self.classSet = append(self.classSet, set[i], set[i+1])
+			self.classUnsorted = true
+		}
+	}
+}
+
+// sortClassSet makes the class's set a set again, its ranges sorted and
+// merged, once the class has ended.
+func (self *_RegExp_parser) sortClassSet() {
+	if !self.classUnsorted {
+		return
+	}
+	s := self.classSet
+	pairs := make([][2]rune, len(s)/2)
+	for i := range pairs {
+		pairs[i] = [2]rune{s[2*i], s[2*i+1]}
+	}
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i][0] < pairs[j][0] })
+	s = s[:0]
+	for _, p := range pairs {
+		s = s.appendRange(p[0], p[1])
+	}
+	self.classSet, self.classUnsorted = s, false
 }
 
 // foldedClass is a class rewritten for both engines as its set closed under
