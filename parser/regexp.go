@@ -467,7 +467,7 @@ func (self *_RegExp_parser) scanNonUnicodeTermChar() {
 		self.pass()
 		self.prev = termAssertion
 	case '|':
-		self.count(costAlternate)
+		self.countAlternate()
 		self.pass()
 		self.prev = termNone
 	case '*', '+', '?':
@@ -519,7 +519,7 @@ func (self *_RegExp_parser) scanUnicodeTermChar() {
 		self.pass()
 		self.prev = termAssertion
 	case '|':
-		self.count(costAlternate)
+		self.countAlternate()
 		self.pass()
 		self.prev = termNone
 	case '*', '+', '?':

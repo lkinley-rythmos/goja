@@ -87,6 +87,27 @@ func (self *_RegExp_parser) count(c termCost) {
 	}
 }
 
+// goAlternateDepthUnits is what an alternative costs Go's regexp for each
+// group it is in past the first: Go's parser takes time quadratic in the
+// depth of nested alternations ("a" + "(?:ab|cd|".repeat(999) +
+// ")".repeat(999) took it 170 to 260 ms at a load of 12 to 36 on 12
+// cores, 500 of them 40 to 70 ms; past about 500 they are left to
+// regexp2, which compiles 999 in 40 to 60 ms).
+const goAlternateDepthUnits = 6
+
+// countAlternate counts a | in the group being scanned. A pattern whose
+// alternations nest so deep that Go's regexp would take too long to parse
+// it is left to regexp2.
+func (self *_RegExp_parser) countAlternate() {
+	self.count(costAlternate)
+	if self.goUsed() && self.depth > 1 {
+		self.goExpansion += goAlternateDepthUnits * (self.depth - 1)
+		if self.goCost() > maxRegexpExpansion {
+			self.error(false, "re2: alternatives nest too deeply")
+		}
+	}
+}
+
 // goCost is what the pattern costs Go's regexp so far.
 func (self *_RegExp_parser) goCost() int64 {
 	return int64(self.goExpansion) + goInstUnits*self.goInsts

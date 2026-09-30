@@ -129,6 +129,28 @@ func distinctRanges(n int) string {
 	return b.String()
 }
 
+func TestTransformRegExpNestedAlternationsCost(t *testing.T) {
+	// Go's regexp parses nested alternations in time quadratic in their
+	// depth: 999 of them are left to regexp2 (they took Go's regexp 170 to
+	// 260 ms), 400 are not, and neither are 999 at one depth.
+	for _, tc := range []struct {
+		pattern string
+		goText  bool
+	}{
+		{"a" + strings.Repeat("(?:ab|cd|", 999) + strings.Repeat(")", 999), false},
+		{"a" + strings.Repeat("(?:ab|cd|", 400) + strings.Repeat(")", 400), true},
+		{"a" + strings.Repeat("(?:ab|cd|e)", 999), true},
+	} {
+		goText, r2, err := TransformRegExp2(tc.pattern, false, false, false)
+		if _, incompat := err.(RegexpErrorIncompatible); err != nil && !incompat {
+			t.Fatalf("%.30s: %v", tc.pattern, err)
+		}
+		if (goText != "") != tc.goText || r2 == "" {
+			t.Errorf("%.30s: Go's regexp %v", tc.pattern, goText != "")
+		}
+	}
+}
+
 func TestTransformRegExpCostAfterIncompatible(t *testing.T) {
 	// Without the u flag as with it, a pattern is scanned to its end after a
 	// construct Go's regexp lacks, so what the rest costs regexp2 is bounded
