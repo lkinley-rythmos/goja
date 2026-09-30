@@ -342,3 +342,27 @@ func TestRegexpDeepLoopsWithoutHiddenGroupsNode18(t *testing.T) {
 `
 	testScript(script, newStringValue(`[[340,"xx",341],[340,1,"x",341],[400,"xx",401],[400,1,"x",401],[490,"xx",491],[490,1,"x",491]]`), t)
 }
+
+func TestRegexpEmptyIterationInRefusedNode18(t *testing.T) {
+	// A loop whose last iteration is an empty one at where a loop it is in
+	// had one refused may have had it in the refused one: its captures are
+	// left to the loop it is in (see skipRefused), and are those of the
+	// last iteration that loop kept. Dropped by the inner loop instead,
+	// they were undefined: /(?=)(?:(?:|(\w+)){1,}){1,}$/.exec("ab") was
+	// ["ab", undefined] (Node.js 18: ["ab", "ab"]).
+	const script = `
+(function () {
+	var out = [];
+	var cases = [["(?=)(?:(?:|(\\w+)){1,}){1,}$", "", "ab", 0], ["((?:(.)\\B|){1,}){1,}(?=b)", "y", "ab", 0], ["(?:x?(?:(?!b)(?!b)(a?)|)+(?:)*?)+b", "y", "ab", 0],
+		["(?=)(?:(?:|(\\w+))+)+$", "", "ab cd", 0], ["(?:(?:|(\\w+)){1,}){1,}$", "g", "#ab", 1]];
+	for (var i = 0; i < cases.length; i++) {
+		var c = cases[i], re = new RegExp(c[0], c[1]);
+		re.lastIndex = c[3];
+		var m = re.exec(c[2]);
+		out.push(m ? [m.index].concat(Array.prototype.slice.call(m)) : null);
+	}
+	return JSON.stringify(out);
+})()
+`
+	testScript(script, newStringValue(`[[0,"ab","ab"],[0,"a","a","a"],[0,"ab","a"],[3,"cd","cd"],[1,"ab","ab"]]`), t)
+}

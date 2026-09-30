@@ -91,9 +91,6 @@ type IterationGroup struct {
 	// last one that is always captured before it where it is (0 for none):
 	// in an iteration that has it, they are captured too.
 	Parent, Before int
-	// Referenced reports whether a backreference is to it: the engine
-	// matched with its captures (see dropEmptyIterations).
-	Referenced bool
 }
 
 // iterPlan is where hidden groups go, and the groups' numbers once they are
@@ -108,9 +105,8 @@ type iterPlan struct {
 type iterFrame struct {
 	open, bodyStart, close int
 	parent                 *iterFrame
-	depth                  int  // in the stack of groups, the pattern being 0
-	num                    int  // its number if it captures (from 1), else 0
-	scanning               bool // it has opened and not closed
+	depth                  int // in the stack of groups, the pattern being 0
+	num                    int // its number if it captures (from 1), else 0
 	// The last capturing group always captured before the current point of
 	// its body (in the current alternative), and before it opens.
 	lastCaptured, capturedBefore int
@@ -160,11 +156,6 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 	stack := []*iterFrame{root}
 	var frames []*iterFrame // every group, in the order they open
 	captures := 0
-	// The groups backreferences are to, by number and by name.
-	var refNums []int
-	var refNames []string
-	var names map[string]int
-	var capFrames []*iterFrame // the capturing groups, by number (from 1)
 	// consumedTop is the deepest group on the stack whose current
 	// alternative has consumed something (0 for none).
 	consumedTop := func() int {
@@ -256,24 +247,13 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 				// A backreference may match nothing (and a legacy octal
 				// escape consumes, which is taken as not).
 				consumes = false
-				v := 0
-				for end = i + 1; end < n && s[end] >= '0' && s[end] <= '9'; end++ {
-					if v < 1<<20 {
-						v = v*10 + int(s[end]-'0')
-					}
-				}
-				if v > len(capFrames) || !capFrames[v-1].scanning {
-					// One in its own group matches nothing (see inOwnGroup).
-					refNums = append(refNums, v)
+				for end < n && s[end] >= '0' && s[end] <= '9' {
+					end++
 				}
 			case e == 'k' && end < n && s[end] == '<':
 				consumes = false
-				start := end + 1
 				for end < n && s[end] != '>' {
 					end++
-				}
-				if name := s[min(start, end):end]; names[name] == 0 || !capFrames[names[name]-1].scanning {
-					refNames = append(refNames, name)
 				}
 				end++
 			case (e == 'p' || e == 'P' || e == 'u') && end < n && s[end] == '{':
@@ -299,7 +279,7 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 			top := stack[len(stack)-1]
 			f := &iterFrame{open: i, parent: top, depth: len(stack), allConsumed: true}
 			j := i + 1
-			capture, name := false, ""
+			capture := false
 			switch {
 			case j+1 < n && s[j] == '?' && (s[j+1] == '=' || s[j+1] == '!'):
 				f.around, j = true, j+2
@@ -310,7 +290,6 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 				for j < n && s[j] != '>' {
 					j++
 				}
-				name = s[min(i+3, j):j]
 				j++
 			case j+1 < n && s[j] == '?' && s[j+1] == ':':
 				j += 2
@@ -338,17 +317,9 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 			if capture {
 				captures++
 				f.num = captures
-				capFrames = append(capFrames, f)
-				if name != "" {
-					if names == nil {
-						names = make(map[string]int)
-					}
-					names[name] = captures
-				}
 			}
 			frames = append(frames, f)
 			stack = append(stack, f)
-			f.scanning = true
 			i = f.bodyStart
 		case ')':
 			if len(stack) == 1 {
@@ -358,7 +329,6 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 			f := stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
 			f.close = i
-			f.scanning = false
 			f.consumes = f.allConsumed && f.altConsumed && !f.around
 			min, max, _, ok := quant(i + 1)
 			f.optional = ok && min == 0
@@ -458,19 +428,6 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 		}
 		return opens[a].hidden < opens[b].hidden
 	})
-	// The capturing groups backreferences are to (a number past them is a
-	// legacy octal escape).
-	for _, name := range refNames {
-		if num, ok := names[name]; ok {
-			refNums = append(refNums, num)
-		}
-	}
-	referenced := make([]bool, captures+1)
-	for _, num := range refNums {
-		if num <= captures {
-			referenced[num] = true
-		}
-	}
 	plan := &iterPlan{hidden: make(map[int]bool), renumber: make([]int, captures+1)}
 	plan.Groups = make([]IterationGroup, len(opens)+1)
 	plan.Groups[0] = IterationGroup{Loop: -1, Marks: -1}
@@ -484,7 +441,6 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 			groupOf[o.frame] = num
 		} else {
 			plan.renumber[o.frame.num] = num
-			plan.Groups[num].Referenced = referenced[o.frame.num]
 			if o.frame.marker {
 				groupOf[o.frame] = num
 			}

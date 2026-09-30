@@ -763,8 +763,6 @@ func (r *regexp2Wrapper) appendGroups(result *regexpResult, groups []regexp2.Gro
 // loop before those in it, but for those in a loop in it that did not run
 // there (see ranRefused). The hidden groups of the loops in it are left:
 // how many of their iterations it had cannot be told (see appendGroups).
-// So is a group a backreference is to: the engine matched with its capture
-// in such an iteration, and ECMAScript's match may be another.
 func dropEmptyIterations(it *parser.Iterations, groups []regexp2.Group) (kept, refused []int) {
 	// last is the last iteration of a loop, once those refused are
 	// dropped.
@@ -811,7 +809,7 @@ func dropEmptyIterations(it *parser.Iterations, groups []regexp2.Group) (kept, r
 		// Last to first: the loops a group is in are told by groups before
 		// it, whose iterations ranRefused counts before they are dropped.
 		for g := l.Last; g > l.Group; g-- {
-			if kept[g] == 0 || it.Groups[g].Hidden || it.Groups[g].Referenced {
+			if kept[g] == 0 || it.Groups[g].Hidden {
 				continue
 			}
 			c := &groups[g].Captures[kept[g]-1]

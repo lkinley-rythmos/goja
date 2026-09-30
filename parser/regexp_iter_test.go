@@ -31,7 +31,7 @@ func TestTransformRegExpIterations(t *testing.T) {
 		{`((a)|b)+(c)\3\1`, ``, `((a)|b)+(c)\3\1`, &Iterations{
 			Loops:    []IterationLoop{loop(1, 2, 1, -1, 1, -1, true, true)},
 			Captures: []IterationCapture{{Group: 2, Loop: 0, Missing: 1}},
-			Drop:     true}, "rm0 l0p1 rb1"},
+			Drop:     true}, "m0 l0p1 b1"},
 		{`(?:a(b?)|c)+`, `(?:(a(b?)|c))+`, `(?:(a(b?)|c))+`, &Iterations{
 			Loops:    []IterationLoop{loop(1, 2, 1, -1, 1, -1, true, true)},
 			Captures: []IterationCapture{{Group: 2, Loop: 0, Missing: 1}},
@@ -43,7 +43,7 @@ func TestTransformRegExpIterations(t *testing.T) {
 		{`(?<n>a|(b))*\k<n>`, ``, `(?<n>a|(b))*\k<n>`, &Iterations{
 			Loops:    []IterationLoop{loop(1, 2, 0, -1, 1, -1, true, true)},
 			Captures: []IterationCapture{{Group: 2, Loop: 0, Missing: 1}},
-			Drop:     true}, "rm0 l0p1"},
+			Drop:     true}, "m0 l0p1"},
 		{`(?:x(a)?){2,5}`, `(?:(x(a)?)){2,5}`, `(?:(x(a)?)){2,5}`, &Iterations{
 			Loops:    []IterationLoop{loop(1, 2, 2, 5, 1, -1, false, true)},
 			Captures: []IterationCapture{{Group: 2, Loop: 0, Missing: 2}},
@@ -51,7 +51,7 @@ func TestTransformRegExpIterations(t *testing.T) {
 		{`(x)?(?:(b)|\1)+a`, ``, `(x)?(?:((b)|\1))+a`, &Iterations{
 			Loops:    []IterationLoop{loop(2, 3, 1, -1, 1, -1, true, true)},
 			Captures: []IterationCapture{{Group: 3, Loop: 0, Missing: 1}},
-			Hidden:   []int{2}, Drop: true}, "r hm0 l0"},
+			Hidden:   []int{2}, Drop: true}, "- hm0 l0"},
 		// A body that may match nothing: regexp2's matches have their
 		// refused iterations dropped, Go's are left.
 		{`(\B)*`, `(\B)*`, `((?:(?<=[0-9A-Z_a-z])(?=[0-9A-Z_a-z])|(?<![0-9A-Z_a-z])(?![0-9A-Z_a-z])))*`, &Iterations{
@@ -102,7 +102,7 @@ func TestTransformRegExpIterations(t *testing.T) {
 }
 
 // describeGroups describes Iterations.Groups (from 1), a word a group: h
-// for a hidden one, r for one a backreference is to, then c, a, l, m, p
+// for a hidden one, then c, a, l, m, p
 // and b for Consumed, Around, Loop, Marks, Parent and Before when they
 // are set, with their values ("-" for none).
 func describeGroups(groups []IterationGroup) string {
@@ -111,9 +111,6 @@ func describeGroups(groups []IterationGroup) string {
 		var w strings.Builder
 		if g.Hidden {
 			w.WriteString("h")
-		}
-		if g.Referenced {
-			w.WriteString("r")
 		}
 		for _, f := range []struct {
 			name  string
@@ -142,17 +139,12 @@ func TestTransformRegExpOwnGroupBackreference(t *testing.T) {
 		{`(a(b\2)\1)*`, `(a(b(?:))(?:))*`},
 		{`(a)\1(b)*\2`, `(a)\1(b)*\2`},
 	} {
-		_, r2Text, iter, err := TransformRegExpIter(tc.pattern, false, false, false)
+		_, r2Text, _, err := TransformRegExpIter(tc.pattern, false, false, false)
 		if _, incompat := err.(RegexpErrorIncompatible); err != nil && !incompat {
 			t.Fatalf("%s: %v", tc.pattern, err)
 		}
 		if r2Text != tc.r2Text {
 			t.Errorf("%s: %q", tc.pattern, r2Text)
-		}
-		// The engine does not match with the group there: it is no
-		// group a backreference is to (see IterationGroup.Referenced).
-		if iter != nil && iter.Groups[1].Referenced {
-			t.Errorf("%s: group 1 referenced", tc.pattern)
 		}
 	}
 }
