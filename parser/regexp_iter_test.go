@@ -158,12 +158,15 @@ func TestTransformRegExpLeadingLoop(t *testing.T) {
 		pattern string
 		leading bool
 	}{
-		{`[^\w]*?[ab]{1,2}b`, true}, {`(?=)\W*[ab]{2,}b`, true}, {`(?:)(?<=)((?:.+(?:ab|a)b))`, true}, {`(?<n>[a-c]{2,}b{1,2})`, true},
-		{`a*b{0,1}`, true}, {`\p{L}*x{2,3}`, true}, {`(?<=)(?:[^x])*[ab]{2}[ab]{1,2}`, true},
-		// Without a bounded repeat of variable length or an alternative, or
-		// without a loop to start with, regexp2 finds the match by its
-		// landmarks.
-		{`[\w.]+@[\w.]+\.\w+`, false}, {`.*a{2}b`, false},
+		{`[^\w]*?[ab]{1,2}b`, true}, {`(?:)(?<=)((?:.+(?:ab|a)b))`, true}, {`(?<n>[a-c]{2,}b{1,2}c)`, true}, {`(?<n>[a-c]{2,}b{1,2})`, false},
+		{`a*b{0,1}c`, true}, {`\p{L}*x{2,3}y`, true}, {`a*b{0,1}`, false}, {`\p{L}*x{2,3}`, false}, {`(?<=)(?:[^x])*[ab]{1,2}[ab]{2}`, true},
+		{`\w+(?:ab|a)b`, true}, {`\s*(?:x|yz)\d`, true}, {`\w*(?:a|b+)c`, true}, {`\w*(?=a|bc)x`, true}, {`\w*(?<n>a|[bc]{1,2})d`, true},
+		// Without a bounded repeat of variable length or alternatives that
+		// may not be as long as each other, or without a loop to start with,
+		// regexp2 finds the match by its landmarks.
+		{`[\w.]+@[\w.]+\.\w+`, false}, {`.*a{2}b`, false}, {`(?=)\W*[ab]{2,}b`, false},
+		{`\w+@(?:gmail|yahoo)\.com`, false}, {`\d+(?:px|em)`, false}, {`\w+\s+(?:ipsum|dolor)\d{1,2}`, false}, {`(\w+ (?:a|bc))$`, false}, {`(?<=)(?:[^x])*[ab]{2}[ab]{1,2}`, false},
+		{`.*(?<n>a[bc]|\.x|d{2})e`, false},
 		{`^.*a{1,2}`, false}, {`(?=a).*b{1,2}`, false}, {`a.*b{1,2}`, false}, {`[ab]{1,2}b`, false}, {`(a)\1*a{1,2}`, false}, {`\ba*b{1,2}`, false},
 	} {
 		goText, r2, _, err := TransformRegExpIter(tc.pattern, false, true, false)

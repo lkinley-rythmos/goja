@@ -537,24 +537,43 @@ func (self *_RegExp_parser) groupNumber(num int) int {
 
 // leadingUnboundedLoop reports whether the pattern may start with an
 // unbounded loop of a set of characters, perhaps in groups, and has a
-// bounded repeat of variable length or an alternative: regexp2 then looks
-// for a match by the "landmarks" after the loop, and takes each as often
-// as it can (or the first alternative that matches), so that it finds none
-// when a landmark's last character is the next one's (/[^\w]*?[ab]{1,2}b/
-// found nothing in "ab"). A lookahead that always succeeds before the loop
-// stops it from doing so (see regexp2NoLandmarks). Without such a repeat or
-// alternative the landmarks are literals and fixed repeats, which it finds
-// as they are (a pattern like /[\w.]+@[\w.]+\.\w+/ keeps the search).
+// landmark that may match more than it takes: regexp2 then looks for a match
+// by the "landmarks" after the loop (literals, bounded repeats of a set, and
+// alternatives of them), and takes each as often as it can (or the first
+// alternative that matches), so that it finds none when a landmark's last
+// character is the next one's (/[^\w]*?[ab]{1,2}b/ found nothing in "ab").
+// A lookahead that always succeeds before the loop stops it from doing so
+// (see regexp2NoLandmarks). Landmarks of a fixed length are found as they
+// are, and a pattern with only those keeps the search: /[\w.]+@[\w.]+\.\w+/,
+// and /\w+@(?:gmail|yahoo)\.com/, whose alternatives are as long as each
+// other. A bounded repeat of variable length, or a group with alternatives
+// not shown to be as long as each other, may be one that is not, but for
+// the last (/\w+\s+(?:ipsum|dolor)\d{1,2}/).
 func (self *_RegExp_parser) leadingUnboundedLoop() bool {
 	s := self.str
 	n := len(s)
 	variable := false
+	var opens []int // the groups being scanned, and whether they have a |
+	var alternated []bool
 	for i := 0; i < n && !variable; i++ {
 		switch s[i] {
 		case '\\':
 			i++
+		case '[':
+			i = classEnd(s, i) - 1
+		case '(':
+			opens = append(opens, i)
+			alternated = append(alternated, false)
+		case ')':
+			if k := len(opens) - 1; k >= 0 {
+				variable = alternated[k] && !equalLengthAlternatives(s[opens[k]:i]) && !lastTerm(s, i+1)
+				opens, alternated = opens[:k], alternated[:k]
+			}
 		case '|':
-			variable = true
+			if k := len(opens) - 1; k >= 0 {
+				alternated[k] = true
+			}
+			// Alternatives of the whole pattern are no landmarks.
 		case '{':
 			j := i + 1
 			lo := j
@@ -569,7 +588,8 @@ func (self *_RegExp_parser) leadingUnboundedLoop() bool {
 			for j < n && s[j] >= '0' && s[j] <= '9' {
 				j++
 			}
-			variable = j < n && s[j] == '}' && (j == hi || s[lo:hi-1] != s[hi:j])
+			// A repeat without a maximum is no landmark.
+			variable = j < n && s[j] == '}' && j > hi && s[lo:hi-1] != s[hi:j] && !lastTerm(s, j+1)
 		}
 	}
 	if !variable {
@@ -645,4 +665,97 @@ func (self *_RegExp_parser) leadingUnboundedLoop() bool {
 		j++
 	}
 	return j > i+1 && j+1 < n && s[j] == ',' && s[j+1] == '}'
+}
+
+// lastTerm reports whether nothing but the ends of groups and $ follow i:
+// what ends there is the last landmark, which no other is looked for after.
+func lastTerm(s string, i int) bool {
+	for ; i < len(s); i++ {
+		if s[i] != ')' && s[i] != '$' {
+			return false
+		}
+	}
+	return true
+}
+
+// classEnd returns where the class that starts at i ends (after its ']').
+func classEnd(s string, i int) int {
+	j := i + 1
+	if j < len(s) && s[j] == '^' {
+		j++
+	}
+	for j < len(s) && s[j] != ']' {
+		if s[j] == '\\' {
+			j++
+		}
+		j++
+	}
+	return min(j+1, len(s))
+}
+
+// equalLengthAlternatives reports whether the alternatives of a group (its
+// text, from its '(') all match as many characters as each other: each is a
+// sequence of ASCII characters, escapes of one, classes and dots, each
+// perhaps repeated a fixed number of times.
+func equalLengthAlternatives(g string) bool {
+	i := 1
+	switch {
+	case strings.HasPrefix(g, "(?:"):
+		i = 3
+	case strings.HasPrefix(g, "(?<") && len(g) > 3 && g[3] != '=' && g[3] != '!':
+		i = strings.IndexByte(g, '>') + 1
+		if i == 0 {
+			return false
+		}
+	case strings.HasPrefix(g, "(?"):
+		return false
+	}
+	length := -1
+	for {
+		l, next, ok := fixedLength(g, i)
+		if !ok || length >= 0 && l != length {
+			return false
+		}
+		length = l
+		if next >= len(g) {
+			return true
+		}
+		i = next + 1 // past the |
+	}
+}
+
+// fixedLength returns how many characters the alternative that starts at i
+// matches, and where it ends, or ok false if that is not fixed.
+func fixedLength(g string, i int) (length, end int, ok bool) {
+	for i < len(g) && g[i] != '|' {
+		c := g[i]
+		switch {
+		case c == '\\':
+			if i+1 >= len(g) || strings.IndexByte("bBkpPuxc0123456789", g[i+1]) >= 0 || g[i+1] >= utf8.RuneSelf {
+				return 0, 0, false
+			}
+			i += 2
+		case c == '[':
+			i = classEnd(g, i)
+		case c >= utf8.RuneSelf || strings.IndexByte("()^$*+?{}", c) >= 0:
+			return 0, 0, false
+		default:
+			i++
+		}
+		count := 1
+		if i < len(g) && g[i] == '{' {
+			j := i + 1
+			count = 0
+			for j < len(g) && g[j] >= '0' && g[j] <= '9' && count < 1<<20 {
+				count = count*10 + int(g[j]-'0')
+				j++
+			}
+			if j == i+1 || j >= len(g) || g[j] != '}' {
+				return 0, 0, false
+			}
+			i = j + 1
+		}
+		length += count
+	}
+	return length, i, true
 }
