@@ -108,8 +108,9 @@ type iterPlan struct {
 type iterFrame struct {
 	open, bodyStart, close int
 	parent                 *iterFrame
-	depth                  int // in the stack of groups, the pattern being 0
-	num                    int // its number if it captures (from 1), else 0
+	depth                  int  // in the stack of groups, the pattern being 0
+	num                    int  // its number if it captures (from 1), else 0
+	scanning               bool // it has opened and not closed
 	// The last capturing group always captured before the current point of
 	// its body (in the current alternative), and before it opens.
 	lastCaptured, capturedBefore int
@@ -163,6 +164,7 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 	var refNums []int
 	var refNames []string
 	var names map[string]int
+	var capFrames []*iterFrame // the capturing groups, by number (from 1)
 	// consumedTop is the deepest group on the stack whose current
 	// alternative has consumed something (0 for none).
 	consumedTop := func() int {
@@ -260,14 +262,19 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 						v = v*10 + int(s[end]-'0')
 					}
 				}
-				refNums = append(refNums, v)
+				if v > len(capFrames) || !capFrames[v-1].scanning {
+					// One in its own group matches nothing (see inOwnGroup).
+					refNums = append(refNums, v)
+				}
 			case e == 'k' && end < n && s[end] == '<':
 				consumes = false
 				start := end + 1
 				for end < n && s[end] != '>' {
 					end++
 				}
-				refNames = append(refNames, s[min(start, end):end])
+				if name := s[min(start, end):end]; names[name] == 0 || !capFrames[names[name]-1].scanning {
+					refNames = append(refNames, name)
+				}
 				end++
 			case (e == 'p' || e == 'P' || e == 'u') && end < n && s[end] == '{':
 				for end < n && s[end] != '}' {
@@ -331,6 +338,7 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 			if capture {
 				captures++
 				f.num = captures
+				capFrames = append(capFrames, f)
 				if name != "" {
 					if names == nil {
 						names = make(map[string]int)
@@ -340,6 +348,7 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 			}
 			frames = append(frames, f)
 			stack = append(stack, f)
+			f.scanning = true
 			i = f.bodyStart
 		case ')':
 			if len(stack) == 1 {
@@ -349,6 +358,7 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 			f := stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
 			f.close = i
+			f.scanning = false
 			f.consumes = f.allConsumed && f.altConsumed && !f.around
 			min, max, _, ok := quant(i + 1)
 			f.optional = ok && min == 0

@@ -140,12 +140,17 @@ func TestTransformRegExpOwnGroupBackreference(t *testing.T) {
 		{`(a(b\2)\1)*`, `(a(b(?:))(?:))*`},
 		{`(a)\1(b)*\2`, `(a)\1(b)*\2`},
 	} {
-		_, r2Text, _, err := TransformRegExpIter(tc.pattern, false, false, false)
+		_, r2Text, iter, err := TransformRegExpIter(tc.pattern, false, false, false)
 		if _, incompat := err.(RegexpErrorIncompatible); err != nil && !incompat {
 			t.Fatalf("%s: %v", tc.pattern, err)
 		}
 		if r2Text != tc.r2Text {
 			t.Errorf("%s: %q", tc.pattern, r2Text)
+		}
+		// The engine does not match with the group there: it is no
+		// group a backreference is to (see IterationGroup.Referenced).
+		if iter != nil && iter.Groups[1].Referenced {
+			t.Errorf("%s: group 1 referenced", tc.pattern)
 		}
 	}
 }
