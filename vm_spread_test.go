@@ -94,29 +94,30 @@ func TestSpreadCallAllocationLimit(t *testing.T) {
 	// to the allocation limit: 30 million spread values reached 1.8 GB (3.2
 	// GB with an arguments object) with nothing charged, and apply of a
 	// dense array into a native function 1.6 GB, where apply of an array-like
-	// stops at the limit (createListFromArrayLike charges its list).
-	// Ten million values: a stack of them is past 64 MB with 8-byte values
-	// too (GOARCH=386).
-	dense := `var a = new Array(1e7).fill(1)`
+	// stops at the limit (createListFromArrayLike charges its list). With
+	// an 8 MB limit: a stack of a million values is past it with 8-byte
+	// values too (GOARCH=386).
+	dense := `var a = new Array(1e6).fill(1)`
 	for _, tc := range []struct{ name, setup, script string }{
-		{"spread", ``, `function g() {} g(...new Array(3e7))`},
-		{"spread arguments", ``, `function f() { return arguments.length } f(...new Array(3e7))`},
-		{"spread strict arguments", ``, `function f() { 'use strict'; return arguments.length } f(...new Array(3e7))`},
-		{"spread native", ``, `Math.max(...new Array(3e7))`},
+		{"spread", ``, `function g() {} g(...new Array(3e6))`},
+		{"spread arguments", ``, `function f() { return arguments.length } f(...new Array(3e6))`},
+		{"spread strict arguments", ``, `function f() { 'use strict'; return arguments.length } f(...new Array(3e6))`},
+		{"spread native", ``, `Math.max(...new Array(3e6))`},
 		// The array is made before the limit is set; apply takes a dense
 		// array's values as they are.
 		{"apply native", dense, `Math.max.apply(null, a)`},
 		{"apply", dense, `function g() {} g.apply(null, a)`},
 		{"Reflect.apply", dense, `function g() {} Reflect.apply(g, null, a)`},
-		{"apply arguments", `var a = []; for (var i = 0; i < 3e6; i++) a.push(i)`, `function f() { return arguments.length } for (var i = 0; i < 10; i++) f.apply(null, a)`},
-		{"apply strict arguments", `var a = []; for (var i = 0; i < 3e6; i++) a.push(i)`, `function f() { 'use strict'; return arguments.length } for (var i = 0; i < 10; i++) f.apply(null, a)`},
+		// Each call's arguments object is charged: the stack grows once.
+		{"apply arguments", `var a = new Array(1e5).fill(1)`, `function f() { return arguments.length } for (var i = 0; i < 10; i++) f.apply(null, a)`},
+		{"apply strict arguments", `var a = new Array(1e5).fill(1)`, `function f() { 'use strict'; return arguments.length } for (var i = 0; i < 10; i++) f.apply(null, a)`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			vm := New()
 			if _, err := vm.RunString(tc.setup); err != nil {
 				t.Fatal(err)
 			}
-			vm.SetAllocationLimit(64 << 20)
+			vm.SetAllocationLimit(8 << 20)
 			timer := time.AfterFunc(20*time.Second, func() { vm.Interrupt("halt") })
 			defer timer.Stop()
 			_, err := vm.RunString(tc.script)
@@ -126,21 +127,22 @@ func TestSpreadCallAllocationLimit(t *testing.T) {
 		})
 	}
 	// Under the limit the same calls run, and a stack that has grown is
-	// not charged again: a million spreads of ten values charged 160 MB.
+	// not charged again: 200,000 spreads of ten values charged 32 MB, and
+	// their applies and Reflect.applies as much again.
 	vm := New()
-	vm.SetAllocationLimit(64 << 20)
+	vm.SetAllocationLimit(8 << 20)
 	v, err := vm.RunString(`function f() { return arguments.length } function g(a, b) { return b }
-		[f(...new Array(1e5)), g(...new Array(1e5).fill(7)), f.apply(null, new Array(1e5))].join()`)
-	if err != nil || v.String() != "100000,7,100000" {
+		[f(...new Array(1e4)), g(...new Array(1e4).fill(7)), f.apply(null, new Array(1e4))].join()`)
+	if err != nil || v.String() != "10000,7,10000" {
 		t.Fatalf("%v %v", v, err)
 	}
 	vm = New()
-	vm.SetAllocationLimit(64 << 20)
+	vm.SetAllocationLimit(8 << 20)
 	v, err = vm.RunString(`var a = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], s = 0;
 		function g(x) { return x }
-		for (var i = 0; i < 1e6; i++) s += Math.max(...a) + Math.max.apply(null, a) + g(...a) + Reflect.apply(g, null, a);
+		for (var i = 0; i < 2e5; i++) s += Math.max(...a) + Math.max.apply(null, a) + g(...a) + Reflect.apply(g, null, a);
 		s`)
-	if err != nil || v.String() != "22000000" {
+	if err != nil || v.String() != "4400000" {
 		t.Fatalf("%v %v, %d MB charged", v, err, vm.AllocatedBytes()>>20)
 	}
 }
