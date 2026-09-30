@@ -52,6 +52,11 @@ const (
 type Error struct {
 	Position file.Position
 	Message  string
+
+	// An error V8 reports as it parses that is no error of the grammar
+	// (see earlyError), and where it is in the source.
+	early  bool
+	offset int
 }
 
 // FIXME Should this be "SyntaxError"?
@@ -88,6 +93,38 @@ func (self *_parser) error(place interface{}, msg string, msgValues ...interface
 	msg = fmt.Sprintf(msg, msgValues...)
 	self.errors.Add(position, msg)
 	return self.errors[len(self.errors)-1]
+}
+
+// earlyError reports an error that V8 reports as it parses, where goja's
+// compiler finds it only once the whole source has parsed: super where the
+// code may not use it, new.target outside functions, and let as a name in
+// strict mode code. It is no error of the grammar, and the parse goes on as
+// if it were not one; a parse error after it comes after it, and one of
+// goja's compiler before it in the source may come first (see
+// EarlyErrors).
+func (self *_parser) earlyError(idx file.Idx, msg string) {
+	e := self.error(idx, msg)
+	e.early = true
+	e.offset = int(idx) - self.base
+}
+
+// EarlyErrors reports whether err, an error from ParseFile, has only errors
+// V8 reports as it parses that are no errors of the grammar (see
+// earlyError), and where the first is in the source: the program parsed,
+// and goja's compiler may find an error before it that V8 reports first
+// ("use strict"; eval = 1; super.x is "Unexpected eval or arguments in
+// strict mode").
+func EarlyErrors(err error) (offset int, ok bool) {
+	list, isList := err.(ErrorList)
+	if !isList || len(list) == 0 {
+		return 0, false
+	}
+	for _, e := range list {
+		if !e.early {
+			return 0, false
+		}
+	}
+	return list[0].offset, true
 }
 
 func (self *_parser) errorUnexpected(idx file.Idx, chr rune) error {
@@ -137,7 +174,7 @@ type ErrorList []*Error
 
 // Add adds an Error with given position and message to an ErrorList.
 func (self *ErrorList) Add(position file.Position, msg string) {
-	*self = append(*self, &Error{position, msg})
+	*self = append(*self, &Error{Position: position, Message: msg})
 }
 
 // Reset resets an ErrorList to no errors.

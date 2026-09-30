@@ -96,7 +96,7 @@ func (self *_parser) parseStatement() ast.Statement {
 		if self.scope.strict && !token.IsId(tok) && tok != token.LEFT_BRACE {
 			// let as a name, which V8 refuses in strict mode code as it
 			// parses it.
-			self.error(self.idx, "Unexpected strict mode reserved word")
+			self.earlyError(self.idx, "Unexpected strict mode reserved word")
 		}
 		self.insertSemicolon = true
 	case token.CONST:
@@ -736,7 +736,7 @@ func (self *_parser) parseForOrForInStatement() ast.Statement {
 			default:
 				tok = token.IDENTIFIER
 				if self.scope.strict {
-					self.error(self.idx, "Unexpected strict mode reserved word")
+					self.earlyError(self.idx, "Unexpected strict mode reserved word")
 				}
 			}
 		}

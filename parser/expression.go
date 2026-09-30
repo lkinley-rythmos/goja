@@ -155,11 +155,11 @@ func (self *_parser) parseSuperProperty() ast.Expression {
 	switch {
 	case self.token == token.PERIOD || self.token == token.LEFT_BRACKET:
 		if self.scope.this&thisSuperProperty == 0 {
-			self.error(idx, "'super' keyword unexpected here")
+			self.earlyError(idx, "'super' keyword unexpected here")
 		}
 	case self.token == token.LEFT_PARENTHESIS:
 		if self.scope.this&thisSuperCall == 0 {
-			self.error(idx, "'super' keyword unexpected here")
+			self.earlyError(idx, "'super' keyword unexpected here")
 		}
 	}
 	switch self.token {
@@ -798,7 +798,7 @@ func (self *_parser) parseNewExpression() ast.Expression {
 		self.next()
 		if self.literal == "target" {
 			if self.scope.this&thisNewTarget == 0 {
-				self.error(idx, "new.target expression is not allowed here")
+				self.earlyError(idx, "new.target expression is not allowed here")
 			}
 			return &ast.MetaProperty{
 				Meta: &ast.Identifier{

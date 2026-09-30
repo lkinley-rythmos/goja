@@ -1424,26 +1424,60 @@ func MustCompile(name, src string, strict bool) *Program {
 func Parse(name, src string, options ...parser.Option) (prg *js_ast.Program, err error) {
 	prg, err1 := parser.ParseFile(nil, name, src, 0, options...)
 	if err1 != nil {
-		// FIXME offset
-		se := &CompilerSyntaxError{
-			CompilerError: CompilerError{
-				Message: err1.Error(),
-			},
-		}
-		if list, ok := err1.(parser.ErrorList); ok && len(list) == 1 && list[0].Message == parser.StackOverflowMessage {
-			se.stackOverflow = true
-		}
-		err = se
+		err = parseError(err1)
 	}
 	return
+}
+
+// errAsyncGenerators is goja's compiler's error for an async generator,
+// which it does not support.
+const errAsyncGenerators = "Async generators are not supported yet"
+
+// unsupportedSyntax reports whether msg is an error of goja's compiler for
+// syntax V8 may take: an async generator, and super or new.target, which
+// the parser checks where V8 does (and the compiler also refuses in a class
+// field's initializer).
+func unsupportedSyntax(msg string) bool {
+	switch msg {
+	case errAsyncGenerators, "'super' keyword unexpected here", "new.target expression is not allowed here":
+		return true
+	}
+	return false
+}
+
+// parseError is the error for err, an error from parser.ParseFile.
+func parseError(err error) error {
+	// FIXME offset
+	se := &CompilerSyntaxError{
+		CompilerError: CompilerError{
+			Message: err.Error(),
+		},
+	}
+	if list, ok := err.(parser.ErrorList); ok && len(list) == 1 && list[0].Message == parser.StackOverflowMessage {
+		se.stackOverflow = true
+	}
+	return se
 }
 
 func compile(name, src string, strict, inGlobal bool, evalVm *vm, parserOptions ...parser.Option) (p *Program, err error) {
 	if strict {
 		parserOptions = append(parserOptions[:len(parserOptions):len(parserOptions)], parser.WithStrict)
 	}
-	prg, err := Parse(name, src, parserOptions...)
-	if err != nil {
+	prg, err1 := parser.ParseFile(nil, name, src, 0, parserOptions...)
+	if err1 != nil {
+		err = parseError(err1)
+		if offset, early := parser.EarlyErrors(err1); early && prg != nil {
+			// The program parsed, and goja's compiler may find an error
+			// before these in the source, which V8 reports first; but for
+			// what goja does not support (an async generator, super in a
+			// class field's initializer), which the compiler refuses as the
+			// parser does not.
+			if _, err1 := compileAST(prg, strict, inGlobal, evalVm); err1 != nil {
+				if se, ok := err1.(*CompilerSyntaxError); ok && se.Offset < offset && !unsupportedSyntax(se.Message) {
+					err = err1
+				}
+			}
+		}
 		return
 	}
 
