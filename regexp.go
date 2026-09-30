@@ -77,6 +77,7 @@ type regexpPattern struct {
 	src string
 
 	global, ignoreCase, multiline, dotAll, sticky, unicode bool
+	hasIndices                                             bool
 
 	regexpWrapper  *regexpWrapper
 	regexp2Wrapper *regexp2Wrapper
@@ -605,6 +606,7 @@ func (p *regexpPattern) clone() *regexpPattern {
 		dotAll:     p.dotAll,
 		sticky:     p.sticky,
 		unicode:    p.unicode,
+		hasIndices: p.hasIndices,
 	}
 	if p.regexpWrapper != nil {
 		ret.regexpWrapper = p.regexpWrapper.clone()
@@ -1372,8 +1374,49 @@ func (r *regexpObject) execResultToArray(target String, result regexpResult) Val
 		Configurable: FLAG_TRUE,
 		Enumerable:   FLAG_TRUE,
 	}, false)
+	if r.pattern.hasIndices {
+		match.self.defineOwnPropertyStr("indices", PropertyDescriptor{
+			Value:        r.matchIndices(valueArray, result),
+			Writable:     FLAG_TRUE,
+			Configurable: FLAG_TRUE,
+			Enumerable:   FLAG_TRUE,
+		}, false)
+	}
 
 	return match
+}
+
+// matchIndices is a match's indices with the d flag (MakeMatchIndicesIndex
+// PairArray): the start and end of the match and of each capture, undefined
+// for one that did not participate, and the named ones' in groups (an
+// object without a prototype), or undefined without named groups.
+func (r *regexpObject) matchIndices(values []Value, result regexpResult) Value {
+	rt := r.val.runtime
+	pairs := make([]Value, len(values))
+	for i := range values {
+		if values[i] == _undefined {
+			pairs[i] = _undefined
+			continue
+		}
+		pairs[i] = rt.newArrayValues([]Value{intToValue(int64(result.indexes[2*i])), intToValue(int64(result.indexes[2*i+1]))})
+	}
+	indices := rt.newArrayValues(pairs)
+	var groups Value = _undefined
+	for i := 1; i < len(values) && i < len(result.groups); i++ {
+		if name := result.groups[i]; name != "" {
+			if groups == _undefined {
+				groups = rt.newBaseObject(nil, classObject).val
+			}
+			groups.(*Object).self.setOwnStr(unistring.NewFromString(name), pairs[i], false)
+		}
+	}
+	indices.self.defineOwnPropertyStr("groups", PropertyDescriptor{
+		Value:        groups,
+		Writable:     FLAG_TRUE,
+		Configurable: FLAG_TRUE,
+		Enumerable:   FLAG_TRUE,
+	}, false)
+	return indices
 }
 
 func (r *regexpObject) getLastIndex() int64 {

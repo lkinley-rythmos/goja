@@ -312,7 +312,6 @@ var (
 		"Symbol.asyncIterator",
 		"resizable-arraybuffer",
 		"regexp-duplicate-named-groups",
-		"regexp-match-indices",
 		"regexp-modifiers",
 		"RegExp.escape",
 		"legacy-regexp",

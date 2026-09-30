@@ -385,7 +385,7 @@ func chargeRegexp(r *Runtime, n int64) {
 }
 
 func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPattern, err error) {
-	var global, ignoreCase, multiline, dotAll, sticky, unicode bool
+	var global, ignoreCase, multiline, dotAll, sticky, unicode, hasIndices bool
 	var wrapper *regexpWrapper
 	var wrapper2 *regexp2Wrapper
 	var goStartContext, goEmptyAfterMatch, goFoldBoundary bool
@@ -399,6 +399,12 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 		}
 		for _, chr := range flags {
 			switch chr {
+			case 'd':
+				if hasIndices {
+					invalidFlags()
+					return
+				}
+				hasIndices = true
 			case 'g':
 				if global {
 					invalidFlags()
@@ -549,6 +555,7 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 		dotAll:            dotAll,
 		sticky:            sticky,
 		unicode:           unicode,
+		hasIndices:        hasIndices,
 		size:              size,
 	}
 	return
@@ -715,6 +722,9 @@ func (r *Runtime) regexpproto_toString(call FunctionCall) Value {
 			sb.WriteString(this.source)
 		}
 		sb.WriteRune('/')
+		if this.pattern.hasIndices {
+			sb.WriteRune('d')
+		}
 		if this.pattern.global {
 			sb.WriteRune('g')
 		}
@@ -895,11 +905,32 @@ func (r *Runtime) regexpproto_getSticky(call FunctionCall) Value {
 	}
 }
 
+func (r *Runtime) regexpproto_getHasIndices(call FunctionCall) Value {
+	if this, ok := r.toObject(call.This).self.(*regexpObject); ok {
+		if this.pattern.hasIndices {
+			return valueTrue
+		} else {
+			return valueFalse
+		}
+	} else if call.This == r.global.RegExpPrototype {
+		return _undefined
+	} else {
+		panic(r.NewTypeError("RegExp.prototype.hasIndices getter called on non-RegExp object"))
+	}
+}
+
 func (r *Runtime) regexpproto_getFlags(call FunctionCall) Value {
-	var global, ignoreCase, multiline, dotAll, sticky, unicode bool
+	var hasIndices, global, ignoreCase, multiline, dotAll, sticky, unicode bool
 
 	thisObj := r.toObject(call.This)
 	size := 0
+	// The flags are read in the order they are written.
+	if v := thisObj.self.getStr("hasIndices", nil); v != nil {
+		hasIndices = v.ToBoolean()
+		if hasIndices {
+			size++
+		}
+	}
 	if v := thisObj.self.getStr("global", nil); v != nil {
 		global = v.ToBoolean()
 		if global {
@@ -924,21 +955,24 @@ func (r *Runtime) regexpproto_getFlags(call FunctionCall) Value {
 			size++
 		}
 	}
-	if v := thisObj.self.getStr("sticky", nil); v != nil {
-		sticky = v.ToBoolean()
-		if sticky {
-			size++
-		}
-	}
 	if v := thisObj.self.getStr("unicode", nil); v != nil {
 		unicode = v.ToBoolean()
 		if unicode {
 			size++
 		}
 	}
+	if v := thisObj.self.getStr("sticky", nil); v != nil {
+		sticky = v.ToBoolean()
+		if sticky {
+			size++
+		}
+	}
 
 	var sb strings.Builder
 	sb.Grow(size)
+	if hasIndices {
+		sb.WriteByte('d')
+	}
 	if global {
 		sb.WriteByte('g')
 	}
@@ -1632,6 +1666,11 @@ func (r *Runtime) getRegExpPrototype() *Object {
 			getterFunc:   r.newNativeFunc(r.regexpproto_getGlobal, "get global", 0),
 			accessor:     true,
 		}, false)
+		o.setOwnStr("hasIndices", &valueProperty{
+			configurable: true,
+			getterFunc:   r.newNativeFunc(r.regexpproto_getHasIndices, "get hasIndices", 0),
+			accessor:     true,
+		}, false)
 		o.setOwnStr("multiline", &valueProperty{
 			configurable: true,
 			getterFunc:   r.newNativeFunc(r.regexpproto_getMultiline, "get multiline", 0),
@@ -1668,7 +1707,7 @@ func (r *Runtime) getRegExpPrototype() *Object {
 		o._putSym(SymSearch, valueProp(r.newNativeFunc(r.regexpproto_stdSearch, "[Symbol.search]", 1), true, false, true))
 		o._putSym(SymSplit, valueProp(r.newNativeFunc(r.regexpproto_stdSplitter, "[Symbol.split]", 2), true, false, true))
 		o._putSym(SymReplace, valueProp(r.newNativeFunc(r.regexpproto_stdReplacer, "[Symbol.replace]", 2), true, false, true))
-		o.guard("exec", "global", "multiline", "ignoreCase", "unicode", "sticky")
+		o.guard("exec", "global", "multiline", "ignoreCase", "unicode", "sticky", "hasIndices")
 	}
 	return ret
 }
