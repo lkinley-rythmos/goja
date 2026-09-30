@@ -5987,7 +5987,9 @@ func (vm *vm) getPrivateProp(base Value, name unistring.String, typ *privateEnvT
 		} else {
 			v = penv.fields[idx]
 			if v == nil {
-				panic(vm.r.NewTypeError("Private member #%s is accessed before it is initialized", name))
+				// Not yet initialized: V8 reports it as it reports an
+				// object without the member.
+				panic(vm.r.NewTypeError("Cannot read private member #%s from an object whose class did not declare it", name))
 			}
 		}
 	} else {
@@ -6032,12 +6034,12 @@ func (vm *vm) setPrivateProp(base Value, name unistring.String, typ *privateEnvT
 		} else {
 			ptr := &penv.fields[idx]
 			if *ptr == nil {
-				panic(vm.r.NewTypeError("Private member #%s is accessed before it is initialized", name))
+				panic(vm.r.NewTypeError("Cannot write private member #%s to an object whose class did not declare it", name))
 			}
 			*ptr = val
 		}
 	} else {
-		panic(vm.r.NewTypeError("Cannot write private member #%s from an object whose class did not declare it", name))
+		panic(vm.r.NewTypeError("Cannot write private member #%s to an object whose class did not declare it", name))
 	}
 }
 
