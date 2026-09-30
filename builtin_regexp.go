@@ -556,9 +556,27 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 func (r *Runtime) _newRegExp(patternStr String, flags string, proto *Object) *regexpObject {
 	pattern, err := r.compileRegexpFromValueString(patternStr, flags)
 	if err != nil {
-		panic(r.newSyntaxError(err.Error()))
+		panic(r.newRegExpSyntaxError(patternStr, err))
 	}
 	return r.newRegExpp(pattern, patternStr, proto)
+}
+
+// newRegExpSyntaxError is the SyntaxError for err, the error compiling
+// patternStr. The pattern its message shows was written with its lone
+// surrogates as \uXXXX escapes (see escapeInvalidUtf16); V8 shows the code
+// units themselves.
+func (r *Runtime) newRegExpSyntaxError(patternStr String, err error) Value {
+	msg := err.Error()
+	escaped := escapeInvalidUtf16(patternStr)
+	prefix := "Invalid regular expression: /" + escaped + "/: "
+	if _, ok := patternStr.(unicodeString); !ok || !strings.HasPrefix(msg, prefix) || escaped == patternStr.String() {
+		return r.newSyntaxError(msg)
+	}
+	var sb StringBuilder
+	sb.WriteString(asciiString("Invalid regular expression: /"))
+	sb.WriteString(patternStr)
+	sb.WriteUTF8String("/: " + msg[len(prefix):])
+	return r.builtin_new(r.getSyntaxError(), []Value{sb.String()})
 }
 
 func (r *Runtime) builtin_newRegExp(args []Value, proto *Object) *Object {
@@ -654,7 +672,7 @@ func (r *Runtime) regexpproto_compile(call FunctionCall) Value {
 		}
 		pattern, err = r.compileRegexpFromValueString(source, flags)
 		if err != nil {
-			panic(r.newSyntaxError(err.Error()))
+			panic(r.newRegExpSyntaxError(source, err))
 		}
 		this.pattern = pattern
 		this.source = source
