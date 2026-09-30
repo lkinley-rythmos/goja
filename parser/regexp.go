@@ -128,6 +128,7 @@ type _RegExp_parser struct {
 	classItems    int
 	classTexts    map[string]bool
 	foldedClasses map[string]foldedClass
+	wholeClasses  map[string]*wholeClass
 }
 
 // maxRegexpExpansion bounds what a pattern costs an engine to compile, in
@@ -1037,14 +1038,46 @@ func (self *_RegExp_parser) writeGoClass(negated bool) {
 		return
 	}
 	self.goRegexp.Truncate(self.classGoStart)
-	set := caseClosure(self.classSet)
-	if negated {
-		set = set.complement()
+	w := self.wholeClass()
+	if !w.goDone {
+		set := caseClosure(self.classSet)
+		if negated {
+			set = set.complement()
+		}
+		var b strings.Builder
+		w.goUnits = writeClass(&b, set, false)
+		w.goText, w.goDone = b.String(), true
+		self.expandGo(expansionClass)
+		self.expandRegexp2(expansionClass)
 	}
 	self.goRegexp.WriteString(`(?-i:`)
-	self.expandGo(expansionClass + writeClass(&self.goRegexp, set, false))
-	self.expandRegexp2(expansionClass)
+	self.goRegexp.WriteString(w.goText)
+	self.expandGo(w.goUnits)
 	self.goRegexp.WriteByte(')')
+}
+
+// wholeClass is a class with property escapes written whole as the set it
+// stands for, for Go's regexp and regexp2, and what the text costs them:
+// computing it takes up to about 0.3 ms, so a pattern computes each
+// distinct class once.
+type wholeClass struct {
+	goText, r2Text   string
+	goUnits, r2Units int
+	goDone, r2Done   bool
+}
+
+// wholeClass returns the class just scanned's, by its text.
+func (self *_RegExp_parser) wholeClass() *wholeClass {
+	text := self.str[self.classStart:self.chrOffset]
+	w := self.wholeClasses[text]
+	if w == nil {
+		if self.wholeClasses == nil {
+			self.wholeClasses = make(map[string]*wholeClass)
+		}
+		w = &wholeClass{}
+		self.wholeClasses[text] = w
+	}
+	return w
 }
 
 // classProperty is a property escape in a class.
@@ -1088,18 +1121,28 @@ func (self *_RegExp_parser) writeRegexp2Class(negated bool) {
 		self.expandRegexp2(expansionName*names + regexp2TextUnits(ranges))
 		return
 	}
-	set := self.classSet
+	w := self.wholeClass()
+	if !w.r2Done {
+		set := self.classSet
+		if self.ignoreCase {
+			// ECMAScript matches a character against a class ignoring case
+			// if one of its case variants is in it.
+			set = caseClosure(set)
+		}
+		if negated {
+			set = set.complement()
+		}
+		var cb strings.Builder
+		w.r2Units = writeClass(&cb, set, true)
+		w.r2Text, w.r2Done = cb.String(), true
+		self.expandRegexp2(expansionClass)
+		self.expandGo(expansionClass)
+	}
 	if self.ignoreCase {
-		// ECMAScript matches a character against a class ignoring case if
-		// one of its case variants is in it.
-		set = caseClosure(set)
 		b.WriteString(`(?-i:`)
 	}
-	if negated {
-		set = set.complement()
-	}
-	self.expandRegexp2(expansionClass + writeClass(b, set, true))
-	self.expandGo(expansionClass)
+	b.WriteString(w.r2Text)
+	self.expandRegexp2(w.r2Units)
 	if self.ignoreCase {
 		b.WriteByte(')')
 	}

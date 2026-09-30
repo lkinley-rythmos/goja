@@ -142,10 +142,21 @@ func (self *_RegExp_parser) classItem(set runeSet) {
 }
 
 // addClassSet adds a set to the class's. A union per item was quadratic in
-// the items (a class of 6,784 took 120 ms); the ranges are appended, merged
-// with the last one when in order, and sorted when the class ends (see
-// sortClassSet).
+// the items (a class of 6,784 took 120 ms); the ranges of an item are
+// appended, merged with the last one when in order, and sorted when the
+// class ends (see sortClassSet), and a set of many ranges is merged in.
 func (self *_RegExp_parser) addClassSet(set runeSet) {
+	if len(set) > 2 && !self.classUnsorted {
+		// A set of many ranges (a class escape, a property) is merged in
+		// its length and the class's. The class's set is its own (a
+		// property's is shared), since items are appended to it.
+		if len(self.classSet) == 0 {
+			self.classSet = append(self.classSet[:0:0], set...)
+		} else {
+			self.classSet = self.classSet.union(set)
+		}
+		return
+	}
 	for i := 0; i < len(set); i += 2 {
 		if n := len(self.classSet); n == 0 || set[i] >= self.classSet[n-2] {
 			self.classSet = self.classSet.appendRange(set[i], set[i+1])
