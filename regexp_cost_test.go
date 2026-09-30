@@ -189,6 +189,7 @@ func TestRegexpCompileTimeBounded(t *testing.T) {
 		{"literal", strings.Repeat("x", 3500000), "", true},
 		{"repeated literal", "(?:" + strings.Repeat("x", 200000) + "){20}", "", false},
 		{"classes", distinctClasses(40, 2000), "u", true},
+		{"backreferences in their groups", strings.Repeat("(", 999) + strings.Repeat(`\999`, 150000) + strings.Repeat(")", 999), "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			vm := New()

@@ -95,7 +95,8 @@ type _RegExp_parser struct {
 	captureNames    []string
 	namesSeen       map[string]bool
 	// The capturing groups being scanned, and how many have opened.
-	openCaptures   []openCapture
+	openNums       map[int]bool    // by number
+	openNames      map[string]bool // by name
 	capturesOpened int
 
 	// What the pattern costs each engine (see maxRegexpExpansion and
@@ -693,8 +694,23 @@ func (self *_RegExp_parser) scanGroup() {
 	if capturing {
 		// A backreference in the group is to it (see writeBackref).
 		self.capturesOpened++
-		self.openCaptures = append(self.openCaptures, openCapture{self.capturesOpened, name})
-		defer func() { self.openCaptures = self.openCaptures[:len(self.openCaptures)-1] }()
+		num := self.capturesOpened
+		if self.openNums == nil {
+			self.openNums = make(map[int]bool)
+		}
+		self.openNums[num] = true
+		if name != "" {
+			if self.openNames == nil {
+				self.openNames = make(map[string]bool)
+			}
+			self.openNames[name] = true
+		}
+		defer func() {
+			delete(self.openNums, num)
+			if name != "" {
+				delete(self.openNames, name)
+			}
+		}()
 	}
 	hidden := self.iter != nil && self.err == nil && self.iter.hidden[open]
 	if hidden {
@@ -1607,24 +1623,13 @@ func (self *_RegExp_parser) scanUnicodeDecimalEscape(inClass bool) {
 	self.writeBackref(self.chrOffset, value)
 }
 
-// openCapture is a capturing group being scanned: its number, and name.
-type openCapture struct {
-	num  int
-	name string
-}
-
 // inOwnGroup reports whether a backreference to group num, or to the group
 // named name, is in the group. ECMAScript has it match nothing: the group
 // has no capture there, as it is reset at each iteration of a quantified
 // group it is in, and regexp2 matches it with its capture from the last
 // (/((a)\1|.){2}/ on "aab").
 func (self *_RegExp_parser) inOwnGroup(num int, name string) bool {
-	for _, c := range self.openCaptures {
-		if num != 0 && c.num == num || name != "" && c.name == name {
-			return true
-		}
-	}
-	return false
+	return num != 0 && self.openNums[num] || name != "" && self.openNames[name]
 }
 
 // writeBackref writes for regexp2 the backreference to group num that ends
@@ -1908,7 +1913,9 @@ func (self *_RegExp_parser) syntaxError(msg string) {
 }
 
 func (self *_RegExp_parser) error(fatal bool, msg string, msgValues ...interface{}) {
-	if self.err != nil {
+	if self.err != nil || !fatal && self.incompat != nil {
+		// Only the first is kept: formatting each of 150,000
+		// backreferences' took most of the scan.
 		return
 	}
 	e := regexpParseError{

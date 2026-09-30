@@ -1,10 +1,12 @@
 package parser
 
 import (
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTransformRegExpIterations(t *testing.T) {
@@ -152,6 +154,33 @@ func TestTransformRegExpOwnGroupBackreference(t *testing.T) {
 		if iter != nil && iter.Groups[1].Referenced {
 			t.Errorf("%s: group 1 referenced", tc.pattern)
 		}
+	}
+}
+
+func TestTransformRegExpBackreferencesLinear(t *testing.T) {
+	// Whether a backreference is in its own group is known at once: it
+	// scanned the groups being scanned for each, and 150,000
+	// backreferences in 999 groups took 362 to 813 ms to compile (58% of
+	// it in the scan), where the same in one group took 12 ms. Each
+	// backreference's message, of which only the first is kept, is not
+	// formatted either (that was most of the rest).
+	best := func(p string) time.Duration {
+		d := time.Duration(math.MaxInt64)
+		for i := 0; i < 3; i++ {
+			start := time.Now()
+			if _, _, _, err := TransformRegExpIter(p, false, false, false); err == nil {
+				t.Fatalf("%.40s: compatible", p)
+			}
+			d = min(d, time.Since(start))
+		}
+		return d
+	}
+	// To the first group, in 998 others or after them.
+	refs := strings.Repeat(`\1`, 150000)
+	deep := best("(a)" + strings.Repeat("(", 998) + refs + strings.Repeat(")", 998))
+	shallow := best("(a)" + strings.Repeat("(", 998) + strings.Repeat(")", 998) + refs)
+	if deep > 2*shallow+20*time.Millisecond {
+		t.Errorf("in 998 groups %v, after them %v", deep, shallow)
 	}
 }
 
