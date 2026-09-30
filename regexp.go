@@ -16,6 +16,7 @@ import (
 	"weak"
 
 	"github.com/dlclark/regexp2/v2"
+	"github.com/dop251/goja/parser"
 	"github.com/dop251/goja/unistring"
 )
 
@@ -104,6 +105,12 @@ type regexpPattern struct {
 	// occurrence (see findStringSubmatchIndex); nil when the pattern has no
 	// prefix or has a ^.
 	prefixSkip *anchoredRegexp
+
+	// iter is the hidden groups of the engines' patterns, which tell the
+	// captures of earlier iterations of quantified groups (see
+	// dropEarlierIterations); nil when there are none.
+	iter      *parser.Iterations
+	iterNames []string // the groups' names without the hidden ones
 
 	// size is the estimated memory the compiled engines hold, charged to the
 	// Runtime that compiled the pattern and counted by the cache (with
@@ -448,6 +455,13 @@ func (p *regexpPattern) hasFoldWordChars(s String) bool {
 }
 
 func (p *regexpPattern) findSubmatchIndex(vm *vm, s String, start int) regexpResult {
+	if p.iter == nil {
+		return p.findSubmatchIndexEngines(vm, s, start)
+	}
+	return p.dropEarlierIterations(p.findSubmatchIndexEngines(vm, s, start))
+}
+
+func (p *regexpPattern) findSubmatchIndexEngines(vm *vm, s String, start int) regexpResult {
 	if p.regexpWrapper == nil {
 		return p.regexp2Wrapper.findSubmatchIndex(vm, s, start, p.unicode, p.global || p.sticky)
 	}
@@ -470,6 +484,65 @@ func (p *regexpPattern) findSubmatchIndex(vm *vm, s String, start int) regexpRes
 const goFindAllIncrementalAbove = 64 << 10
 
 func (p *regexpPattern) findAllSubmatchIndex(vm *vm, s String, start int, limit int, sticky bool) []regexpResult {
+	results := p.findAllSubmatchIndexEngines(vm, s, start, limit, sticky)
+	if p.iter != nil {
+		for i := range results {
+			results[i] = p.dropEarlierIterations(results[i])
+		}
+	}
+	return results
+}
+
+// dropEarlierIterations drops from a match the captures made in earlier
+// iterations of a quantified group than its last, which ECMAScript resets
+// at each (see parser.IterationGroup), and the hidden groups that tell them.
+func (p *regexpPattern) dropEarlierIterations(res regexpResult) regexpResult {
+	idx := res.indexes
+	if len(idx) == 0 {
+		return res
+	}
+	for _, g := range p.iter.Groups {
+		hs := idx[2*g.Hidden]
+		for _, c := range g.Inner {
+			gs, ge := idx[2*c.Group], idx[2*c.Group+1]
+			if gs < 0 {
+				continue
+			}
+			// Where the last iteration starts, a capture is from it if it
+			// is not empty, or if the body need not consume anything
+			// before the group.
+			if hs < 0 || gs < hs || gs == hs && ge == gs && c.ConsumedBefore {
+				idx[2*c.Group], idx[2*c.Group+1] = -1, 0
+			}
+		}
+	}
+	// The hidden groups are dropped, and their names (the same for every
+	// match, and made once).
+	kept := idx[:0]
+	h := 0
+	for i := 0; i < len(idx)/2; i++ {
+		if h < len(p.iter.Hidden) && p.iter.Hidden[h] == i {
+			h++
+			continue
+		}
+		kept = append(kept, idx[2*i], idx[2*i+1])
+	}
+	if p.iterNames == nil && res.groups != nil {
+		names := make([]string, 0, len(res.groups))
+		h = 0
+		for i, name := range res.groups {
+			if h < len(p.iter.Hidden) && p.iter.Hidden[h] == i {
+				h++
+				continue
+			}
+			names = append(names, name)
+		}
+		p.iterNames = names
+	}
+	return regexpResult{indexes: kept, groups: p.iterNames}
+}
+
+func (p *regexpPattern) findAllSubmatchIndexEngines(vm *vm, s String, start int, limit int, sticky bool) []regexpResult {
 	if p.regexpWrapper == nil {
 		return p.regexp2Wrapper.findAllSubmatchIndex(vm, s, start, limit, sticky, p.unicode)
 	}
@@ -543,6 +616,7 @@ func (p *regexpPattern) clone() *regexpPattern {
 	ret.goEmptyAfterMatch = p.goEmptyAfterMatch
 	ret.goFoldBoundary = p.goFoldBoundary
 	ret.prefixSkip = p.prefixSkip
+	ret.iter = p.iter
 	ret.size = p.size
 	return ret
 }

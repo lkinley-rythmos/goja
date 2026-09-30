@@ -448,7 +448,7 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 		patternStr = convertRegexpToUtf16(patternStr)
 	}
 
-	re2Str, regexp2Str, err := parser.TransformRegExp2(patternStr, dotAll, unicode, ignoreCase)
+	re2Str, regexp2Str, iter, err := parser.TransformRegExpIter(patternStr, dotAll, unicode, ignoreCase)
 	// Each step of a compile takes up to about 100 ms, which cannot be
 	// interrupted (see parser.TransformRegExp2); an Interrupt is raised
 	// between them.
@@ -541,6 +541,7 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 		goEmptyAfterMatch: goEmptyAfterMatch,
 		goFoldBoundary:    goFoldBoundary,
 		prefixSkip:        prefixSkip,
+		iter:              iter,
 		regexp2Wrapper:    wrapper2,
 		global:            global,
 		ignoreCase:        ignoreCase,

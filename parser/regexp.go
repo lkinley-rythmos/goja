@@ -105,6 +105,10 @@ type _RegExp_parser struct {
 
 	depth int // of the group being scanned
 
+	// The hidden groups at the start of quantified groups' bodies (see
+	// planIterations), nil if there are none.
+	iter *iterPlan
+
 	// Without the u flag, ignoring case (see canonFold): where the Go text
 	// of the atom being scanned starts, and where the escape being scanned
 	// starts in the input, and whether it is a backreference.
@@ -194,8 +198,18 @@ func TransformRegExp(pattern string, dotAll, unicode bool) (transformed string, 
 // either engine would take too long to compile is refused (see
 // maxRegexpExpansion).
 func TransformRegExp2(pattern string, dotAll, unicode, ignoreCase bool) (transformed, regexp2Pattern string, err error) {
+	transformed, regexp2Pattern, _, err = TransformRegExpIter(pattern, dotAll, unicode, ignoreCase)
+	return
+}
+
+// TransformRegExpIter is TransformRegExp2 that also returns the hidden
+// groups both patterns have at the start of the bodies of quantified groups
+// with capturing groups (see IterationGroup), nil if there are none: the
+// caller must drop the captures of earlier iterations, and the hidden
+// groups, from a match.
+func TransformRegExpIter(pattern string, dotAll, unicode, ignoreCase bool) (transformed, regexp2Pattern string, iter *Iterations, err error) {
 	if pattern == "" {
-		return "", "", nil
+		return "", "", nil, nil
 	}
 
 	parser := _RegExp_parser{
@@ -205,15 +219,21 @@ func TransformRegExp2(pattern string, dotAll, unicode, ignoreCase bool) (transfo
 		unicode:    unicode,
 		ignoreCase: ignoreCase,
 	}
+	if strings.IndexByte(pattern, '(') >= 0 {
+		parser.iter = parser.planIterations()
+	}
+	if parser.iter != nil {
+		iter = &parser.iter.Iterations
+	}
 	err = parser.parse()
 	if err != nil {
 		if _, incompat := err.(RegexpErrorIncompatible); incompat {
-			return "", parser.regexp2Pattern(), err
+			return "", parser.regexp2Pattern(), iter, err
 		}
-		return "", "", err
+		return "", "", nil, err
 	}
 
-	return parser.ResultString(), parser.regexp2Pattern(), nil
+	return parser.ResultString(), parser.regexp2Pattern(), iter, nil
 }
 
 func (self *_RegExp_parser) ResultString() string {
@@ -594,6 +614,7 @@ func (self *_RegExp_parser) scanGroup() {
 		return
 	}
 	defer func() { self.depth-- }()
+	open := self.chrOffset - 1 // the '('
 	kind := termAtom
 	start := self.goInsts
 	name := ""
@@ -640,6 +661,22 @@ func (self *_RegExp_parser) scanGroup() {
 	} else {
 		self.count(costCapture)
 	}
+	alternatives, hidden := false, false
+	if self.iter != nil && self.err == nil {
+		alternatives, hidden = self.iter.hidden[open]
+	}
+	if hidden {
+		// The body starts with a hidden group (see planIterations); with
+		// alternatives, it is a group of its own, which they are in.
+		self.count(costCapture)
+		text := "()"
+		if alternatives {
+			self.count(costGroup)
+			text = "()(?:"
+		}
+		self.writeString(text)
+		self.writeRegexp2(self.chrOffset, self.chrOffset, text)
+	}
 	self.prev = termNone
 	for self.chr != -1 && self.chr != ')' {
 		self.scanTerm()
@@ -647,6 +684,10 @@ func (self *_RegExp_parser) scanGroup() {
 	if self.chr != ')' {
 		self.fatal("Unterminated group")
 		return
+	}
+	if hidden && alternatives {
+		self.writeByte(')')
+		self.writeRegexp2(self.chrOffset, self.chrOffset, ")")
 	}
 	if name != "" {
 		// V8 finds a name taken when the group ends.
@@ -1430,10 +1471,7 @@ func (self *_RegExp_parser) scanLegacyDecimalEscape(inClass bool) {
 			self.seek(i)
 			self.error(false, "re2: Invalid \\%d <backreference>", value)
 			self.backref = true
-			if self.canonFold() {
-				// regexp2 compares it ignoring case.
-				self.writeRegexp2(self.escStart, i, "(?i:"+self.str[self.escStart:i]+")")
-			}
+			self.writeBackref(i, value)
 			return
 		}
 	}
@@ -1498,9 +1536,22 @@ func (self *_RegExp_parser) scanUnicodeDecimalEscape(inClass bool) {
 	}
 	self.error(false, "re2: Invalid \\%d <backreference>", value)
 	self.backref = true
+	self.writeBackref(self.chrOffset, value)
+}
+
+// writeBackref writes for regexp2 the backreference to group num that ends
+// at end: numbered as the groups are once the hidden ones are in (see
+// planIterations), and compared ignoring case if the pattern ignores case.
+func (self *_RegExp_parser) writeBackref(end, num int) {
+	text := self.str[self.escStart:end]
+	if n := self.groupNumber(num); n != num {
+		text = `\` + strconv.Itoa(n)
+	}
 	if self.canonFold() {
-		// regexp2 compares it ignoring case.
-		self.writeRegexp2(self.escStart, self.chrOffset, "(?i:"+self.str[self.escStart:self.chrOffset]+")")
+		text = "(?i:" + text + ")"
+	}
+	if text != self.str[self.escStart:end] {
+		self.writeRegexp2(self.escStart, end, text)
 	}
 }
 
