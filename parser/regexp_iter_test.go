@@ -55,7 +55,7 @@ func TestTransformRegExpIterations(t *testing.T) {
 		// A body that may match nothing: regexp2's matches have their
 		// refused iterations dropped, Go's are left.
 		{`(\B)*`, `(\B)*`, `((?:(?<=[0-9A-Z_a-z])(?=[0-9A-Z_a-z])|(?<![0-9A-Z_a-z])(?![0-9A-Z_a-z])))*`, &Iterations{
-			Loops: []IterationLoop{loop(1, 1, 0, -1, 1, -1, false, false)}}, "m0"},
+			Loops: []IterationLoop{loop(1, 1, 0, -1, 1, -1, false, false)}, Drop: true}, "m0"},
 		{`(?:(x*))+`, `(?:((x*)))+`, `(?:((x*)))+`, &Iterations{
 			Loops:    []IterationLoop{loop(1, 2, 1, -1, 1, -1, false, false)},
 			Captures: []IterationCapture{{Group: 2, Loop: 0}},

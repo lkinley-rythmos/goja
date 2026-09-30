@@ -513,6 +513,7 @@ func (p *regexpPattern) dropEarlierIterations(res regexpResult, goRegexp bool) r
 		return res
 	}
 	if goRegexp {
+		dropGoEmptyStar(p.iter, idx)
 		dropIterations(p.iter, idx, skipGoBounded, nil)
 	}
 	if len(p.iter.Hidden) == 0 {
@@ -658,6 +659,31 @@ func dropIterations(it *parser.Iterations, idx []int, skip func(it *parser.Itera
 			if hs := idx[2*l.Group]; hs < 0 || gs < hs || gs == hs && ge == gs && l.Depth <= d.Consumed {
 				idx[2*c.Group], idx[2*c.Group+1] = -1, 0
 				break
+			}
+		}
+	}
+}
+
+// dropGoEmptyStar drops from a match of Go's regexp the iteration of a loop
+// with no minimum or maximum (*) that matches nothing, which ECMAScript
+// refuses, leaving the loop without one: Go's regexp takes x* as (x+)?
+// when x may match nothing, so that its first iteration may be empty
+// (/(\s*)*/.exec("x") was ["", ""]; Node.js 18: ["", undefined]), though no
+// later one is (it does not go round a loop twice at one position). An
+// empty last iteration is so the only one of its run: its group, and the
+// captures made in it (empty, at where it is), are dropped, a loop before
+// those in it. regexp2's refused iterations are dropped otherwise (see
+// dropEmptyIterations).
+func dropGoEmptyStar(it *parser.Iterations, idx []int) {
+	for i := range it.Loops {
+		l := &it.Loops[i]
+		at := idx[2*l.Group]
+		if l.Min != 0 || l.Max >= 0 || at < 0 || idx[2*l.Group+1] != at {
+			continue
+		}
+		for g := l.Group; g <= l.Last; g++ {
+			if idx[2*g] == at && idx[2*g+1] == at && (g == l.Group || l.Depth >= it.Groups[g].Around) {
+				idx[2*g], idx[2*g+1] = -1, 0
 			}
 		}
 	}

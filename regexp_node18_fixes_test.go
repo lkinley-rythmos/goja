@@ -366,3 +366,28 @@ func TestRegexpEmptyIterationInRefusedNode18(t *testing.T) {
 `
 	testScript(script, newStringValue(`[[0,"ab","ab"],[0,"a","a","a"],[0,"ab","a"],[3,"cd","cd"],[1,"ab","ab"]]`), t)
 }
+
+func TestRegexpGoEmptyStarIterationNode18(t *testing.T) {
+	// Go's regexp takes x* as (x+)? when x may match nothing, so that its
+	// first iteration may be empty, which ECMAScript refuses: /(\s*)*/.exec("x")
+	// was ["", ""] (Node.js 18: ["", undefined]), where regexp2's match
+	// (lastIndex 1) dropped the iteration. Such an iteration, the only one
+	// of its run, is dropped with the captures made in it.
+	const script = `
+(function () {
+	var out = [];
+	var cases = [["(\\s*)*", "x"], ["^(?:(\\d*)-?)*$", ""], ["(?:(a)|())*c", "c"], ["((a)|())*c", "c"], ["(?:(x*))*y", "y"], ["(?:(x?)(y?))*z", "z"],
+		["(?:(a)|(b*))*$", "ab"], ["(?:(a*)b?)*c", "abc"], ["(\\s*)*?x", "x"], ["(?:(x*))+y", "y"], ["(?:a(x*))*b", "ab"], ["((?:(a)|())*)*c", "c"]];
+	for (var i = 0; i < cases.length; i++) {
+		var c = cases[i];
+		out.push(new RegExp(c[0]).exec(c[1]));
+		var g = new RegExp(c[0], "g");
+		g.lastIndex = 1;
+		out.push(g.exec("#" + c[1]));
+		out.push(c[1].replace(new RegExp(c[0], "g"), "[$1]"));
+	}
+	return JSON.stringify(out);
+})()
+`
+	testScript(script, newStringValue(`[["",null],["",null],"[]x[]",["",null],null,"[]",["c",null,null],["c",null,null],"[]",["c",null,null,null],["c",null,null,null],"[]",["y",null],["y",null],"[]",["z",null,null],["z",null,null],"[]",["ab",null,"b"],["ab",null,"b"],"[][]",["abc","a"],["abc","a"],"[a]",["x",null],["x",null],"[]",["y",""],["y",""],"[]",["ab",""],["ab",""],"[]",["c",null,null,null],["c",null,null,null],"[]"]`), t)
+}

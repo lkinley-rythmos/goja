@@ -24,9 +24,10 @@ import (
 // caller drops such an iteration, and the empty captures made in it, before
 // it takes the last captures; a loop whose body may match nothing is told
 // by a group for that even if its captures are in every iteration. Go's
-// regexp takes no such iteration of * or + (it does not go round a loop
-// twice at one position), but takes the optional copies of a bounded
-// repeat's body that match nothing.
+// regexp does not go round a loop twice at one position, but takes x* as
+// (x+)? when x may match nothing, whose first iteration may be empty (the
+// caller drops it), and takes the optional copies of a bounded repeat's
+// body that match nothing (whose captures the caller leaves).
 
 // Iterations are the quantified groups of a transformed pattern that may
 // iterate more than once and whose iterations a group tells (see
@@ -44,7 +45,7 @@ type Iterations struct {
 	// The hidden groups, in order.
 	Hidden []int
 	// Drop reports whether a match has captures of earlier iterations to
-	// drop, or hidden groups.
+	// drop, a loop with no minimum or maximum, or hidden groups.
 	Drop bool
 }
 
@@ -467,7 +468,9 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 				Group: groupOf[f], Last: lastBefore(f.close), Min: f.min, Max: f.max, Depth: f.depth,
 				Parent: parent, Alternatives: f.alternatives, Reset: reset,
 			})
-			plan.Drop = plan.Drop || reset || f.hidden
+			// Go's regexp may take an empty first iteration of a loop with
+			// no minimum or maximum (see Iterations).
+			plan.Drop = plan.Drop || reset || f.hidden || f.min == 0 && f.max < 0
 		}
 		if f.num != 0 {
 			g := &plan.Groups[plan.renumber[f.num]]
