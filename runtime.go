@@ -3123,9 +3123,10 @@ func (r *Runtime) getHash() *maphash.Hash {
 // array is reused, which makes repeated Go->JS calls allocation-free; above
 // it the array is released so a single deep call cannot pin memory for the
 // lifetime of the Runtime. Note that valueStack.expand doubles capacity
-// as it grows, so a stack whose peak use is N slots typically has
-// capacity ~2N; 8192 slots (128 KiB of interface headers) therefore
-// retains stacks whose peak use is up to ~4000 slots.
+// below 1,024 slots and grows it by half above (rounded up to a multiple
+// of 1,024), so a stack whose peak use is N slots has a capacity of up to
+// 2N, or 1.5N above 1,024; 8192 slots (128 KiB of interface headers)
+// therefore retains stacks whose peak use is up to about 5,400 slots.
 const maxRetainedStackCap = 8192
 
 // called when the top level function returns normally (i.e. control is passed outside the Runtime).
