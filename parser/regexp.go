@@ -94,6 +94,9 @@ type _RegExp_parser struct {
 	captureCount    int
 	captureNames    []string
 	namesSeen       map[string]bool
+	// The capturing groups being scanned, and how many have opened.
+	openCaptures   []openCapture
+	capturesOpened int
 
 	// What the pattern costs each engine (see maxRegexpExpansion and
 	// termCost): for Go's regexp, besides the instructions of its program
@@ -627,6 +630,7 @@ func (self *_RegExp_parser) scanGroup() {
 	kind := termAtom
 	start := self.goInsts
 	name := ""
+	capturing := false
 	str := self.str[self.chrOffset:]
 	if len(str) > 0 { // A possibility of (?= or (?!
 		if str[0] == '?' && len(str) > 1 {
@@ -649,6 +653,7 @@ func (self *_RegExp_parser) scanGroup() {
 					break
 				}
 				self.count(costNamed)
+				capturing = true
 				self.pass()         // ?
 				self.writeByte('P') // older Go versions compatibility
 				self.pass()         // <
@@ -666,9 +671,17 @@ func (self *_RegExp_parser) scanGroup() {
 			return
 		} else {
 			self.count(costCapture)
+			capturing = true
 		}
 	} else {
 		self.count(costCapture)
+		capturing = true
+	}
+	if capturing {
+		// A backreference in the group is to it (see writeBackref).
+		self.capturesOpened++
+		self.openCaptures = append(self.openCaptures, openCapture{self.capturesOpened, name})
+		defer func() { self.openCaptures = self.openCaptures[:len(self.openCaptures)-1] }()
 	}
 	hidden := self.iter != nil && self.err == nil && self.iter.hidden[open]
 	if hidden {
@@ -1581,10 +1594,35 @@ func (self *_RegExp_parser) scanUnicodeDecimalEscape(inClass bool) {
 	self.writeBackref(self.chrOffset, value)
 }
 
+// openCapture is a capturing group being scanned: its number, and name.
+type openCapture struct {
+	num  int
+	name string
+}
+
+// inOwnGroup reports whether a backreference to group num, or to the group
+// named name, is in the group. ECMAScript has it match nothing: the group
+// has no capture there, as it is reset at each iteration of a quantified
+// group it is in, and regexp2 matches it with its capture from the last
+// (/((a)\1|.){2}/ on "aab").
+func (self *_RegExp_parser) inOwnGroup(num int, name string) bool {
+	for _, c := range self.openCaptures {
+		if num != 0 && c.num == num || name != "" && c.name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // writeBackref writes for regexp2 the backreference to group num that ends
 // at end: numbered as the groups are once the hidden ones are in (see
 // planIterations), and compared ignoring case if the pattern ignores case.
+// One in the group matches nothing (see inOwnGroup).
 func (self *_RegExp_parser) writeBackref(end, num int) {
+	if self.inOwnGroup(num, "") {
+		self.writeRegexp2(self.escStart, end, "(?:)")
+		return
+	}
 	text := self.str[self.escStart:end]
 	if n := self.groupNumber(num); n != num {
 		text = `\` + strconv.Itoa(n)
@@ -1630,7 +1668,9 @@ func (self *_RegExp_parser) scanUnicodeNamedReference(inClass bool) {
 		self.deferred = "Invalid named capture referenced"
 	}
 	self.backref = true
-	if self.canonFold() {
+	if found && self.inOwnGroup(0, name) {
+		self.writeRegexp2(self.escStart, self.offset+end+1, "(?:)")
+	} else if self.canonFold() {
 		// regexp2 compares it ignoring case.
 		self.writeRegexp2(self.escStart, self.offset+end+1, `(?i:\k<`+name+`>)`)
 	} else if strings.IndexByte(self.str[self.offset:self.offset+end], '\\') >= 0 {

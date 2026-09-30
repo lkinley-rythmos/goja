@@ -280,3 +280,28 @@ func TestRegexpEmptyIterationRefusedNode18(t *testing.T) {
 `
 	testScript(script, newStringValue(`[[0,"ba",null,"b"],[0,"ab","a"],[0,"ab","a"],[1,"ab","a"],[1,"ab cd","cd"],[1,"\"a\",\"b\"","b"],[1,"1.2","2"],[2,"",null],[3,"",null],[2,"",null],[1,"xx","xx"],[1,"a","a",null],[1,"a",""],[1,"a",""],[0,"bbb","b",null],[0,"abc",null,null,null,"a"],[1,"abc",null],[1,"ab",null],[0,"ab",null],[1,"ab","a"],[1,"abc",null],["A","",null," ","",null,"b","",null," ","",null,"é"],"#[cd][]"]`), t)
 }
+
+func TestRegexpBackreferenceInOwnGroupNode18(t *testing.T) {
+	// A backreference in the group it is to matches nothing in ECMAScript,
+	// as the group is reset at each iteration of a quantified group it is
+	// in; regexp2 matched it with the group's capture from the last
+	// iteration, and so took another path: /x((a)\1|.){2,}(b)/ on "xaab"
+	// gave its second group the first iteration's "a" (Node.js 18: the
+	// second's), which the drop of earlier iterations' captures made
+	// undefined. The parser writes it for regexp2 as an empty group.
+	const script = `
+(function () {
+	var out = [];
+	var cases = [["x((a)\\1|.){2,}(b)", "yd", "xaab", 0], ["((a)\\1|.){2,}(b)", "gd", "#aab", 1], ["(.|(\\1|(a+)(.)|.)+?){2,}(b)", "g", "aab", 0],
+		["(.|(\\1|(a+)(.)|.)+?){2,}(b)", "g", "abab", 0], ["(?<n>a\\k<n>)+", "d", "aaa", 0], ["(a(b\\2)\\1)*c", "g", "#ababc", 1], ["(a\\1)+", "", "aaa", 0]];
+	for (var i = 0; i < cases.length; i++) {
+		var c = cases[i], re = new RegExp(c[0], c[1]);
+		re.lastIndex = c[3];
+		var m = re.exec(c[2]);
+		out.push(m ? [m.index].concat(Array.prototype.slice.call(m), m.indices ? [m.indices] : []) : null);
+	}
+	return JSON.stringify(out);
+})()
+`
+	testScript(script, newStringValue(`[[0,"xaab","a","a","b",[[0,4],[2,3],[2,3],[3,4]]],[1,"aab","a","a","b",[[1,4],[2,3],[2,3],[3,4]]],[0,"aab","a",null,null,null,"b"],[0,"abab","a",null,null,null,"b"],[0,"aaa","a",[[0,3],[2,3]]],[1,"ababc","ab","b"],[0,"aaa","a"]]`), t)
+}

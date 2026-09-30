@@ -130,6 +130,26 @@ func describeGroups(groups []IterationGroup) string {
 	return strings.Join(words, " ")
 }
 
+func TestTransformRegExpOwnGroupBackreference(t *testing.T) {
+	// A backreference in the group it is to matches nothing in ECMAScript
+	// (the group is reset at each iteration of a quantified group it is
+	// in); regexp2 would match it with the group's capture from the last.
+	for _, tc := range []struct{ pattern, r2Text string }{
+		{`((a)\1|.){2,}(b)`, `((a)(?:)|[^\n\r\u2028\u2029]){2,}(b)`},
+		{`(?<n>a\k<n>)+`, `(?<n>a(?:))+`},
+		{`(a(b\2)\1)*`, `(a(b(?:))(?:))*`},
+		{`(a)\1(b)*\2`, `(a)\1(b)*\2`},
+	} {
+		_, r2Text, _, err := TransformRegExpIter(tc.pattern, false, false, false)
+		if _, incompat := err.(RegexpErrorIncompatible); err != nil && !incompat {
+			t.Fatalf("%s: %v", tc.pattern, err)
+		}
+		if r2Text != tc.r2Text {
+			t.Errorf("%s: %q", tc.pattern, r2Text)
+		}
+	}
+}
+
 func TestTransformRegExpLeadingLoop(t *testing.T) {
 	// A pattern that may start with an unbounded loop of a set of
 	// characters starts, for regexp2, with a lookahead that always succeeds
