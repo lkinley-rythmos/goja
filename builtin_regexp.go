@@ -744,48 +744,53 @@ func (r *Runtime) regexpproto_toString(call FunctionCall) Value {
 	return sb.String()
 }
 
+// writeEscapedSource writes the pattern as source shows it, if it differs
+// from the pattern, as V8 escapes it (EscapeRegExpSource): a / outside a
+// class as \/, and a line terminator as its escape (a backslash before one
+// is dropped, the escape standing for it).
 func (r *regexpObject) writeEscapedSource(sb *StringBuilder) bool {
 	if r.source.Length() == 0 {
 		sb.WriteString(asciiString("(?:)"))
 		return true
 	}
-	pos := 0
+	src := r.source
+	n := src.Length()
 	lastPos := 0
-	rd := &lenientUtf16Decoder{utf16Reader: r.source.utf16Reader()}
-L:
-	for {
-		c, size, err := rd.ReadRune()
-		if err != nil {
-			break
-		}
-		switch c {
+	inClass := false
+	escape := func(pos, next int, esc string) {
+		sb.WriteSubstring(src, lastPos, pos)
+		sb.WriteString(asciiString(esc))
+		lastPos = next
+	}
+	for i := 0; i < n; i++ {
+		switch c := src.CharAt(i); c {
 		case '\\':
-			pos++
-			_, size, err = rd.ReadRune()
-			if err != nil {
-				break L
+			if next := src.CharAt(min(i+1, n-1)); i+1 < n && (next == '\n' || next == '\r' || next == 0x2028 || next == 0x2029) {
+				// The backslash is dropped: the line terminator is escaped.
+				escape(i, i+1, "")
+				continue
 			}
-		case '/', '\u000a', '\u000d', '\u2028', '\u2029':
-			sb.WriteSubstring(r.source, lastPos, pos)
-			sb.WriteRune('\\')
-			switch c {
-			case '\u000a':
-				sb.WriteRune('n')
-			case '\u000d':
-				sb.WriteRune('r')
-			default:
-				sb.WriteRune('u')
-				sb.WriteRune(rune(hex[c>>12]))
-				sb.WriteRune(rune(hex[(c>>8)&0xF]))
-				sb.WriteRune(rune(hex[(c>>4)&0xF]))
-				sb.WriteRune(rune(hex[c&0xF]))
+			i++
+		case '/':
+			if !inClass {
+				escape(i, i+1, `\/`)
 			}
-			lastPos = pos + size
+		case '[':
+			inClass = true
+		case ']':
+			inClass = false
+		case '\n':
+			escape(i, i+1, `\n`)
+		case '\r':
+			escape(i, i+1, `\r`)
+		case 0x2028:
+			escape(i, i+1, `\u2028`)
+		case 0x2029:
+			escape(i, i+1, `\u2029`)
 		}
-		pos += size
 	}
 	if lastPos > 0 {
-		sb.WriteSubstring(r.source, lastPos, r.source.Length())
+		sb.WriteSubstring(src, lastPos, n)
 		return true
 	}
 	return false
