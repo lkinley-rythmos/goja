@@ -1218,10 +1218,12 @@ func (self *_parser) scanNumericLiteral(decimalPoint bool) (token.Token, string)
 
 	offset := self.chrOffset
 	tkn := token.NUMBER
+	// A BigInt has neither a decimal point nor an exponent.
+	bigIntOK := !decimalPoint
 
 	if decimalPoint {
 		offset--
-		self.scanMantissa(10, true)
+		self.scanFraction()
 	} else {
 		if self.chr == '0' {
 			self.read()
@@ -1257,6 +1259,7 @@ func (self *_parser) scanNumericLiteral(decimalPoint bool) (token.Token, string)
 					goto end
 				}
 				if self.chr == '.' {
+					bigIntOK = false
 					self.read()
 					self.scanMantissa(10, false)
 				}
@@ -1265,7 +1268,7 @@ func (self *_parser) scanNumericLiteral(decimalPoint bool) (token.Token, string)
 			if base > 0 {
 				self.read()
 				if !isDigit(self.chr, base) {
-					return token.ILLEGAL, self.str[offset:self.chrOffset]
+					return self.illegalNumber(offset)
 				}
 				self.scanMantissa(base, true)
 				goto end
@@ -1274,13 +1277,15 @@ func (self *_parser) scanNumericLiteral(decimalPoint bool) (token.Token, string)
 			self.scanMantissa(10, true)
 		}
 		if self.chr == '.' {
+			bigIntOK = false
 			self.read()
-			self.scanMantissa(10, true)
+			self.scanFraction()
 		}
 	}
 
 exponent:
 	if self.chr == 'e' || self.chr == 'E' {
+		bigIntOK = false
 		self.read()
 		if self.chr == '-' || self.chr == '+' {
 			self.read()
@@ -1293,13 +1298,34 @@ exponent:
 		}
 	}
 end:
-	if self.chr == 'n' || self.chr == 'N' {
+	if self.chr == 'n' && bigIntOK {
 		self.read()
-		return tkn, self.str[offset:self.chrOffset]
 	}
+	// As in V8, a number followed at once by an identifier or a digit (1nx,
+	// 1.5n, 0b1n1) is an invalid token.
 	if isIdentifierStart(self.chr) || isDecimalDigit(self.chr) {
-		return token.ILLEGAL, self.str[offset:self.chrOffset]
+		return self.illegalNumber(offset)
 	}
 
 	return tkn, self.str[offset:self.chrOffset]
+}
+
+// illegalNumber returns the invalid token of a number from offset. V8
+// scans the next token before it reports it, and so reports a separator
+// misplaced in digits that follow at once (0b2_, 0o18_) rather than the
+// invalid token.
+func (self *_parser) illegalNumber(offset int) (token.Token, string) {
+	end := self.chrOffset
+	if isDecimalDigit(self.chr) {
+		self.scanMantissa(10, true)
+	}
+	return token.ILLEGAL, self.str[offset:end]
+}
+
+// scanFraction scans the digits after a decimal point: a separator may come
+// only between digits, so none may come first (1._5 is 1. and _5).
+func (self *_parser) scanFraction() {
+	if isDecimalDigit(self.chr) {
+		self.scanMantissa(10, true)
+	}
 }

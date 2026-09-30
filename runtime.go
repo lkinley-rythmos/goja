@@ -1439,6 +1439,9 @@ func Parse(name, src string, options ...parser.Option) (prg *js_ast.Program, err
 }
 
 func compile(name, src string, strict, inGlobal bool, evalVm *vm, parserOptions ...parser.Option) (p *Program, err error) {
+	if strict {
+		parserOptions = append(parserOptions[:len(parserOptions):len(parserOptions)], parser.WithStrict)
+	}
 	prg, err := Parse(name, src, parserOptions...)
 	if err != nil {
 		return
@@ -1472,6 +1475,17 @@ func (r *Runtime) compile(name, src string, strict, inGlobal bool, evalVm *vm) (
 	if evalVm != nil && evalVm.privEnv != nil {
 		// A direct eval in a class body sees the class's private names.
 		opts = append(opts[:len(opts):len(opts)], parser.WithPrivateNamesInScope)
+	}
+	if evalVm != nil && !inGlobal {
+		// A direct eval in a function may use what the function may of its
+		// this (see compiler.compile).
+		for s := evalVm.stash; s != nil; s = s.outer {
+			if ft := s.funcType; ft != funcNone && ft != funcArrow {
+				opts = append(opts[:len(opts):len(opts)], parser.WithFunctionContext(true,
+					ft == funcMethod || ft == funcClsInit || ft == funcCtor || ft == funcDerivedCtor, ft == funcDerivedCtor))
+				break
+			}
+		}
 	}
 	p, err = compile(name, src, strict, inGlobal, evalVm, opts...)
 	if err != nil {

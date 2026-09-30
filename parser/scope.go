@@ -16,15 +16,42 @@ type _scope struct {
 	inAsync         bool
 	allowAwait      bool
 	allowYield      bool
+	this            thisContext // what the code may use of its function's this
+	strict          bool        // strict mode code (which a nested function's is too)
+	prologue        bool        // the statements next parsed are a function body's
 	declarationList []*ast.VariableDeclaration
 
 	labels []unistring.String
+}
+
+// thisContext is what the code of a function may use of its this, which V8
+// checks as it parses: new.target in any function but an arrow at the top
+// level, super.x in methods (and class field initializers and static
+// blocks), and super() in derived class constructors. An arrow function has
+// its enclosing code's.
+type thisContext uint8
+
+const (
+	thisNewTarget thisContext = 1 << iota
+	thisSuperProperty
+	thisSuperCall
+
+	thisMethod = thisNewTarget | thisSuperProperty
+)
+
+// useThis makes the code parsed until the function it returns is called
+// have this: a function's parameters, and a class field's initializer.
+func (self *_parser) useThis(this thisContext) func() {
+	outer := self.scope.this
+	self.scope.this = this
+	return func() { self.scope.this = outer }
 }
 
 func (self *_parser) openScope() {
 	self.scope = &_scope{
 		outer:   self.scope,
 		allowIn: true,
+		strict:  self.scope != nil && self.scope.strict,
 	}
 }
 

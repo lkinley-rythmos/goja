@@ -150,6 +150,18 @@ func (self *_parser) parseImportCall() ast.Expression {
 func (self *_parser) parseSuperProperty() ast.Expression {
 	idx := self.idx
 	self.next()
+	// V8 checks that the code may use super as it parses it, before what
+	// follows (super(a b) is "'super' keyword unexpected here").
+	switch {
+	case self.token == token.PERIOD || self.token == token.LEFT_BRACKET:
+		if self.scope.this&thisSuperProperty == 0 {
+			self.error(idx, "'super' keyword unexpected here")
+		}
+	case self.token == token.LEFT_PARENTHESIS:
+		if self.scope.this&thisSuperCall == 0 {
+			self.error(idx, "'super' keyword unexpected here")
+		}
+	}
 	switch self.token {
 	case token.PERIOD:
 		self.next()
@@ -483,7 +495,7 @@ func (self *_parser) parseObjectProperty() ast.Property {
 			return &ast.PropertyKeyed{
 				Key:      value,
 				Kind:     ast.PropertyKindMethod,
-				Value:    self.parseMethodDefinition(keyStartIdx, ast.PropertyKindMethod, true, false),
+				Value:    self.parseMethodDefinition(keyStartIdx, ast.PropertyKindMethod, true, false, thisMethod),
 				Computed: tkn == token.ILLEGAL,
 			}
 		}
@@ -492,7 +504,7 @@ func (self *_parser) parseObjectProperty() ast.Property {
 			return &ast.PropertyKeyed{
 				Key:      value,
 				Kind:     ast.PropertyKindMethod,
-				Value:    self.parseMethodDefinition(keyStartIdx, ast.PropertyKindMethod, false, false),
+				Value:    self.parseMethodDefinition(keyStartIdx, ast.PropertyKindMethod, false, false, thisMethod),
 				Computed: tkn == token.ILLEGAL,
 			}
 		case self.token == token.COMMA || self.token == token.RIGHT_BRACE || self.token == token.ASSIGN: // shorthand property
@@ -537,7 +549,7 @@ func (self *_parser) parseObjectProperty() ast.Property {
 			return &ast.PropertyKeyed{
 				Key:      keyValue,
 				Kind:     kind,
-				Value:    self.parseMethodDefinition(keyStartIdx, kind, false, async),
+				Value:    self.parseMethodDefinition(keyStartIdx, kind, false, async, thisMethod),
 				Computed: tkn1 == token.ILLEGAL,
 			}
 		}
@@ -552,7 +564,7 @@ func (self *_parser) parseObjectProperty() ast.Property {
 	}
 }
 
-func (self *_parser) parseMethodDefinition(keyStartIdx file.Idx, kind ast.PropertyKind, generator, async bool) *ast.FunctionLiteral {
+func (self *_parser) parseMethodDefinition(keyStartIdx file.Idx, kind ast.PropertyKind, generator, async bool, this thisContext) *ast.FunctionLiteral {
 	idx1 := self.idx
 	if generator != self.scope.allowYield {
 		self.scope.allowYield = generator
@@ -566,7 +578,9 @@ func (self *_parser) parseMethodDefinition(keyStartIdx file.Idx, kind ast.Proper
 			self.scope.allowAwait = !async
 		}()
 	}
+	restore := self.useThis(this)
 	parameterList := self.parseFunctionParameterList()
+	restore()
 	switch kind {
 	case ast.PropertyKindGet:
 		if len(parameterList.List) > 0 || parameterList.Rest != nil {
@@ -583,7 +597,7 @@ func (self *_parser) parseMethodDefinition(keyStartIdx file.Idx, kind ast.Proper
 		Generator:     generator,
 		Async:         async,
 	}
-	node.Body, node.DeclarationList = self.parseFunctionBlock(async, async, generator)
+	node.Body, node.DeclarationList = self.parseFunctionBlock(async, async, generator, this)
 	node.Source = self.slice(keyStartIdx, node.Body.Idx1())
 	return node
 }
@@ -783,6 +797,9 @@ func (self *_parser) parseNewExpression() ast.Expression {
 	if self.token == token.PERIOD {
 		self.next()
 		if self.literal == "target" {
+			if self.scope.this&thisNewTarget == 0 {
+				self.error(idx, "new.target expression is not allowed here")
+			}
 			return &ast.MetaProperty{
 				Meta: &ast.Identifier{
 					Name: unistring.String(token.NEW.String()),

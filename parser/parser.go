@@ -55,10 +55,13 @@ type options struct {
 	disableSourceMaps   bool
 	sourceMapLoader     func(path string) ([]byte, error)
 	privateNamesInScope bool
+	this                thisContext
+	strict              bool
 }
 
 // Option represents one of the options for the parser to use in the Parse methods. Currently supported are:
-// WithDisableSourceMaps, WithSourceMapLoader and WithPrivateNamesInScope.
+// WithDisableSourceMaps, WithSourceMapLoader, WithPrivateNamesInScope, WithFunctionContext and
+// WithStrict.
 type Option func(*options)
 
 // WithDisableSourceMaps is an option to disable source maps support. May save a bit of time when source maps
@@ -86,6 +89,31 @@ func WithSourceMapLoader(loader func(path string) ([]byte, error)) Option {
 // an enclosing class".
 func WithPrivateNamesInScope(opts *options) {
 	opts.privateNamesInScope = true
+}
+
+// WithStrict is an option to parse source as strict mode code, as the
+// source of a direct eval() called in strict mode code is.
+func WithStrict(opts *options) {
+	opts.strict = true
+}
+
+// WithFunctionContext is an option to parse source that runs inside a
+// function, as the source of a direct eval() called there does: whether it
+// may use new.target, super.x and super(), which the parser checks as V8
+// does.
+func WithFunctionContext(newTarget, superProperty, superCall bool) Option {
+	return func(opts *options) {
+		opts.this = 0
+		if newTarget {
+			opts.this |= thisNewTarget
+		}
+		if superProperty {
+			opts.this |= thisSuperProperty
+		}
+		if superCall {
+			opts.this |= thisSuperCall
+		}
+	}
 }
 
 type _parser struct {
@@ -255,6 +283,8 @@ func (self *_parser) slice(idx0, idx1 file.Idx) string {
 
 func (self *_parser) parse() (program *ast.Program, err error) {
 	self.openScope()
+	self.scope.this = self.opts.this
+	self.scope.strict = self.opts.strict
 	defer self.closeScope()
 	defer func() {
 		if x := recover(); x != nil {

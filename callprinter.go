@@ -18,8 +18,8 @@ import (
 // same way.
 
 // parseCallSite parses the source of a recorded expression, once. It returns
-// nil if the source does not parse on its own. (The parser takes super and
-// the like anywhere; the compiler is what refuses them.)
+// nil if the source does not parse on its own. (It is parsed as code that may
+// use super and new.target, as the code it was recorded from could.)
 func parseCallSite(src string) ast.Expression {
 	if src == "" {
 		return nil
@@ -27,8 +27,10 @@ func parseCallSite(src string) ast.Expression {
 	return parseCallSiteIn("(", src, ")")
 }
 
+var callSiteContext = parser.WithFunctionContext(true, true, true)
+
 func parseCallSiteIn(prefix, src, suffix string) ast.Expression {
-	prg, err := parser.ParseFile(nil, "", prefix+src+suffix, 0, parser.WithDisableSourceMaps)
+	prg, err := parser.ParseFile(nil, "", prefix+src+suffix, 0, parser.WithDisableSourceMaps, callSiteContext)
 	if err != nil || len(prg.Body) != 1 {
 		return nil
 	}

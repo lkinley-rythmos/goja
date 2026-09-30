@@ -27,12 +27,33 @@ func (self *_parser) parseEmptyStatement() ast.Statement {
 }
 
 func (self *_parser) parseStatementList() (list []ast.Statement) {
+	prologue := self.scope.prologue
+	self.scope.prologue = false
 	for self.token != token.RIGHT_BRACE && self.token != token.EOF {
 		self.scope.allowLet = true
-		list = append(list, self.parseStatement())
+		st := self.parseStatement()
+		if prologue {
+			prologue = self.directive(st)
+		}
+		list = append(list, st)
 	}
 
 	return
+}
+
+// directive notes a statement of a directive prologue: "use strict" makes
+// the code strict mode code. It reports whether the statement is a
+// directive, after which the prologue goes on.
+func (self *_parser) directive(st ast.Statement) bool {
+	if st, ok := st.(*ast.ExpressionStatement); ok {
+		if lit, ok := st.Expression.(*ast.StringLiteral); ok {
+			if lit.Literal == `"use strict"` || lit.Literal == `'use strict'` {
+				self.scope.strict = true
+			}
+			return true
+		}
+	}
+	return false
 }
 
 func (self *_parser) parseStatement() ast.Statement {
@@ -71,6 +92,11 @@ func (self *_parser) parseStatement() ast.Statement {
 		tok := self.peek()
 		if tok == token.LEFT_BRACKET || self.scope.allowLet && (token.IsId(tok) || tok == token.LEFT_BRACE) {
 			return self.parseLexicalDeclaration(self.token)
+		}
+		if self.scope.strict && !token.IsId(tok) && tok != token.LEFT_BRACE {
+			// let as a name, which V8 refuses in strict mode code as it
+			// parses it.
+			self.error(self.idx, "Unexpected strict mode reserved word")
 		}
 		self.insertSemicolon = true
 	case token.CONST:
@@ -269,15 +295,19 @@ func (self *_parser) parseFunction(declaration, async bool, start file.Idx) *ast
 		}
 	}
 
+	restore := self.useThis(thisNewTarget)
 	node.ParameterList = self.parseFunctionParameterList()
-	node.Body, node.DeclarationList = self.parseFunctionBlock(async, async, self.scope.allowYield)
+	restore()
+	node.Body, node.DeclarationList = self.parseFunctionBlock(async, async, self.scope.allowYield, thisNewTarget)
 	node.Source = self.slice(node.Idx0(), node.Idx1())
 
 	return node
 }
 
-func (self *_parser) parseFunctionBlock(async, allowAwait, allowYield bool) (body *ast.BlockStatement, declarationList []*ast.VariableDeclaration) {
+func (self *_parser) parseFunctionBlock(async, allowAwait, allowYield bool, this thisContext) (body *ast.BlockStatement, declarationList []*ast.VariableDeclaration) {
 	self.openScope()
+	self.scope.this = this
+	self.scope.prologue = true
 	self.scope.inFunction = true
 	self.scope.inAsync = async
 	self.scope.allowAwait = allowAwait
@@ -290,7 +320,7 @@ func (self *_parser) parseFunctionBlock(async, allowAwait, allowYield bool) (bod
 
 func (self *_parser) parseArrowFunctionBody(async bool) (ast.ConciseBody, []*ast.VariableDeclaration) {
 	if self.token == token.LEFT_BRACE {
-		return self.parseFunctionBlock(async, async, false)
+		return self.parseFunctionBlock(async, async, false, self.scope.this)
 	}
 	if async != self.scope.inAsync || async != self.scope.allowAwait {
 		inAsync := self.scope.inAsync
@@ -318,6 +348,11 @@ func (self *_parser) parseClass(declaration bool) *ast.ClassLiteral {
 
 	node := &ast.ClassLiteral{
 		Class: self.expect(token.CLASS),
+	}
+	// A class is strict mode code, its heritage too.
+	if !self.scope.strict {
+		self.scope.strict = true
+		defer func() { self.scope.strict = false }()
 	}
 
 	self.tokenToBindingId()
@@ -357,7 +392,7 @@ func (self *_parser) parseClass(declaration bool) *ast.ClassLiteral {
 					b := &ast.ClassStaticBlock{
 						Static: start,
 					}
-					b.Block, b.DeclarationList = self.parseFunctionBlock(false, true, false)
+					b.Block, b.DeclarationList = self.parseFunctionBlock(false, true, false, thisMethod)
 					b.Source = self.slice(b.Block.LeftBrace, b.Block.Idx1())
 					node.Body = append(node.Body, b)
 					continue
@@ -422,11 +457,15 @@ func (self *_parser) parseClass(declaration bool) *ast.ClassLiteral {
 					}
 				}
 			}
+			methodThis := thisMethod
+			if keyName == "constructor" && !computed && !private && !static && node.SuperClass != nil {
+				methodThis |= thisSuperCall
+			}
 			md := &ast.MethodDefinition{
 				Idx:      start,
 				Key:      value,
 				Kind:     kind,
-				Body:     self.parseMethodDefinition(methodBodyStart, kind, generator, async),
+				Body:     self.parseMethodDefinition(methodBodyStart, kind, generator, async, methodThis),
 				Static:   static,
 				Computed: computed,
 			}
@@ -448,7 +487,9 @@ func (self *_parser) parseClass(declaration bool) *ast.ClassLiteral {
 			var initializer ast.Expression
 			if self.token == token.ASSIGN {
 				self.next()
+				restore := self.useThis(thisMethod)
 				initializer = self.parseExpression()
+				restore()
 			}
 
 			if !self.implicitSemicolon && self.token != token.SEMICOLON && self.token != token.RIGHT_BRACE {
@@ -694,6 +735,9 @@ func (self *_parser) parseForOrForInStatement() ast.Statement {
 			case token.IDENTIFIER, token.LEFT_BRACKET, token.LEFT_BRACE:
 			default:
 				tok = token.IDENTIFIER
+				if self.scope.strict {
+					self.error(self.idx, "Unexpected strict mode reserved word")
+				}
 			}
 		}
 		if tok == token.VAR || tok == token.LET || tok == token.CONST {
@@ -757,6 +801,11 @@ func (self *_parser) parseForOrForInStatement() ast.Statement {
 				}
 			}
 		} else {
+			if self.token == token.ASYNC && self.literal == "async" && self.asyncOfForOf() {
+				// for (async of => ...;;) is a loop with an arrow function; the
+				// left-hand side of a for-of loop may not be async.
+				self.error(self.idx, "The left-hand side of a for-of loop may not be 'async'.")
+			}
 			expr := self.parseExpression()
 			if self.token == token.IN {
 				self.next()
@@ -775,7 +824,7 @@ func (self *_parser) parseForOrForInStatement() ast.Statement {
 				case *ast.ArrayLiteral:
 					expr = self.reinterpretAsArrayAssignmentPattern(e)
 				default:
-					self.error(idx, "Invalid left-hand side in for-in or for-of")
+					self.error(idx, "Invalid left-hand side in for-loop")
 					self.nextStatement()
 					return &ast.BadStatement{From: idx, To: self.idx}
 				}
@@ -909,9 +958,14 @@ func (self *_parser) parseIfStatement() ast.Statement {
 }
 
 func (self *_parser) parseSourceElements() (body []ast.Statement) {
+	prologue := true
 	for self.token != token.EOF {
 		self.scope.allowLet = true
-		body = append(body, self.parseStatement())
+		st := self.parseStatement()
+		if prologue {
+			prologue = self.directive(st)
+		}
+		body = append(body, st)
 	}
 
 	return body
@@ -1119,4 +1173,23 @@ func missingPatternInitializer(list []*ast.Binding) bool {
 		}
 	}
 	return false
+}
+
+// asyncOfForOf reports whether async (the current token) is followed by
+// of and then something other than =>: the start of a for-of loop, which
+// ECMAScript refuses, rather than of an async arrow function with a
+// parameter named of.
+func (self *_parser) asyncOfForOf() bool {
+	implicitSemicolon, insertSemicolon, chr, chrOffset, offset := self.implicitSemicolon, self.insertSemicolon, self.chr, self.chrOffset, self.offset
+	errors := len(self.errors)
+	defer func() {
+		self.implicitSemicolon, self.insertSemicolon, self.chr, self.chrOffset, self.offset = implicitSemicolon, insertSemicolon, chr, chrOffset, offset
+		self.errors = self.errors[:errors]
+	}()
+	tok, literal, _, _ := self.scan()
+	if tok != token.IDENTIFIER || literal != "of" {
+		return false
+	}
+	tok, _, _, _ = self.scan()
+	return tok != token.ARROW
 }
