@@ -183,8 +183,13 @@ func TestConcatAppend_ExpressionExact(t *testing.T) {
 				t.Fatalf("holds %d bytes, want about %d", held, exact)
 			}
 			// As base charged: each step its result's length in units, of
-			// 4,001 to 4,014; a buffer would add a quarter to one.
-			if got := vm.AllocatedBytes(); got < 2000*tc.steps*4001 || got > 2000*tc.steps*4014 {
+			// 4,001 to 4,014; a buffer would add a quarter to one. The
+			// array the results are kept in is charged as it grows.
+			pushes := New()
+			if _, err := pushes.RunString(`var keep = []; for (var i = 0; i < 2000; i++) keep.push(i)`); err != nil {
+				t.Fatal(err)
+			}
+			if got := vm.AllocatedBytes() - pushes.AllocatedBytes(); got < 2000*tc.steps*4001 || got > 2000*tc.steps*4014 {
 				t.Fatalf("charged %d bytes, want %d to %d", got, 2000*tc.steps*4001, 2000*tc.steps*4014)
 			}
 			runtime.KeepAlive(vm)

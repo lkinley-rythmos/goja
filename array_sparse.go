@@ -141,7 +141,17 @@ func (a *sparseArrayObject) getOwnPropIdx(idx valueInt) Value {
 
 func (a *sparseArrayObject) add(idx uint32, val Value) {
 	i := a.findIdx(idx)
+	a.insertItem(i, idx, val)
+}
+
+// insertItem inserts an element at i in the items, and charges the slice
+// they move to when they grow (see chargeValues).
+func (a *sparseArrayObject) insertItem(i int, idx uint32, val Value) {
+	c := cap(a.items)
 	a.items = append(a.items, sparseArrayItem{})
+	if c1 := cap(a.items); c1 != c {
+		a.val.runtime.countAlloc(int64(c1) * allocSizeSparseItem)
+	}
 	copy(a.items[i+1:], a.items[i:])
 	a.items[i] = sparseArrayItem{
 		idx:   idx,
@@ -177,12 +187,7 @@ func (a *sparseArrayObject) _setOwnIdx(idx uint32, val Value, throw bool) bool {
 		}
 
 		if a.expand(idx) {
-			a.items = append(a.items, sparseArrayItem{})
-			copy(a.items[i+1:], a.items[i:])
-			a.items[i] = sparseArrayItem{
-				idx:   idx,
-				value: val,
-			}
+			a.insertItem(i, idx, val)
 		} else {
 			ar := a.val.self.(*arrayObject)
 			ar.values[idx] = val
@@ -275,6 +280,7 @@ func (a *sparseArrayObject) stringKeys(all bool, accum []Value) []Value {
 }
 
 func (a *sparseArrayObject) setValues(values []Value, objCount int) {
+	a.val.runtime.countAlloc(int64(objCount) * allocSizeSparseItem)
 	a.items = make([]sparseArrayItem, 0, objCount)
 	for i, val := range values {
 		if val != nil {
@@ -356,12 +362,7 @@ func (a *sparseArrayObject) _defineIdxProperty(idx uint32, desc PropertyDescript
 		}
 		if i >= len(a.items) || a.items[i].idx != idx {
 			if a.expand(idx) {
-				a.items = append(a.items, sparseArrayItem{})
-				copy(a.items[i+1:], a.items[i:])
-				a.items[i] = sparseArrayItem{
-					idx:   idx,
-					value: prop,
-				}
+				a.insertItem(i, idx, prop)
 				if idx >= a.length {
 					a.length = idx + 1
 				}

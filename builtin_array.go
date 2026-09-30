@@ -74,8 +74,15 @@ func relToIdx(rel, l int64) int64 {
 	return max(l+rel, 0)
 }
 
+// newArrayValues makes an array of values, and charges their slice.
 func (r *Runtime) newArrayValues(values []Value) *Object {
 	r.countAlloc(int64(cap(values)) * allocSizeValue)
+	return setArrayValues(r.newArrayObject(), values).val
+}
+
+// newArrayCharged makes an array of values whose slice is charged already
+// (see makeValues and appendValue).
+func (r *Runtime) newArrayCharged(values []Value) *Object {
 	return setArrayValues(r.newArrayObject(), values).val
 }
 
@@ -98,7 +105,7 @@ func (r *Runtime) builtin_newArray(args []Value, proto *Object) *Object {
 		}
 		return setArrayValues(r.newArray(proto), []Value{args[0]}).val
 	} else {
-		argsCopy := make([]Value, l)
+		argsCopy := r.makeValues(int64(l), int64(l))
 		copy(argsCopy, args)
 		return setArrayValues(r.newArray(proto), argsCopy).val
 	}
@@ -382,7 +389,7 @@ func (r *Runtime) arrayproto_slice(call FunctionCall) Value {
 	a := arraySpeciesCreate(o, count)
 	if src := r.checkStdArrayObj(o); src != nil {
 		if dst := r.checkStdArrayObjWithProto(a); dst != nil {
-			values := make([]Value, count)
+			values := r.makeValues(count, count)
 			copy(values, src.values[start:])
 			setArrayValues(dst, values)
 			return a
@@ -487,7 +494,7 @@ func (r *Runtime) arrayproto_splice(call FunctionCall) Value {
 	a := arraySpeciesCreate(o, actualDeleteCount)
 	if src := r.checkStdArrayObj(o); src != nil {
 		if dst := r.checkStdArrayObjWithProto(a); dst != nil {
-			values := make([]Value, actualDeleteCount)
+			values := r.makeValues(actualDeleteCount, actualDeleteCount)
 			copy(values, src.values[actualStart:])
 			setArrayValues(dst, values)
 		} else {
@@ -518,7 +525,9 @@ func (r *Runtime) arrayproto_splice(call FunctionCall) Value {
 			} else {
 				// With room to grow, as a push has: a splice at each step of
 				// a loop copied the whole array at each.
-				values = make([]Value, newLength, growCap(int(newLength), len(src.values), cap(src.values)))
+				c := growCap(int(newLength), len(src.values), cap(src.values))
+				r.chargeValues(c)
+				values = make([]Value, newLength, c)
 				copy(values, src.values[:actualStart])
 				copy(values[actualStart+itemCount:], src.values[actualStart+actualDeleteCount:])
 			}
@@ -604,7 +613,9 @@ func (r *Runtime) arrayproto_unshift(call FunctionCall) Value {
 				copy(arr.values[argCount:], arr.values[:length])
 			} else {
 				// With room to grow, as a push has (see arrayproto_splice).
-				values := make([]Value, newSize, growCap(int(newSize), len(arr.values), cap(arr.values)))
+				c := growCap(int(newSize), len(arr.values), cap(arr.values))
+				r.chargeValues(c)
+				values := make([]Value, newSize, c)
 				copy(values[argCount:], arr.values)
 				arr.values = values
 			}
@@ -875,7 +886,7 @@ func (r *Runtime) arrayproto_map(call FunctionCall) Value {
 	a := arraySpeciesCreate(o, length)
 	if _, stdSrc := o.self.(*arrayObject); stdSrc {
 		if arr, ok := a.self.(*arrayObject); ok {
-			values := make([]Value, length)
+			values := r.makeValues(length, length)
 			for k := int64(0); k < length; k++ {
 				if k%interruptCheckInterval == 0 {
 					r.checkInterrupt()
@@ -926,7 +937,7 @@ func (r *Runtime) arrayproto_filter(call FunctionCall) Value {
 						fc.Arguments[0] = val
 						fc.Arguments[1] = intToValue(k)
 						if callbackFn(fc).ToBoolean() {
-							values = append(values, val)
+							values = r.appendValue(values, val)
 						}
 					}
 				}
@@ -1401,7 +1412,7 @@ func (r *Runtime) arrayproto_with(call FunctionCall) Value {
 	}
 
 	if src := r.checkStdArrayObj(o); src != nil {
-		a := make([]Value, 0, length)
+		a := r.makeValues(0, length)
 		for k := int64(0); k < length; k++ {
 			if k%interruptCheckInterval == 0 {
 				r.checkInterrupt()
@@ -1415,7 +1426,7 @@ func (r *Runtime) arrayproto_with(call FunctionCall) Value {
 			}
 			a = append(a, fromValue)
 		}
-		return r.newArrayValues(a)
+		return r.newArrayCharged(a)
 	} else {
 		a := r.newArrayLength(length)
 		for k := int64(0); k < length; k++ {
@@ -1440,7 +1451,7 @@ func (r *Runtime) arrayproto_toReversed(call FunctionCall) Value {
 	length := toLength(o.self.getStr("length", nil))
 
 	if src := r.checkStdArrayObj(o); src != nil {
-		a := make([]Value, 0, length)
+		a := r.makeValues(0, length)
 		for k := int64(0); k < length; k++ {
 			if k%interruptCheckInterval == 0 {
 				r.checkInterrupt()
@@ -1449,7 +1460,7 @@ func (r *Runtime) arrayproto_toReversed(call FunctionCall) Value {
 			fromValue := src.values[from]
 			a = append(a, fromValue)
 		}
-		return r.newArrayValues(a)
+		return r.newArrayCharged(a)
 	} else {
 		a := r.newArrayLength(length)
 		for k := int64(0); k < length; k++ {
@@ -1484,22 +1495,20 @@ func (r *Runtime) arrayproto_toSorted(call FunctionCall) Value {
 	var a []Value
 
 	if src := r.checkStdArrayObj(o); src != nil {
-		a = make([]Value, length)
+		a = r.makeValues(length, length)
 		copy(a, src.values)
 	} else {
-		a = make([]Value, 0, lengthCapHint(length))
+		a = r.makeValues(0, int64(lengthCapHint(length)))
 		for i := int64(0); i < length; i++ {
 			if i%interruptCheckInterval == 0 {
 				r.checkInterrupt()
 			}
-			// The list is not counted otherwise.
-			r.countAlloc(allocSizeValue)
 			idx := valueInt(i)
-			a = append(a, nilSafe(o.self.getIdx(idx, nil)))
+			a = r.appendValue(a, nilSafe(o.self.getIdx(idx, nil)))
 		}
 	}
 
-	ar := r.newArrayValues(a)
+	ar := r.newArrayCharged(a)
 	ctx := arraySortCtx{
 		obj:     ar.self,
 		compare: compareFn,
@@ -1528,17 +1537,17 @@ func (r *Runtime) arrayproto_toSpliced(call FunctionCall) Value {
 	if src := r.checkStdArrayObj(o); src != nil {
 		var values []Value
 		if itemCount == actualSkipCount {
-			values = make([]Value, len(src.values))
+			values = r.makeValues(int64(len(src.values)), int64(len(src.values)))
 			copy(values, src.values)
 		} else {
-			values = make([]Value, newLength)
+			values = r.makeValues(newLength, newLength)
 			copy(values, src.values[:actualStart])
 			copy(values[actualStart+itemCount:], src.values[actualStart+actualSkipCount:])
 		}
 		if itemCount > 0 {
 			copy(values[actualStart:], call.Arguments[2:])
 		}
-		return r.newArrayValues(values)
+		return r.newArrayCharged(values)
 	} else {
 		a := r.newArrayLength(newLength)
 		var i int64
@@ -1636,9 +1645,9 @@ func (r *Runtime) array_from(call FunctionCall) Value {
 	items := call.Argument(0)
 	if mapFn == nil && call.This == r.global.Array { // mapFn may mutate the array
 		if arr := r.checkStdArrayIter(items); arr != nil {
-			items := make([]Value, len(arr.values))
+			items := r.makeValues(int64(len(arr.values)), int64(len(arr.values)))
 			copy(items, arr.values)
-			return r.newArrayValues(items)
+			return r.newArrayCharged(items)
 		}
 	}
 
@@ -1676,7 +1685,7 @@ func (r *Runtime) array_from(call FunctionCall) Value {
 			if a := r.checkStdArrayObjWithProto(arr); a != nil {
 				var values []Value
 				iter.iterate(func(val Value) {
-					values = append(values, val)
+					values = r.appendValue(values, val)
 				})
 				setArrayValues(a, values)
 				return arr

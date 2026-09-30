@@ -2911,7 +2911,9 @@ func (_pushArrayItem) exec(vm *vm) {
 		return
 	}
 	val := vm.stack[vm.sp-1]
-	arr.values = append(arr.values, val)
+	// A literal's values fit what newArray made for them, but for those
+	// after a spread.
+	arr.values = vm.r.appendValue(arr.values, val)
 	if val != nil {
 		arr.objCount++
 	}
@@ -2932,7 +2934,7 @@ func (_pushArraySpread) exec(vm *vm) {
 			vm.throw(vm.r.newError(vm.r.getRangeError(), "Invalid array length"))
 			return
 		}
-		arr.values = append(arr.values, val)
+		arr.values = vm.r.appendValue(arr.values, val)
 		arr.objCount++
 	})
 	vm.sp--
@@ -2970,10 +2972,10 @@ func (_newArrayFromIter) exec(vm *vm) {
 	vm.iterStack = vm.iterStack[:l]
 	if iter.iterator != nil {
 		iter.iterate(func(val Value) {
-			values = append(values, val)
+			values = vm.r.appendValue(values, val)
 		})
 	}
-	vm.push(vm.r.newArrayValues(values))
+	vm.push(vm.r.newArrayCharged(values))
 	vm.pc++
 }
 

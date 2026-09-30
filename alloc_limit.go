@@ -30,6 +30,8 @@ const (
 	// An entry of an arguments object: a property slot and its key, the
 	// index's digits (up to 8 for the counts a value stack holds).
 	allocSizeArgsEntry = allocSizePropSlot + 8
+	// An element of a sparse array.
+	allocSizeSparseItem = int64(unsafe.Sizeof(sparseArrayItem{}))
 )
 
 type allocCounter struct {
@@ -40,9 +42,11 @@ type allocCounter struct {
 
 // SetAllocationLimit resets the allocation counter to zero and sets the
 // limit in estimated bytes; bytes <= 0 disables the limit (counting
-// continues). The counter covers ordinary objects, arrays, strings created by
-// the + operator and JSON.parse, and nothing else, so it is an estimate
-// meant to stop runaway scripts, not an exact accounting.
+// continues). The counter covers ordinary objects, arrays and their storage
+// as it grows, ArrayBuffers and typed arrays, strings created by the +
+// operator and JSON.parse, and the value stack's growth, and nothing else,
+// so it is an estimate meant to stop runaway scripts, not an exact
+// accounting.
 //
 // When the counter passes the limit while JavaScript is running, the run
 // stops with an *InterruptedError whose Value() is ErrAllocationLimitExceeded.
@@ -60,6 +64,35 @@ func (r *Runtime) SetAllocationLimit(bytes int64) {
 // created or since the last SetAllocationLimit call.
 func (r *Runtime) AllocatedBytes() int64 {
 	return r.alloc.bytes
+}
+
+// chargeValues charges a slice of n values that an array's storage is made
+// of, when it is made: as an array grows, each larger slice it moves to is
+// charged, as the value stack's are (see expandCharged), since the ones it
+// leaves are only reclaimed later (a push loop of 3e7 values under a 64 MB
+// limit reached 336 MB when only the capacity added was charged). Nothing
+// else charges the slice, nor a value put in it.
+func (r *Runtime) chargeValues(n int) {
+	r.countAlloc(int64(n) * allocSizeValue)
+}
+
+// appendValue appends v to values and charges the slice append moves them
+// to (see chargeValues), for the values of an array made as they come (a
+// spread's, an iterator's).
+func (r *Runtime) appendValue(values []Value, v Value) []Value {
+	c := cap(values)
+	values = append(values, v)
+	if c1 := cap(values); c1 != c {
+		r.chargeValues(c1)
+	}
+	return values
+}
+
+// makeValues makes a slice of values for an array's storage, charged
+// before it is made.
+func (r *Runtime) makeValues(length, capacity int64) []Value {
+	r.chargeValues(int(capacity))
+	return make([]Value, length, capacity)
 }
 
 // countAlloc charges n estimated bytes. It is small enough to inline; the

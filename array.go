@@ -429,7 +429,11 @@ func (a *arrayObject) expand(idx uint32) bool {
 					}
 				}
 				tl := int(targetLen)
-				newValues := make([]Value, tl, growCap(tl, len(a.values), cap(a.values)))
+				c := growCap(tl, len(a.values), cap(a.values))
+				// The storage is charged as it grows (a push, a store past the
+				// end, fill of a new Array(n)).
+				a.val.runtime.chargeValues(c)
+				newValues := make([]Value, tl, c)
 				copy(newValues, a.values)
 				a.values = newValues
 			}
@@ -617,6 +621,7 @@ func (a *arrayObject) exportToArrayOrSlice(dst reflect.Value, typ reflect.Type, 
 }
 
 func (a *arrayObject) setValuesFromSparse(items []sparseArrayItem, newMaxIdx int) {
+	a.val.runtime.chargeValues(newMaxIdx + 1)
 	a.values = make([]Value, newMaxIdx+1)
 	for _, item := range items {
 		a.values[item.idx] = item.value

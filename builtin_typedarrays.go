@@ -74,15 +74,18 @@ func (ctx *typedArraySortCtx) Swap(i, j int) {
 	ctx.ta.typedArray.swap(offset+i, offset+j)
 }
 
-func allocByteSlice(size int) (b []byte) {
+// allocByteSlice makes an ArrayBuffer's bytes, charged before they are
+// made.
+func (r *Runtime) allocByteSlice(size int) (b []byte) {
+	if size < 0 {
+		panic(rangeError(fmt.Sprintf("Invalid buffer size: %d", size)))
+	}
+	r.countAlloc(int64(size))
 	defer func() {
 		if x := recover(); x != nil {
 			panic(rangeError(fmt.Sprintf("Buffer size is too large: %d", size)))
 		}
 	}()
-	if size < 0 {
-		panic(rangeError(fmt.Sprintf("Invalid buffer size: %d", size)))
-	}
 	b = make([]byte, size)
 	return
 }
@@ -93,7 +96,7 @@ func (r *Runtime) builtin_newArrayBuffer(args []Value, newTarget *Object) *Objec
 	}
 	b := r._newArrayBuffer(r.getPrototypeFromCtor(newTarget, r.getArrayBuffer(), r.getArrayBufferPrototype()), nil)
 	if len(args) > 0 {
-		b.data = allocByteSlice(r.toIndex(args[0]))
+		b.data = r.allocByteSlice(r.toIndex(args[0]))
 	}
 	return b.val
 }
@@ -544,6 +547,7 @@ func (r *Runtime) typedArrayProto_filter(call FunctionCall) Value {
 			This:      call.Argument(1),
 			Arguments: []Value{nil, nil, call.This},
 		}
+		r.countAlloc(int64(ta.length * ta.elemSize))
 		buf := make([]byte, 0, ta.length*ta.elemSize)
 		captured := 0
 		rawVal := make([]byte, ta.elemSize)
@@ -1374,7 +1378,7 @@ func (r *Runtime) allocateTypedArray(newTarget *Object, length int, taCtor typed
 	buf := r._newArrayBuffer(r.getArrayBufferPrototype(), nil)
 	ta := taCtor(buf, 0, length, r.getPrototypeFromCtor(newTarget, nil, proto))
 	if length > 0 {
-		buf.data = allocByteSlice(length * ta.elemSize)
+		buf.data = r.allocByteSlice(length * ta.elemSize)
 	}
 	return ta
 }
@@ -1493,7 +1497,7 @@ func (r *Runtime) _newTypedArrayFromTypedArray(src *typedArrayObject, newTarget 
 	src.viewedArrayBuf.ensureNotDetached(true)
 	l := src.length
 
-	dst.viewedArrayBuf.data = allocByteSlice(toIntStrict(int64(l) * int64(dst.elemSize)))
+	dst.viewedArrayBuf.data = r.allocByteSlice(toIntStrict(int64(l) * int64(dst.elemSize)))
 	src.viewedArrayBuf.ensureNotDetached(true)
 	if src.defaultCtor == dst.defaultCtor {
 		copy(dst.viewedArrayBuf.data, src.viewedArrayBuf.data[src.offset*src.elemSize:])
@@ -1513,6 +1517,7 @@ func (r *Runtime) _newTypedArrayFromTypedArray(src *typedArrayObject, newTarget 
 // Caller must not retain or modify it, because the underlying ArrayBuffer takes ownership of it.
 // len(data) must be a multiple of the element size.
 func (r *Runtime) newTypedArrayWithData(data []byte, newTarget *Object, taCtor typedArrayObjectCtor, proto *Object) *typedArrayObject {
+	r.countAlloc(int64(cap(data)))
 	ab := r._newArrayBuffer(r.getArrayBufferPrototype(), nil)
 	ab.data = data
 	ta := taCtor(ab, 0, 0, r.getPrototypeFromCtor(newTarget, nil, proto))
