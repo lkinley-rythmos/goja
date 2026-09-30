@@ -9,106 +9,128 @@ import (
 // ECMAScript resets the captures of a quantified group's body at each of its
 // iterations (RepeatMatcher, ECMA-262 22.2.2.3.1): /(?:(a)|b)+/.exec("ab") is
 // ["ab", undefined]. Go's regexp and regexp2 keep a capture from an earlier
-// iteration. So the body of a quantified group that may iterate more than
-// once and has capturing groups starts with a hidden empty capturing group,
-// whose last capture is where the last iteration started; a capture that
-// starts before it is from an earlier iteration, and one that starts after it
-// from the last. An empty capture right at it is from the last iteration
-// unless something the body always consumes comes before the group
-// (/(?:a(b?)|c)+/ on "ac"). The caller drops the captures from earlier
-// iterations, and the hidden groups (see IterationGroup).
+// iteration. So the last iteration of such a group is told by a group whose
+// last capture is it: the group itself if it captures, or else a hidden
+// capturing group that is its body. A capture that starts before the last
+// iteration is from an earlier one, and one that starts in it from it; an
+// empty one right at its start is from it unless something the body always
+// consumes comes before the group (/(?:a(b?)|c)+/ on "ac"). The caller drops
+// the captures of earlier iterations, and the hidden groups.
 
-// IterationGroup is the hidden group at the start of the body of a
-// quantified group, in the transformed patterns' numbering, with the
-// capturing groups of the body.
-type IterationGroup struct {
-	Hidden int
-	Inner  []IterationCapture
-}
-
-// IterationCapture is a capturing group in the body of a quantified group
-// that may be missing from an iteration: its number in the transformed
-// patterns, and whether the body always consumes something before it. A
-// group in every iteration, and one in a lookaround within the body (whose
-// captures need not be where it is), are left as the engines give them.
-type IterationCapture struct {
-	Group          int
-	ConsumedBefore bool
-}
-
-// Iterations are the hidden groups of a transformed pattern: those at the
-// start of quantified groups' bodies, and their numbers, in order.
+// Iterations are the quantified groups of a transformed pattern that may
+// iterate more than once and whose iterations a group tells (see
+// IterationLoop), with what the caller needs to drop the captures ECMAScript
+// does not keep; group numbers are the transformed patterns'.
 type Iterations struct {
+	// The loops in the order of their groups' numbers, an outer one before
+	// those in it.
+	Loops []IterationLoop
+	// The capturing groups in a loop's body.
+	Captures []IterationCapture
+	// Every group (from 1; 0 is the whole match), and where it is in the
+	// loops it is in.
 	Groups []IterationGroup
+	// The hidden groups, in order.
 	Hidden []int
 }
 
-// iterPlan is where hidden groups go, and the groups' numbers once they
-// are in.
+// IterationLoop is a quantified group that may iterate more than once and
+// has a capturing group that an iteration may lack (or any, with
+// alternatives), and the group whose last capture is its last iteration:
+// itself if it captures, or a hidden group that is its body.
+type IterationLoop struct {
+	Group        int  // the group whose captures are the iterations
+	Depth        int  // how many groups it is in, plus one
+	Parent       int  // the innermost loop it is in, -1 if none
+	Alternatives bool // its body has alternatives of its own
+}
+
+// IterationCapture is a capturing group in a loop's body: its number, the
+// innermost loop it is in, and whether an iteration of a loop it is in, at
+// depth d, may lack it: when d < Missing (it, or a group between them, is
+// optional, or a group between them has alternatives).
+type IterationCapture struct {
+	Group   int
+	Loop    int
+	Missing int
+}
+
+// IterationGroup is a group of a transformed pattern: for a loop it is in
+// at depth d, whether the loop's body always consumes something before it
+// (d <= Consumed), and whether it is in a lookaround within the body (d <
+// Around), whose captures need not be where it is and are left as the
+// engines give them.
+type IterationGroup struct {
+	Consumed, Around int
+}
+
+// iterPlan is where hidden groups go, and the groups' numbers once they are
+// in.
 type iterPlan struct {
-	// The offsets of the quantified groups' '(', and whether their bodies
-	// have alternatives, which a group of their own must keep apart from
-	// the hidden group.
-	hidden   map[int]bool
-	renumber []int // a capturing group's number (from 1) once they are in
+	hidden   map[int]bool // the offsets of the '(' of the loops with one
+	renumber []int        // a capturing group's number (from 1) once they are in
 	Iterations
 }
 
-// iterFrame is a group planIterations is in.
+// iterFrame is a group planIterations has seen.
 type iterFrame struct {
-	open, bodyStart int
-	capture, around bool
-	alternatives    bool // the body has a | of its own
-	optional        bool // quantified with a minimum of 0 (known once closed)
-	altConsumed     bool // the current alternative consumes something so far
-	allConsumed     bool // every alternative before the current one did
-	caps            []iterCapture
+	open, bodyStart, close int
+	parent                 *iterFrame
+	depth                  int // in the stack of groups, the pattern being 0
+	num                    int // its number if it captures (from 1), else 0
+	around                 bool
+	alternatives           bool // the body has a | of its own
+	optional               bool // quantified with a minimum of 0
+	loop                   bool // quantified with a maximum over 1, not a lookaround
+	altConsumed            bool // the current alternative consumes something so far
+	allConsumed            bool // every alternative before the current one did
+	consumes               bool // the body always consumes something
+	// Where the group is in the groups around it when it opens (see
+	// IterationGroup): the deepest of them whose current alternative has
+	// consumed something, and the deepest lookaround.
+	consumedBelow, aroundBelow int
+	// Of the capturing groups in the body, not in a lookaround in it:
+	// whether there is one, and whether an iteration may lack one.
+	hasCapture, hasMissing bool
+	hidden                 bool // has a hidden group
+	marker                 bool // a loop told by a group
+	// Computed once the scan is done: the deepest of it and the groups it
+	// is in that is optional, a lookaround or has alternatives (0 for
+	// none), the innermost loop told by a group it is in, and how many.
+	deepestBad  int
+	markerAbove *iterFrame
+	markers     int
+	loopIndex   int
 }
 
-// iterCapture is a capturing group in a group's body: its original
-// number, whether the body always consumes something before it, whether it
-// is in a lookaround within the body, and the groups from the body to it
-// (itself last), which tell whether each iteration has it.
-type iterCapture struct {
-	num            int
-	consumedBefore bool
-	inAround       bool
-	chain          []*iterFrame
-}
-
-// everyIteration reports whether a capturing group is in every iteration of
-// a body without alternatives: none of the groups from the body to it has
-// alternatives, and none (nor it) is optional. Its last capture is then
-// always from the last iteration.
-func (c *iterCapture) everyIteration() bool {
-	for i, f := range c.chain {
-		if f.optional || f.around || f.alternatives && i < len(c.chain)-1 {
-			return false
-		}
-	}
-	return true
-}
-
-// maxIterationWork bounds the notes planIterations takes, a capture for
-// each group it is in (1,000 groups nested with 1,000 captures).
+// maxIterationWork bounds the work of dropping captures from a match: a
+// capture is checked against each loop it is in (1,000 nested loops with
+// 1,000 captures), past which captures are left as the engines give them.
 const maxIterationWork = 1 << 20
 
-// planIterations finds the quantified groups that need a hidden group, in a
-// pattern that parses (its result is not used otherwise).
+// maxIterationGroups is how many groups a pattern may have for a plan: past
+// it, the pattern is refused (every group costs regexp2 at least
+// costGroup.r2).
+const maxIterationGroups = maxRegexpExpansion / 12
+
+// planIterations finds the loops of a pattern that parses (its result is not
+// used otherwise), in time and memory linear in its length.
 func (self *_RegExp_parser) planIterations() *iterPlan {
-	type capRec = iterCapture
-	type frame = iterFrame
 	s := self.str
 	n := len(s)
-	stack := []*frame{{allConsumed: true}}
-	capOpens := []int{0} // by original number, from 1
-	type q struct {
-		open, bodyStart int
-		alternatives    bool
-		caps            []capRec
+	root := &iterFrame{allConsumed: true}
+	stack := []*iterFrame{root}
+	var frames []*iterFrame // every group, in the order they open
+	captures := 0
+	// consumedTop is the deepest group on the stack whose current
+	// alternative has consumed something (0 for none).
+	consumedTop := func() int {
+		top := stack[len(stack)-1]
+		if top.altConsumed && top != root {
+			return top.depth
+		}
+		return top.consumedBelow
 	}
-	var qs []q
-	work := 0
 	// quant parses a quantifier at i: its bounds (max -1 for none) and
 	// length, or ok false.
 	quant := func(i int) (min, max, length int, ok bool) {
@@ -220,15 +242,17 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 			}
 			i = atom(min(j+1, n), true)
 		case '(':
-			f := &frame{open: i, allConsumed: true}
+			top := stack[len(stack)-1]
+			f := &iterFrame{open: i, parent: top, depth: len(stack), allConsumed: true}
 			j := i + 1
+			capture := false
 			switch {
 			case j+1 < n && s[j] == '?' && (s[j+1] == '=' || s[j+1] == '!'):
 				f.around, j = true, j+2
 			case j+2 < n && s[j] == '?' && s[j+1] == '<' && (s[j+2] == '=' || s[j+2] == '!'):
 				f.around, j = true, j+3
 			case j+1 < n && s[j] == '?' && s[j+1] == '<':
-				f.capture = true
+				capture = true
 				for j < n && s[j] != '>' {
 					j++
 				}
@@ -236,30 +260,23 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 			case j+1 < n && s[j] == '?' && s[j+1] == ':':
 				j += 2
 			default:
-				f.capture = true
+				capture = true
 			}
 			f.bodyStart = min(j, n)
-			if len(stack) > maxGroupNesting {
-				// Refused anyway (see scanGroup).
+			if len(stack) > maxGroupNesting || len(frames) >= maxIterationGroups {
+				// Refused anyway (see scanGroup, and the cost of groups).
 				return nil
 			}
-			if f.capture {
-				num := len(capOpens)
-				capOpens = append(capOpens, i)
-				consumed, around := false, false
-				// A capture is noted for each group it is in: the work is
-				// bounded, past which captures are left as the engines
-				// give them.
-				if work += len(stack); work > maxIterationWork {
-					return nil
-				}
-				chain := append(stack[:len(stack):len(stack)], f)
-				for k := len(stack) - 1; k >= 1; k-- {
-					consumed = consumed || stack[k].altConsumed
-					stack[k].caps = append(stack[k].caps, capRec{num, consumed, around, chain[k+1:]})
-					around = around || stack[k].around
-				}
+			f.consumedBelow = consumedTop()
+			f.aroundBelow = top.aroundBelow
+			if top.around {
+				f.aroundBelow = top.depth
 			}
+			if capture {
+				captures++
+				f.num = captures
+			}
+			frames = append(frames, f)
 			stack = append(stack, f)
 			i = f.bodyStart
 		case ')':
@@ -269,13 +286,24 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 			}
 			f := stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
-			consumes := f.allConsumed && f.altConsumed && !f.around
+			f.close = i
+			f.consumes = f.allConsumed && f.altConsumed && !f.around
 			min, max, _, ok := quant(i + 1)
 			f.optional = ok && min == 0
-			if ok && (max < 0 || max > 1) && !f.around && len(f.caps) > 0 {
-				qs = append(qs, q{f.open, f.bodyStart, f.alternatives, f.caps})
+			f.loop = ok && (max < 0 || max > 1) && !f.around
+			if f.loop {
+				// It is told by a group if an iteration may lack a
+				// capturing group in it (or any, with alternatives).
+				f.marker = f.hasCapture && (f.alternatives || f.hasMissing)
+				f.hidden = f.marker && f.num == 0
 			}
-			i = atom(i+1, consumes)
+			if p := stack[len(stack)-1]; !f.around {
+				// What the parent's body has of the captures in it.
+				p.hasCapture = p.hasCapture || f.num != 0 || f.hasCapture
+				p.hasMissing = p.hasMissing || f.hasMissing ||
+					f.num != 0 && f.optional || f.hasCapture && (f.optional || f.alternatives)
+			}
+			i = atom(i+1, f.consumes)
 		case '|':
 			top := stack[len(stack)-1]
 			top.allConsumed = top.allConsumed && top.altConsumed
@@ -298,63 +326,92 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 			i = atom(i+w, true)
 		}
 	}
-	// A group needs a hidden group if a capturing group in it (not in a
-	// lookaround) may be missing from an iteration.
-	kept := qs[:0]
-	for _, g := range qs {
-		var caps []capRec
-		for _, c := range g.caps {
-			if !c.inAround && (g.alternatives || !c.everyIteration()) {
-				caps = append(caps, c)
-			}
+	if len(stack) > 1 {
+		// Refused (an unterminated group).
+		return nil
+	}
+	// The frames in the order they open have their parents before them.
+	markers, work := 0, 0
+	for _, f := range frames {
+		p := f.parent
+		f.deepestBad = p.deepestBad
+		if f.optional || f.around || f.alternatives {
+			f.deepestBad = f.depth
 		}
-		if len(caps) > 0 {
-			g.caps = caps
-			kept = append(kept, g)
+		f.markerAbove, f.markers = p.markerAbove, p.markers
+		if p.marker {
+			f.markerAbove, f.markers = p, p.markers+1
+		}
+		if f.num != 0 && f.markerAbove != nil {
+			work += f.markers
+		}
+		if f.marker {
+			markers++
 		}
 	}
-	qs = kept
-	if len(qs) == 0 {
+	if markers == 0 || work > maxIterationWork {
 		return nil
 	}
 	// The groups in order of where they open: a hidden group opens where
-	// the body starts, before a capturing group opening there.
+	// its loop's body starts, before a capturing group opening there.
 	type open struct {
-		pos, hidden int // hidden: 0 for a hidden group, 1 for a capturing one
-		index       int // into qs, or the original number
+		pos    int
+		hidden int // 0 for a hidden group, 1 for a capturing one
+		frame  *iterFrame
 	}
-	var opens []open
-	for k, g := range qs {
-		opens = append(opens, open{g.bodyStart, 0, k})
+	opens := make([]open, 0, captures+markers)
+	for _, f := range frames {
+		if f.hidden {
+			opens = append(opens, open{f.bodyStart, 0, f})
+		}
+		if f.num != 0 {
+			opens = append(opens, open{f.open, 1, f})
+		}
 	}
-	for num := 1; num < len(capOpens); num++ {
-		opens = append(opens, open{capOpens[num], 1, num})
-	}
-	sort.Slice(opens, func(a, b int) bool {
+	sort.SliceStable(opens, func(a, b int) bool {
 		if opens[a].pos != opens[b].pos {
 			return opens[a].pos < opens[b].pos
 		}
 		return opens[a].hidden < opens[b].hidden
 	})
-	plan := &iterPlan{hidden: make(map[int]bool), renumber: make([]int, len(capOpens))}
-	hiddenNum := make([]int, len(qs))
+	plan := &iterPlan{hidden: make(map[int]bool), renumber: make([]int, captures+1)}
+	plan.Groups = make([]IterationGroup, len(opens)+1)
+	groupOf := make(map[*iterFrame]int, markers) // a loop's group
 	for k, o := range opens {
+		num := k + 1
+		plan.Groups[num] = IterationGroup{Consumed: o.frame.consumedBelow, Around: o.frame.aroundBelow}
 		if o.hidden == 0 {
-			hiddenNum[o.index] = k + 1
+			plan.hidden[o.frame.open] = true
+			plan.Hidden = append(plan.Hidden, num)
+			groupOf[o.frame] = num
 		} else {
-			plan.renumber[o.index] = k + 1
+			plan.renumber[o.frame.num] = num
+			if o.frame.marker {
+				groupOf[o.frame] = num
+			}
 		}
 	}
-	for k, g := range qs {
-		plan.hidden[g.open] = g.alternatives
-		ig := IterationGroup{Hidden: hiddenNum[k]}
-		for _, c := range g.caps {
-			ig.Inner = append(ig.Inner, IterationCapture{Group: plan.renumber[c.num], ConsumedBefore: c.consumedBefore})
+	for _, f := range frames {
+		if f.marker {
+			f.loopIndex = len(plan.Loops)
+			parent := -1
+			if f.markerAbove != nil {
+				parent = f.markerAbove.loopIndex
+			}
+			plan.Loops = append(plan.Loops, IterationLoop{
+				Group: groupOf[f], Depth: f.depth, Parent: parent, Alternatives: f.alternatives,
+			})
 		}
-		plan.Groups = append(plan.Groups, ig)
-		plan.Hidden = append(plan.Hidden, hiddenNum[k])
+		if f.num != 0 && f.markerAbove != nil {
+			missing := f.parent.deepestBad
+			if f.optional {
+				missing = f.depth
+			}
+			plan.Captures = append(plan.Captures, IterationCapture{
+				Group: plan.renumber[f.num], Loop: f.markerAbove.loopIndex, Missing: missing,
+			})
+		}
 	}
-	sort.Ints(plan.Hidden)
 	return plan
 }
 

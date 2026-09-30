@@ -495,27 +495,41 @@ func (p *regexpPattern) findAllSubmatchIndex(vm *vm, s String, start int, limit 
 }
 
 // dropEarlierIterations drops from a match the captures made in earlier
-// iterations of a quantified group than its last, which ECMAScript resets
-// at each (see parser.IterationGroup), and the hidden groups that tell them.
+// iterations of a loop than its last, which ECMAScript resets at each (see
+// parser.Iterations), and the hidden groups that tell them. A capture is
+// checked against each loop it is in, but for those whose every iteration
+// has it (without alternatives), and those it is in a lookaround within.
 func (p *regexpPattern) dropEarlierIterations(res regexpResult) regexpResult {
 	idx := res.indexes
 	if len(idx) == 0 {
 		return res
 	}
-	for _, g := range p.iter.Groups {
-		hs := idx[2*g.Hidden]
-		for _, c := range g.Inner {
-			gs, ge := idx[2*c.Group], idx[2*c.Group+1]
-			if gs < 0 {
+	it := p.iter
+	for _, c := range it.Captures {
+		gs, ge := idx[2*c.Group], idx[2*c.Group+1]
+		if gs < 0 {
+			continue
+		}
+		d := it.Groups[c.Group]
+		for li := c.Loop; li >= 0; li = it.Loops[li].Parent {
+			l := &it.Loops[li]
+			if l.Depth < d.Around {
+				break
+			}
+			if !l.Alternatives && l.Depth >= c.Missing {
 				continue
 			}
 			// Where the last iteration starts, a capture is from it if it
 			// is not empty, or if the body need not consume anything
 			// before the group.
-			if hs < 0 || gs < hs || gs == hs && ge == gs && c.ConsumedBefore {
+			if hs := idx[2*l.Group]; hs < 0 || gs < hs || gs == hs && ge == gs && l.Depth <= d.Consumed {
 				idx[2*c.Group], idx[2*c.Group+1] = -1, 0
+				break
 			}
 		}
+	}
+	if len(it.Hidden) == 0 {
+		return res
 	}
 	// The hidden groups are dropped, and their names (the same for every
 	// match, and made once).

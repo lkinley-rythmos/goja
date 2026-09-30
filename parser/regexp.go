@@ -109,8 +109,8 @@ type _RegExp_parser struct {
 
 	depth int // of the group being scanned
 
-	// The hidden groups at the start of quantified groups' bodies (see
-	// planIterations), nil if there are none.
+	// The loops told by a group, and the hidden groups that are some of
+	// their bodies (see planIterations), nil if there are none.
 	iter *iterPlan
 
 	// Without the u flag, ignoring case (see canonFold): where the Go text
@@ -207,10 +207,10 @@ func TransformRegExp2(pattern string, dotAll, unicode, ignoreCase bool) (transfo
 	return
 }
 
-// TransformRegExpIter is TransformRegExp2 that also returns the hidden
-// groups both patterns have at the start of the bodies of quantified groups
-// with capturing groups (see IterationGroup), nil if there are none: the
-// caller must drop the captures of earlier iterations, and the hidden
+// TransformRegExpIter is TransformRegExp2 that also returns the loops of
+// the pattern whose iterations a group tells, and the hidden groups both
+// patterns have for them (see Iterations), nil if there are none: the
+// caller must drop the captures ECMAScript does not keep, and the hidden
 // groups, from a match.
 func TransformRegExpIter(pattern string, dotAll, unicode, ignoreCase bool) (transformed, regexp2Pattern string, iter *Iterations, err error) {
 	if pattern == "" {
@@ -670,21 +670,12 @@ func (self *_RegExp_parser) scanGroup() {
 	} else {
 		self.count(costCapture)
 	}
-	alternatives, hidden := false, false
-	if self.iter != nil && self.err == nil {
-		alternatives, hidden = self.iter.hidden[open]
-	}
+	hidden := self.iter != nil && self.err == nil && self.iter.hidden[open]
 	if hidden {
-		// The body starts with a hidden group (see planIterations); with
-		// alternatives, it is a group of its own, which they are in.
+		// The body is a hidden group (see planIterations).
 		self.count(costCapture)
-		text := "()"
-		if alternatives {
-			self.count(costGroup)
-			text = "()(?:"
-		}
-		self.writeString(text)
-		self.writeRegexp2(self.chrOffset, self.chrOffset, text)
+		self.writeByte('(')
+		self.writeRegexp2(self.chrOffset, self.chrOffset, "(")
 	}
 	self.prev = termNone
 	for self.chr != -1 && self.chr != ')' {
@@ -694,7 +685,7 @@ func (self *_RegExp_parser) scanGroup() {
 		self.fatal("Unterminated group")
 		return
 	}
-	if hidden && alternatives {
+	if hidden {
 		self.writeByte(')')
 		self.writeRegexp2(self.chrOffset, self.chrOffset, ")")
 	}
