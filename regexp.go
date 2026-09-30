@@ -13,6 +13,7 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 	"unsafe"
+	"weak"
 
 	"github.com/dlclark/regexp2/v2"
 	"github.com/dop251/goja/unistring"
@@ -411,8 +412,10 @@ func buildUTF8PosMap(s unicodeString) (positionMap, string) {
 }
 
 // foldScan is the last input hasFoldWordChars scanned, and what it found.
+// The input is held by a weak pointer: a pattern (a pooled Runtime's, or a
+// literal's) would otherwise keep its last input, possibly megabytes, alive.
 type foldScan struct {
-	start *uint16
+	start weak.Pointer[uint16]
 	n     int
 	has   bool
 }
@@ -428,7 +431,9 @@ func (p *regexpPattern) hasFoldWordChars(s String) bool {
 	if len(u) == 0 {
 		return false
 	}
-	if p.foldScan.start == &u[0] && p.foldScan.n == len(u) {
+	// A weak pointer's value is nil once its input is reclaimed, before
+	// another can take its place.
+	if p.foldScan.start.Value() == &u[0] && p.foldScan.n == len(u) {
 		return p.foldScan.has
 	}
 	has := false
@@ -438,7 +443,7 @@ func (p *regexpPattern) hasFoldWordChars(s String) bool {
 			break
 		}
 	}
-	p.foldScan = foldScan{start: &u[0], n: len(u), has: has}
+	p.foldScan = foldScan{start: weak.Make(&u[0]), n: len(u), has: has}
 	return has
 }
 
