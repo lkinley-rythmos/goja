@@ -535,6 +535,7 @@ func compileRegexpUncached(r *Runtime, patternStr, flags string) (p *regexpPatte
 			err = fmt.Errorf("Invalid regular expression (regexp2): %s (%v)", source, err)
 			return
 		}
+		wrapper2.iter = iter
 	}
 
 	// The template holds regexp2's pattern.

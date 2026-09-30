@@ -30,6 +30,10 @@ type regexp2MatchCache struct {
 type regexp2Wrapper struct {
 	rx    *regexp2.Regexp
 	cache *regexp2MatchCache
+	// iter is the pattern's loops, whose iterations regexp2 takes and
+	// ECMAScript refuses are dropped from its matches (see
+	// dropEmptyIterations); nil when it has none.
+	iter *parser.Iterations
 }
 
 type regexpWrapper regexp.Regexp
@@ -394,6 +398,7 @@ func (p *regexpPattern) createRegexp2(vm *vm) {
 		// At this point the regexp should have been successfully converted to re2, if it fails now, it's a bug.
 		panic(err)
 	}
+	rx.iter = p.iter
 	p.regexp2Wrapper = rx
 }
 
@@ -456,24 +461,27 @@ func (p *regexpPattern) hasFoldWordChars(s String) bool {
 }
 
 func (p *regexpPattern) findSubmatchIndex(vm *vm, s String, start int) regexpResult {
-	if p.iter == nil {
-		return p.findSubmatchIndexEngines(vm, s, start)
+	res, goRegexp := p.findSubmatchIndexEngines(vm, s, start)
+	if p.iter != nil && p.iter.Drop {
+		res = p.dropEarlierIterations(res, goRegexp)
 	}
-	return p.dropEarlierIterations(p.findSubmatchIndexEngines(vm, s, start))
+	return res
 }
 
-func (p *regexpPattern) findSubmatchIndexEngines(vm *vm, s String, start int) regexpResult {
+// findSubmatchIndexEngines finds a match with Go's regexp or regexp2, and
+// reports whether it is Go's.
+func (p *regexpPattern) findSubmatchIndexEngines(vm *vm, s String, start int) (regexpResult, bool) {
 	if p.regexpWrapper == nil {
-		return p.regexp2Wrapper.findSubmatchIndex(vm, s, start, p.unicode, p.global || p.sticky)
+		return p.regexp2Wrapper.findSubmatchIndex(vm, s, start, p.unicode, p.global || p.sticky), false
 	}
 	if start != 0 || p.hasFoldWordChars(s) {
 		// Unfortunately Go's regexp library does not allow starting from an arbitrary position.
 		// If we just drop the first _start_ characters of the string the assertions (^, $, \b and \B) will not
 		// work correctly.
 		p.createRegexp2(vm)
-		return p.regexp2Wrapper.findSubmatchIndex(vm, s, start, p.unicode, p.global || p.sticky)
+		return p.regexp2Wrapper.findSubmatchIndex(vm, s, start, p.unicode, p.global || p.sticky), false
 	}
-	return p.regexpWrapper.findSubmatchIndex(vm, s, p.unicode, p.prefixSkip)
+	return p.regexpWrapper.findSubmatchIndex(vm, s, p.unicode, p.prefixSkip), true
 }
 
 // goFindAllIncrementalAbove is the input length (in bytes) above which a
@@ -485,10 +493,10 @@ func (p *regexpPattern) findSubmatchIndexEngines(vm *vm, s String, start int) re
 const goFindAllIncrementalAbove = 64 << 10
 
 func (p *regexpPattern) findAllSubmatchIndex(vm *vm, s String, start int, limit int, sticky bool) []regexpResult {
-	results := p.findAllSubmatchIndexEngines(vm, s, start, limit, sticky)
-	if p.iter != nil {
+	results, goRegexp := p.findAllSubmatchIndexEngines(vm, s, start, limit, sticky)
+	if p.iter != nil && p.iter.Drop {
 		for i := range results {
-			results[i] = p.dropEarlierIterations(results[i])
+			results[i] = p.dropEarlierIterations(results[i], goRegexp)
 		}
 	}
 	return results
@@ -496,39 +504,39 @@ func (p *regexpPattern) findAllSubmatchIndex(vm *vm, s String, start int, limit 
 
 // dropEarlierIterations drops from a match the captures made in earlier
 // iterations of a loop than its last, which ECMAScript resets at each (see
-// parser.Iterations), and the hidden groups that tell them. A capture is
-// checked against each loop it is in, but for those whose every iteration
-// has it (without alternatives), and those it is in a lookaround within.
-func (p *regexpPattern) dropEarlierIterations(res regexpResult) regexpResult {
+// parser.Iterations), and the hidden groups that tell them. regexp2's
+// matches have had theirs dropped already (see dropIterations); goRegexp
+// reports that it is Go's regexp's.
+func (p *regexpPattern) dropEarlierIterations(res regexpResult, goRegexp bool) regexpResult {
 	idx := res.indexes
 	if len(idx) == 0 {
 		return res
 	}
-	it := p.iter
-	for _, c := range it.Captures {
-		gs, ge := idx[2*c.Group], idx[2*c.Group+1]
-		if gs < 0 {
-			continue
-		}
-		d := it.Groups[c.Group]
-		for li := c.Loop; li >= 0; li = it.Loops[li].Parent {
+	if goRegexp {
+		// Go's regexp takes the optional copies of a bounded repeat's body
+		// that match nothing, where ECMAScript refuses an iteration past
+		// the minimum that does, and ends the loop before it. Which of its
+		// iterations it was cannot be told, nor which of the captures of
+		// the loops in it were made in it: the captures of such a loop,
+		// and of one whose last iteration is at where it is and matches
+		// nothing, are left to the loops they are in.
+		it := p.iter
+		dropIterations(it, idx, func(li int) bool {
 			l := &it.Loops[li]
-			if l.Depth < d.Around {
-				break
+			hs := idx[2*l.Group]
+			if hs < 0 || idx[2*l.Group+1] != hs {
+				return false
 			}
-			if !l.Alternatives && l.Depth >= c.Missing {
-				continue
+			for a := li; a >= 0; a = it.Loops[a].Parent {
+				outer := &it.Loops[a]
+				if outer.Max >= 0 && outer.Max > outer.Min && idx[2*outer.Group] == hs && idx[2*outer.Group+1] == hs {
+					return true
+				}
 			}
-			// Where the last iteration starts, a capture is from it if it
-			// is not empty, or if the body need not consume anything
-			// before the group.
-			if hs := idx[2*l.Group]; hs < 0 || gs < hs || gs == hs && ge == gs && l.Depth <= d.Consumed {
-				idx[2*c.Group], idx[2*c.Group+1] = -1, 0
-				break
-			}
-		}
+			return false
+		})
 	}
-	if len(it.Hidden) == 0 {
+	if len(p.iter.Hidden) == 0 {
 		return res
 	}
 	// The hidden groups are dropped, and their names (the same for every
@@ -557,9 +565,9 @@ func (p *regexpPattern) dropEarlierIterations(res regexpResult) regexpResult {
 	return regexpResult{indexes: kept, groups: p.iterNames}
 }
 
-func (p *regexpPattern) findAllSubmatchIndexEngines(vm *vm, s String, start int, limit int, sticky bool) []regexpResult {
+func (p *regexpPattern) findAllSubmatchIndexEngines(vm *vm, s String, start int, limit int, sticky bool) ([]regexpResult, bool) {
 	if p.regexpWrapper == nil {
-		return p.regexp2Wrapper.findAllSubmatchIndex(vm, s, start, limit, sticky, p.unicode)
+		return p.regexp2Wrapper.findAllSubmatchIndex(vm, s, start, limit, sticky, p.unicode), false
 	}
 	// A pattern that looks before its match position cannot be resumed
 	// mid-input with Go's regexp; for a large input, regexp2 (which resumes
@@ -571,16 +579,16 @@ func (p *regexpPattern) findAllSubmatchIndexEngines(vm *vm, s String, start int,
 	if start == 0 && !(p.goStartContext && limit != 1 && (s.Length() > goFindAllIncrementalAbove/3 || p.goEmptyAfterMatch)) && !p.hasFoldWordChars(s) {
 		a, u := devirtualizeString(s)
 		if u == nil {
-			return p.regexpWrapper.findAllSubmatchIndex(vm, string(a), limit, sticky, p.prefixSkip, p.goEmptyAfterMatch)
+			return p.regexpWrapper.findAllSubmatchIndex(vm, string(a), limit, sticky, p.prefixSkip, p.goEmptyAfterMatch), true
 		}
 		if limit == 1 {
 			result := p.regexpWrapper.findSubmatchIndexUnicode(vm, u, p.unicode)
 			// A sticky match must start at the start (the leftmost one
 			// starts after it if none does).
 			if result.indexes == nil || sticky && result.indexes[0] != 0 {
-				return nil
+				return nil, true
 			}
-			return []regexpResult{result}
+			return []regexpResult{result}, true
 		}
 		// Unfortunately Go's regexp library lacks FindAllReaderSubmatchIndex(), so we have to use a UTF-8 string as an
 		// input.
@@ -597,13 +605,13 @@ func (p *regexpPattern) findAllSubmatchIndexEngines(vm *vm, s String, start int,
 						result.indexes[i] = pm.get(idx)
 					}
 				}
-				return res
+				return res, true
 			}
 		}
 	}
 
 	p.createRegexp2(vm)
-	return p.regexp2Wrapper.findAllSubmatchIndex(vm, s, start, limit, sticky, p.unicode)
+	return p.regexp2Wrapper.findAllSubmatchIndex(vm, s, start, limit, sticky, p.unicode), false
 }
 
 // clone creates a copy of the regexpPattern which can be used concurrently.
@@ -643,6 +651,228 @@ type regexpObject struct {
 	source  String
 
 	standard bool
+}
+
+// dropIterations drops from a match (idx) the captures made in earlier
+// iterations of a loop than its last, which ECMAScript resets at each (see
+// parser.Iterations), but those of the loops skip reports. A capture is
+// checked against each loop it is in, but for those whose every iteration
+// has it (without alternatives), and those it is in a lookaround within.
+func dropIterations(it *parser.Iterations, idx []int, skip func(int) bool) {
+	for _, c := range it.Captures {
+		gs, ge := idx[2*c.Group], idx[2*c.Group+1]
+		if gs < 0 {
+			continue
+		}
+		d := it.Groups[c.Group]
+		for li := c.Loop; li >= 0; li = it.Loops[li].Parent {
+			l := &it.Loops[li]
+			if l.Depth < d.Around {
+				break
+			}
+			if !l.Reset || !l.Alternatives && l.Depth >= c.Missing || skip(li) {
+				continue
+			}
+			// Where the last iteration starts, a capture is from it if it
+			// is not empty, or if the body need not consume anything
+			// before the group.
+			if hs := idx[2*l.Group]; hs < 0 || gs < hs || gs == hs && ge == gs && l.Depth <= d.Consumed {
+				idx[2*c.Group], idx[2*c.Group+1] = -1, 0
+				break
+			}
+		}
+	}
+}
+
+// appendGroups appends the groups of a regexp2 match to result: the last
+// capture of each, at posMap's positions (the runes' if nil), once the
+// iterations ECMAScript refuses, and the captures of earlier iterations
+// than a loop's last, are dropped (see dropEmptyIterations and
+// dropIterations).
+func (r *regexp2Wrapper) appendGroups(result *regexpResult, groups []regexp2.Group, posMap []int) {
+	it := r.iter
+	var kept, refused []int
+	if it != nil && len(it.Loops) > 0 {
+		kept, refused = dropEmptyIterations(it, groups)
+	}
+	for i := range groups {
+		group := &groups[i]
+		n := len(group.Captures)
+		if kept != nil {
+			n = kept[i]
+		}
+		if n == 0 {
+			result.appendIndexesAndGroup(-1, 0, group.Name)
+			continue
+		}
+		c := &group.Captures[n-1]
+		result.appendIndexesAndGroup(c.RuneIndex, c.RuneIndex+c.RuneLength, group.Name)
+	}
+	idx := result.indexes
+	if it != nil && it.Drop {
+		// A loop whose last iteration is an empty one at where a loop it
+		// is in had one refused may have had it in the refused one, whose
+		// captures cannot all be told from those before it: its
+		// captures are left to the loops it is in.
+		dropIterations(it, idx, func(li int) bool {
+			if refused == nil {
+				return false
+			}
+			l := &it.Loops[li]
+			hs := idx[2*l.Group]
+			if hs < 0 || idx[2*l.Group+1] != hs {
+				return false
+			}
+			for a := l.Parent; a >= 0; a = it.Loops[a].Parent {
+				if refused[a] == hs+1 {
+					return true
+				}
+			}
+			return false
+		})
+	}
+	if posMap != nil {
+		for i, pos := range idx {
+			if pos >= 0 {
+				idx[i] = posMap[pos]
+			}
+		}
+	}
+}
+
+// dropEmptyIterations drops from a regexp2 match the iterations of its
+// loops that ECMAScript refuses, and returns how many captures of each group
+// are left, and where each loop had one refused (1 + its position; 0 for
+// none), or nil if none was. regexp2 ends a loop with an iteration that
+// matches nothing, which ECMAScript refuses past the loop's minimum
+// (RepeatMatcher, ECMA-262 22.2.2.3.1), ending the loop before it: an
+// iteration after the minimum's (counted over the loop's iterations that
+// follow one another in the last iteration of the loop it is in) whose
+// capture is empty. The empty captures made in it
+// (at where it is, of a capturing group the body need not consume anything
+// before, not in a lookaround in it) are dropped with it, one of each, a
+// loop before those in it, but for those in a loop in it that did not run
+// there (see ranRefused). The hidden groups of the loops in it are left:
+// how many of their iterations it had cannot be told (see appendGroups).
+// So is a group a backreference is to: the engine matched with its capture
+// in such an iteration, and ECMAScript's match may be another.
+func dropEmptyIterations(it *parser.Iterations, groups []regexp2.Group) (kept, refused []int) {
+	// Where the last iteration of each loop starts, once those refused are
+	// dropped: an iteration of a loop in it that starts before is in an
+	// earlier iteration of it, and so of another run of the loop.
+	starts := make([]int, len(it.Loops))
+	for i := range it.Loops {
+		l := &it.Loops[i]
+		caps := groups[l.Group].Captures
+		if kept != nil {
+			caps = caps[:kept[l.Group]]
+		}
+		k := len(caps)
+		starts[i] = -1
+		if k > 0 {
+			starts[i] = caps[k-1].RuneIndex
+		}
+		if k == 0 || caps[k-1].RuneLength != 0 {
+			continue
+		}
+		from := -1
+		if l.Parent >= 0 {
+			from = starts[l.Parent]
+		}
+		n := 1
+		for j := k - 1; j > 0 && n <= l.Min && caps[j-1].RuneIndex >= from && caps[j-1].RuneIndex+caps[j-1].RuneLength == caps[j].RuneIndex; j-- {
+			n++
+		}
+		if n <= l.Min {
+			continue
+		}
+		if kept == nil {
+			kept = make([]int, len(groups))
+			for g := range groups {
+				kept[g] = len(groups[g].Captures)
+			}
+			refused = make([]int, len(it.Loops))
+		}
+		at := caps[k-1].RuneIndex
+		refused[i] = at + 1
+		kept[l.Group]--
+		starts[i] = -1
+		if k > 1 {
+			starts[i] = caps[k-2].RuneIndex
+		}
+		// Last to first: the loops a group is in are told by groups before
+		// it, whose iterations ranRefused counts before they are dropped.
+		for g := l.Last; g > l.Group; g-- {
+			if kept[g] == 0 || it.Groups[g].Hidden || it.Groups[g].Referenced {
+				continue
+			}
+			c := &groups[g].Captures[kept[g]-1]
+			d := it.Groups[g]
+			if c.RuneIndex == at && c.RuneLength == 0 && l.Depth > d.Consumed && l.Depth >= d.Around && !refusedAround(it, refused, l, d, at) &&
+				ranRefused(it, groups, kept, g, i, at) {
+				kept[g]--
+			}
+		}
+	}
+	return
+}
+
+// ranRefused reports whether group g may have been captured in the
+// iteration of loop refused at at: none of the loops between them (nor
+// the one g tells, if it does) has fewer iterations at at than a run of it
+// there has, the minimum's or one (an iteration that matches nothing ends
+// a loop, past its minimum), and the capturing groups it is in, and the one
+// always captured before it, were captured there.
+func ranRefused(it *parser.Iterations, groups []regexp2.Group, kept []int, g, refused, at int) bool {
+	ran := func(q int) bool {
+		l := &it.Loops[q]
+		caps := groups[l.Group].Captures[:kept[l.Group]]
+		n := 0
+		for k := len(caps) - 1; k >= 0 && caps[k].RuneIndex == at && caps[k].RuneLength == 0; k-- {
+			n++
+		}
+		return n >= max(l.Min, 1)
+	}
+	if q := it.Groups[g].Marks; q >= 0 && !ran(q) {
+		return false
+	}
+	// The capturing groups it is in, and one always captured before it,
+	// are captured in the iteration too, at at.
+	emptyAt := func(h int) bool {
+		if kept[h] == 0 {
+			return false
+		}
+		c := &groups[h].Captures[kept[h]-1]
+		return c.RuneIndex == at && c.RuneLength == 0
+	}
+	first := it.Loops[refused].Group
+	if h := it.Groups[g].Before; h > first && !emptyAt(h) {
+		return false
+	}
+	for h := it.Groups[g].Parent; h > first; h = it.Groups[h].Parent {
+		if !emptyAt(h) {
+			return false
+		}
+	}
+	for q := it.Groups[g].Loop; q >= 0 && q != refused; q = it.Loops[q].Parent {
+		if !ran(q) {
+			return false
+		}
+	}
+	return true
+}
+
+// refusedAround reports whether a loop that l is in had an iteration
+// refused at at, with which a group's empty capture there was dropped
+// already (d is where the group is).
+func refusedAround(it *parser.Iterations, refused []int, l *parser.IterationLoop, d parser.IterationGroup, at int) bool {
+	for a := l.Parent; a >= 0; a = it.Loops[a].Parent {
+		outer := &it.Loops[a]
+		if refused[a] == at+1 && outer.Depth > d.Consumed && outer.Depth >= d.Around {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *regexp2Wrapper) findSubmatchIndex(vm *vm, s String, start int, fullUnicode, doCache bool) regexpResult {
@@ -693,13 +923,7 @@ func (r *regexp2Wrapper) findSubmatchIndexUTF16(vm *vm, s String, start int, doC
 		indexes: make([]int, 0, len(groups)<<1),
 		groups:  make([]string, 0, len(groups)),
 	}
-	for _, group := range groups {
-		if len(group.Captures) > 0 {
-			result.appendIndexesAndGroup(group.RuneIndex, group.RuneIndex+group.RuneLength, group.Name)
-		} else {
-			result.appendIndexesAndGroup(-1, 0, group.Name)
-		}
-	}
+	r.appendGroups(&result, groups, nil)
 	return result
 }
 
@@ -758,13 +982,7 @@ func (r *regexp2Wrapper) findSubmatchIndexUnicode(vm *vm, s String, start int, d
 		indexes: make([]int, 0, len(groups)<<1),
 		groups:  make([]string, 0, len(groups)),
 	}
-	for _, group := range groups {
-		if len(group.Captures) > 0 {
-			result.appendIndexesAndGroup(posMap[group.RuneIndex], posMap[group.RuneIndex+group.RuneLength], group.Name)
-		} else {
-			result.appendIndexesAndGroup(-1, 0, group.Name)
-		}
-	}
+	r.appendGroups(&result, groups, posMap)
 	return result
 }
 
@@ -790,15 +1008,7 @@ func (r *regexp2Wrapper) findAllSubmatchIndexUTF16(vm *vm, s String, start, limi
 			groups:  make([]string, 0, len(groups)),
 		}
 
-		for _, group := range groups {
-			if len(group.Captures) > 0 {
-				startPos := group.RuneIndex
-				endPos := group.RuneIndex + group.RuneLength
-				result.appendIndexesAndGroup(startPos, endPos, group.Name)
-			} else {
-				result.appendIndexesAndGroup(-1, 0, group.Name)
-			}
-		}
+		r.appendGroups(&result, groups, nil)
 
 		if sticky && len(result.indexes) > 1 {
 			if result.indexes[0] != start {
@@ -884,15 +1094,7 @@ func (r *regexp2Wrapper) findAllSubmatchIndexUnicode(vm *vm, s unicodeString, st
 			groups:  make([]string, 0, len(groups)),
 		}
 
-		for _, group := range groups {
-			if len(group.Captures) > 0 {
-				start := posMap[group.RuneIndex]
-				end := posMap[group.RuneIndex+group.RuneLength]
-				result.appendIndexesAndGroup(start, end, group.Name)
-			} else {
-				result.appendIndexesAndGroup(-1, 0, group.Name)
-			}
-		}
+		r.appendGroups(&result, groups, posMap)
 
 		if sticky && len(result.indexes) > 1 {
 			if result.indexes[0] != start {
@@ -999,7 +1201,8 @@ func (r *regexp2Wrapper) findNext(vm *vm, m *regexp2.Match) (*regexp2.Match, err
 
 func (r *regexp2Wrapper) clone() *regexp2Wrapper {
 	return &regexp2Wrapper{
-		rx: r.rx,
+		rx:   r.rx,
+		iter: r.iter,
 	}
 }
 

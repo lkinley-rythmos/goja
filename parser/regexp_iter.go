@@ -16,6 +16,17 @@ import (
 // empty one right at its start is from it unless something the body always
 // consumes comes before the group (/(?:a(b?)|c)+/ on "ac"). The caller drops
 // the captures of earlier iterations, and the hidden groups.
+//
+// ECMAScript also refuses an iteration past the minimum that matches
+// nothing, where regexp2 takes one more and ends the loop there:
+// /(?:(a)|(?=b))+b/.exec("ab") is ["ab", "a"], and regexp2's last iteration
+// is the empty one at "b". regexp2 keeps every capture of a group, so the
+// caller drops such an iteration, and the empty captures made in it, before
+// it takes the last captures; a loop whose body may match nothing is told
+// by a group for that even if its captures are in every iteration. Go's
+// regexp takes no such iteration of * or + (it does not go round a loop
+// twice at one position), but takes the optional copies of a bounded
+// repeat's body that match nothing.
 
 // Iterations are the quantified groups of a transformed pattern that may
 // iterate more than once and whose iterations a group tells (see
@@ -32,17 +43,27 @@ type Iterations struct {
 	Groups []IterationGroup
 	// The hidden groups, in order.
 	Hidden []int
+	// Drop reports whether a match has captures of earlier iterations to
+	// drop, or hidden groups.
+	Drop bool
 }
 
-// IterationLoop is a quantified group that may iterate more than once and
-// has a capturing group that an iteration may lack (or any, with
-// alternatives), and the group whose last capture is its last iteration:
-// itself if it captures, or a hidden group that is its body.
+// IterationLoop is a quantified group that may iterate more than once, and
+// the group whose last capture is its last iteration: itself if it captures,
+// or a hidden group that is its body. A loop that needs neither has none:
+// one with no capturing group in it that an iteration may lack, and whose
+// body always consumes something (or has no group).
 type IterationLoop struct {
 	Group        int  // the group whose captures are the iterations
+	Last         int  // the last group in its body (Group if none)
+	Min, Max     int  // its bounds (Max -1 for none)
 	Depth        int  // how many groups it is in, plus one
 	Parent       int  // the innermost loop it is in, -1 if none
 	Alternatives bool // its body has alternatives of its own
+	// Reset reports whether it has a capturing group that an iteration may
+	// lack (or any, with alternatives), whose capture from an earlier
+	// iteration is dropped.
+	Reset bool
 }
 
 // IterationCapture is a capturing group in a loop's body: its number, the
@@ -55,13 +76,24 @@ type IterationCapture struct {
 	Missing int
 }
 
-// IterationGroup is a group of a transformed pattern: for a loop it is in
-// at depth d, whether the loop's body always consumes something before it
-// (d <= Consumed), and whether it is in a lookaround within the body (d <
-// Around), whose captures need not be where it is and are left as the
-// engines give them.
+// IterationGroup is a group of a transformed pattern: whether it is a hidden
+// group, and, for a loop it is in at depth d, whether the loop's body
+// always consumes something before it (d <= Consumed), and whether it is in
+// a lookaround within the body (d < Around), whose captures need not be
+// where it is and are left as the engines give them.
 type IterationGroup struct {
 	Consumed, Around int
+	Hidden           bool
+	// The innermost loop the group is in, and the loop whose iterations it
+	// tells (indexes into Loops, -1 for none).
+	Loop, Marks int
+	// For a capturing group, the innermost capturing group it is in, and the
+	// last one that is always captured before it where it is (0 for none):
+	// in an iteration that has it, they are captured too.
+	Parent, Before int
+	// Referenced reports whether a backreference is to it: the engine
+	// matched with its captures (see dropEmptyIterations).
+	Referenced bool
 }
 
 // iterPlan is where hidden groups go, and the groups' numbers once they are
@@ -78,13 +110,18 @@ type iterFrame struct {
 	parent                 *iterFrame
 	depth                  int // in the stack of groups, the pattern being 0
 	num                    int // its number if it captures (from 1), else 0
-	around                 bool
-	alternatives           bool // the body has a | of its own
-	optional               bool // quantified with a minimum of 0
-	loop                   bool // quantified with a maximum over 1, not a lookaround
-	altConsumed            bool // the current alternative consumes something so far
-	allConsumed            bool // every alternative before the current one did
-	consumes               bool // the body always consumes something
+	// The last capturing group always captured before the current point of
+	// its body (in the current alternative), and before it opens.
+	lastCaptured, capturedBefore int
+	capParent                    *iterFrame // the innermost capturing group it is in
+	around                       bool
+	alternatives                 bool // the body has a | of its own
+	optional                     bool // quantified with a minimum of 0
+	loop                         bool // quantified with a maximum over 1, not a lookaround
+	min, max                     int
+	altConsumed                  bool // the current alternative consumes something so far
+	allConsumed                  bool // every alternative before the current one did
+	consumes                     bool // the body always consumes something
 	// Where the group is in the groups around it when it opens (see
 	// IterationGroup): the deepest of them whose current alternative has
 	// consumed something, and the deepest lookaround.
@@ -122,6 +159,10 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 	stack := []*iterFrame{root}
 	var frames []*iterFrame // every group, in the order they open
 	captures := 0
+	// The groups backreferences are to, by number and by name.
+	var refNums []int
+	var refNames []string
+	var names map[string]int
 	// consumedTop is the deepest group on the stack whose current
 	// alternative has consumed something (0 for none).
 	consumedTop := func() int {
@@ -213,14 +254,20 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 				// A backreference may match nothing (and a legacy octal
 				// escape consumes, which is taken as not).
 				consumes = false
-				for end < n && s[end] >= '0' && s[end] <= '9' {
-					end++
+				v := 0
+				for end = i + 1; end < n && s[end] >= '0' && s[end] <= '9'; end++ {
+					if v < 1<<20 {
+						v = v*10 + int(s[end]-'0')
+					}
 				}
+				refNums = append(refNums, v)
 			case e == 'k' && end < n && s[end] == '<':
 				consumes = false
+				start := end + 1
 				for end < n && s[end] != '>' {
 					end++
 				}
+				refNames = append(refNames, s[min(start, end):end])
 				end++
 			case (e == 'p' || e == 'P' || e == 'u') && end < n && s[end] == '{':
 				for end < n && s[end] != '}' {
@@ -245,7 +292,7 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 			top := stack[len(stack)-1]
 			f := &iterFrame{open: i, parent: top, depth: len(stack), allConsumed: true}
 			j := i + 1
-			capture := false
+			capture, name := false, ""
 			switch {
 			case j+1 < n && s[j] == '?' && (s[j+1] == '=' || s[j+1] == '!'):
 				f.around, j = true, j+2
@@ -256,6 +303,7 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 				for j < n && s[j] != '>' {
 					j++
 				}
+				name = s[min(i+3, j):j]
 				j++
 			case j+1 < n && s[j] == '?' && s[j+1] == ':':
 				j += 2
@@ -268,6 +316,14 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 				return nil
 			}
 			f.consumedBelow = consumedTop()
+			f.capturedBefore = top.lastCaptured
+			if f.capturedBefore == 0 {
+				f.capturedBefore = top.capturedBefore
+			}
+			f.capParent = top.capParent
+			if top.num != 0 {
+				f.capParent = top
+			}
 			f.aroundBelow = top.aroundBelow
 			if top.around {
 				f.aroundBelow = top.depth
@@ -275,6 +331,12 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 			if capture {
 				captures++
 				f.num = captures
+				if name != "" {
+					if names == nil {
+						names = make(map[string]int)
+					}
+					names[name] = captures
+				}
 			}
 			frames = append(frames, f)
 			stack = append(stack, f)
@@ -291,11 +353,22 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 			min, max, _, ok := quant(i + 1)
 			f.optional = ok && min == 0
 			f.loop = ok && (max < 0 || max > 1) && !f.around
+			f.min, f.max = min, max
 			if f.loop {
 				// It is told by a group if an iteration may lack a
-				// capturing group in it (or any, with alternatives).
-				f.marker = f.hasCapture && (f.alternatives || f.hasMissing)
+				// capturing group in it (or any, with alternatives), or
+				// if an iteration may match nothing (see Iterations).
+				reset := f.hasCapture && (f.alternatives || f.hasMissing)
+				f.marker = reset || !f.consumes && (f.num != 0 || f.hasCapture)
 				f.hidden = f.marker && f.num == 0
+			}
+			if p := stack[len(stack)-1]; !f.optional && !f.around {
+				// A group every path takes is captured before what follows.
+				if f.num != 0 {
+					p.lastCaptured = f.num
+				} else if !f.alternatives && f.lastCaptured != 0 {
+					p.lastCaptured = f.lastCaptured
+				}
 			}
 			if p := stack[len(stack)-1]; !f.around {
 				// What the parent's body has of the captures in it.
@@ -308,6 +381,7 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 			top := stack[len(stack)-1]
 			top.allConsumed = top.allConsumed && top.altConsumed
 			top.altConsumed = false
+			top.lastCaptured = 0
 			top.alternatives = true
 			i++
 		case '^', '$':
@@ -374,35 +448,72 @@ func (self *_RegExp_parser) planIterations() *iterPlan {
 		}
 		return opens[a].hidden < opens[b].hidden
 	})
+	// The capturing groups backreferences are to (a number past them is a
+	// legacy octal escape).
+	for _, name := range refNames {
+		if num, ok := names[name]; ok {
+			refNums = append(refNums, num)
+		}
+	}
+	referenced := make([]bool, captures+1)
+	for _, num := range refNums {
+		if num <= captures {
+			referenced[num] = true
+		}
+	}
 	plan := &iterPlan{hidden: make(map[int]bool), renumber: make([]int, captures+1)}
 	plan.Groups = make([]IterationGroup, len(opens)+1)
+	plan.Groups[0] = IterationGroup{Loop: -1, Marks: -1}
 	groupOf := make(map[*iterFrame]int, markers) // a loop's group
 	for k, o := range opens {
 		num := k + 1
-		plan.Groups[num] = IterationGroup{Consumed: o.frame.consumedBelow, Around: o.frame.aroundBelow}
+		plan.Groups[num] = IterationGroup{Consumed: o.frame.consumedBelow, Around: o.frame.aroundBelow, Hidden: o.hidden == 0, Loop: -1, Marks: -1}
 		if o.hidden == 0 {
 			plan.hidden[o.frame.open] = true
 			plan.Hidden = append(plan.Hidden, num)
 			groupOf[o.frame] = num
 		} else {
 			plan.renumber[o.frame.num] = num
+			plan.Groups[num].Referenced = referenced[o.frame.num]
 			if o.frame.marker {
 				groupOf[o.frame] = num
 			}
 		}
 	}
+	// The groups in a loop's body are those that open before it closes.
+	lastBefore := func(pos int) int {
+		return sort.Search(len(opens), func(k int) bool { return opens[k].pos >= pos })
+	}
 	for _, f := range frames {
 		if f.marker {
 			f.loopIndex = len(plan.Loops)
+			g := &plan.Groups[groupOf[f]]
+			g.Marks = f.loopIndex
+			if f.markerAbove != nil {
+				g.Loop = f.markerAbove.loopIndex
+			}
 			parent := -1
 			if f.markerAbove != nil {
 				parent = f.markerAbove.loopIndex
 			}
+			reset := f.hasCapture && (f.alternatives || f.hasMissing)
 			plan.Loops = append(plan.Loops, IterationLoop{
-				Group: groupOf[f], Depth: f.depth, Parent: parent, Alternatives: f.alternatives,
+				Group: groupOf[f], Last: lastBefore(f.close), Min: f.min, Max: f.max, Depth: f.depth,
+				Parent: parent, Alternatives: f.alternatives, Reset: reset,
 			})
+			plan.Drop = plan.Drop || reset || f.hidden
+		}
+		if f.num != 0 {
+			g := &plan.Groups[plan.renumber[f.num]]
+			if f.capParent != nil {
+				g.Parent = plan.renumber[f.capParent.num]
+			}
+			if f.capturedBefore != 0 {
+				g.Before = plan.renumber[f.capturedBefore]
+			}
 		}
 		if f.num != 0 && f.markerAbove != nil {
+			plan.Groups[plan.renumber[f.num]].Loop = f.markerAbove.loopIndex
 			missing := f.parent.deepestBad
 			if f.optional {
 				missing = f.depth

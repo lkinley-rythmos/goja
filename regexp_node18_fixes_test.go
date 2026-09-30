@@ -243,3 +243,40 @@ func TestRegexpHasIndicesNode18(t *testing.T) {
 `
 	testScript(script, newStringValue(`[["d",true,[[1,3],null,[2,3]],{"n":[2,3]},"indices",["0","1","2","length","groups"]],["xx","dg",[[[[0,1],[0,1],null],null],[[[1,2],null,[1,2]],null]]],"E SyntaxError: Invalid flags supplied to RegExp constructor 'dd'",[[[1,4],[1,3],[3,4]],{"x":[1,3]},"du","/(?<x>😀)(é)/du"],null,"E TypeError: RegExp.prototype.hasIndices getter called on non-RegExp object","dgy",null,[[[1,2]],2],[[1,3],[1,2],[2,3]],[[[0,0],null],true,2],"undefined",[null,{"value":[[0,1],[0,1]],"writable":true,"enumerable":true,"configurable":true}],["compile","constructor","dotAll","exec","flags","global","hasIndices","ignoreCase","multiline","source","sticky","test","toString","unicode"],"dgimsuy","dg",[[0,2],null]]`), t)
 }
+
+func TestRegexpEmptyIterationRefusedNode18(t *testing.T) {
+	// ECMAScript refuses an iteration of a quantified group past its
+	// minimum that matches nothing, and ends the loop before it; regexp2
+	// takes one more such iteration, and Go's regexp takes the optional
+	// copies of a bounded repeat that match nothing. Taken for the last
+	// iteration, it dropped the real last iteration's captures:
+	// /(?:(a)|(?=b))+b/.exec("ab") was ["ab", undefined] (Node.js 18:
+	// ["ab", "a"]), and /(\B)*/ at lastIndex 2 on "b é" was ["", ""]
+	// (Node.js 18: ["", undefined]). regexp2's refused iterations are
+	// dropped, with the empty captures made in them; Go's captures of a loop
+	// whose last iteration is such a copy are left as it gives them.
+	const script = `
+(function () {
+	var out = [];
+	var cases = [
+		["(x)?(?:(b)|\\1)+a", "", "ba", 0], ["(?:(a)|(?=b))+b", "", "ab", 0], ["(?:(a)|(?!x))+b", "", "ab", 0],
+		["(?:(a)|)+b", "g", "#ab", 1], ["(?:(\\w+)|\\s*)+$", "g", "#ab cd", 1], ["(?:\"([^\"]*)\"|,?)+$", "y", "#\"a\",\"b\"", 1],
+		["(?:(\\d+)|\\.?)+$", "g", "#1.2", 1], ["(\\B)*", "g", "b é", 2], ["(\\B)*", "g", "b é", 3], ["(?:(\\B))*", "g", "b é", 2],
+		["(?:(x*))+", "g", "#xx", 1], ["(?:(a)|(b?))+", "g", "#a", 1], ["(?:a(b?)|c?)+", "g", "#a", 1], ["(?:(?:a|)(b?))+", "g", "#a", 1],
+		["(?:(?:(?:(b)(c)?|a|){2}x?){1,3})+?b", "", "bbb", 0], ["(x)?(?:(?:(?:b(a)?(a)b|(a+).){0,2}|b){1,3}){0,2}c", "g", "abc", 0],
+		["(?:(a)|b|){2,}c", "g", "#abc", 1], ["(?:(a)|b?){1,3}$", "g", "#ab", 1], ["(?:(a)|(?=b)){2}b", "", "ab", 0],
+		["(?<n>a|(?=b))+b", "g", "#ab", 1], ["(?:(?:(a)|b)+|(?=c))+c", "g", "#abc", 1],
+	];
+	for (var i = 0; i < cases.length; i++) {
+		var c = cases[i], re = new RegExp(c[0], c[1]);
+		re.lastIndex = c[3];
+		var m = re.exec(c[2]);
+		out.push(m ? [m.index].concat(Array.prototype.slice.call(m)) : null);
+	}
+	out.push("A b é".split(/()(?=(\B)*)/));
+	out.push("#ab cd".replace(/(?:(\w+)|\s*)+$/g, "[$1]"));
+	return JSON.stringify(out);
+})()
+`
+	testScript(script, newStringValue(`[[0,"ba",null,"b"],[0,"ab","a"],[0,"ab","a"],[1,"ab","a"],[1,"ab cd","cd"],[1,"\"a\",\"b\"","b"],[1,"1.2","2"],[2,"",null],[3,"",null],[2,"",null],[1,"xx","xx"],[1,"a","a",null],[1,"a",""],[1,"a",""],[0,"bbb","b",null],[0,"abc",null,null,null,"a"],[1,"abc",null],[1,"ab",null],[0,"ab",null],[1,"ab","a"],[1,"abc",null],["A","",null," ","",null,"b","",null," ","",null,"é"],"#[cd][]"]`), t)
+}

@@ -11,9 +11,10 @@ func TestTransformRegExpIterations(t *testing.T) {
 	// A quantified group that may iterate more than once and has capturing
 	// groups an iteration may lack is told by its own capture, or else by a
 	// hidden group that is its body; the groups after it are numbered on,
-	// and backreferences with them.
-	loop := func(group, depth, parent int, alternatives bool) IterationLoop {
-		return IterationLoop{Group: group, Depth: depth, Parent: parent, Alternatives: alternatives}
+	// and backreferences with them. One whose body may match nothing is
+	// told too, for the iterations regexp2 takes that ECMAScript refuses.
+	loop := func(group, last, min, max, depth, parent int, alternatives, reset bool) IterationLoop {
+		return IterationLoop{Group: group, Last: last, Min: min, Max: max, Depth: depth, Parent: parent, Alternatives: alternatives, Reset: reset}
 	}
 	for _, tc := range []struct {
 		pattern, goText, r2Text string
@@ -21,32 +22,46 @@ func TestTransformRegExpIterations(t *testing.T) {
 		groups                  string // see describeGroups
 	}{
 		{`(?:(a)|b)+`, `(?:((a)|b))+`, `(?:((a)|b))+`, &Iterations{
-			Loops:    []IterationLoop{loop(1, 1, -1, true)},
+			Loops:    []IterationLoop{loop(1, 2, 1, -1, 1, -1, true, true)},
 			Captures: []IterationCapture{{Group: 2, Loop: 0, Missing: 1}},
-			Hidden:   []int{1}}, "- -"},
+			Hidden:   []int{1}, Drop: true}, "hm0 l0"},
 		// A group that captures tells its own iterations.
 		{`((a)|b)+(c)\3\1`, ``, `((a)|b)+(c)\3\1`, &Iterations{
-			Loops:    []IterationLoop{loop(1, 1, -1, true)},
-			Captures: []IterationCapture{{Group: 2, Loop: 0, Missing: 1}}}, "- - -"},
-		{`(?:a(b?)|c)+`, `(?:(a(b?)|c))+`, `(?:(a(b?)|c))+`, &Iterations{
-			Loops:    []IterationLoop{loop(1, 1, -1, true)},
+			Loops:    []IterationLoop{loop(1, 2, 1, -1, 1, -1, true, true)},
 			Captures: []IterationCapture{{Group: 2, Loop: 0, Missing: 1}},
-			Hidden:   []int{1}}, "- c1"},
+			Drop:     true}, "rm0 l0p1 rb1"},
+		{`(?:a(b?)|c)+`, `(?:(a(b?)|c))+`, `(?:(a(b?)|c))+`, &Iterations{
+			Loops:    []IterationLoop{loop(1, 2, 1, -1, 1, -1, true, true)},
+			Captures: []IterationCapture{{Group: 2, Loop: 0, Missing: 1}},
+			Hidden:   []int{1}, Drop: true}, "hm0 c1l0"},
 		{`(?:x?(?:(a)|b)*y|(?=(z)))+`, ``, `(?:(x?(?:((a)|b))*y|(?=(z))))+`, &Iterations{
-			Loops:    []IterationLoop{loop(1, 1, -1, true), loop(2, 2, 0, true)},
+			Loops:    []IterationLoop{loop(1, 4, 1, -1, 1, -1, true, true), loop(2, 3, 0, -1, 2, 0, true, true)},
 			Captures: []IterationCapture{{Group: 3, Loop: 1, Missing: 2}, {Group: 4, Loop: 0, Missing: 2}},
-			Hidden:   []int{1, 2}}, "- - - a2"},
+			Hidden:   []int{1, 2}, Drop: true}, "hm0 hl0m1 l1 a2l0"},
 		{`(?<n>a|(b))*\k<n>`, ``, `(?<n>a|(b))*\k<n>`, &Iterations{
-			Loops:    []IterationLoop{loop(1, 1, -1, true)},
-			Captures: []IterationCapture{{Group: 2, Loop: 0, Missing: 1}}}, "- -"},
-		// Without alternatives the body is a group without them.
+			Loops:    []IterationLoop{loop(1, 2, 0, -1, 1, -1, true, true)},
+			Captures: []IterationCapture{{Group: 2, Loop: 0, Missing: 1}},
+			Drop:     true}, "rm0 l0p1"},
 		{`(?:x(a)?){2,5}`, `(?:(x(a)?)){2,5}`, `(?:(x(a)?)){2,5}`, &Iterations{
-			Loops:    []IterationLoop{loop(1, 1, -1, false)},
+			Loops:    []IterationLoop{loop(1, 2, 2, 5, 1, -1, false, true)},
 			Captures: []IterationCapture{{Group: 2, Loop: 0, Missing: 2}},
-			Hidden:   []int{1}}, "- c1"},
+			Hidden:   []int{1}, Drop: true}, "hm0 c1l0"},
+		{`(x)?(?:(b)|\1)+a`, ``, `(x)?(?:((b)|\1))+a`, &Iterations{
+			Loops:    []IterationLoop{loop(2, 3, 1, -1, 1, -1, true, true)},
+			Captures: []IterationCapture{{Group: 3, Loop: 0, Missing: 1}},
+			Hidden:   []int{2}, Drop: true}, "r hm0 l0"},
+		// A body that may match nothing: regexp2's matches have their
+		// refused iterations dropped, Go's are left.
+		{`(\B)*`, `(\B)*`, `((?:(?<=[0-9A-Z_a-z])(?=[0-9A-Z_a-z])|(?<![0-9A-Z_a-z])(?![0-9A-Z_a-z])))*`, &Iterations{
+			Loops: []IterationLoop{loop(1, 1, 0, -1, 1, -1, false, false)}}, "m0"},
+		{`(?:(x*))+`, `(?:((x*)))+`, `(?:((x*)))+`, &Iterations{
+			Loops:    []IterationLoop{loop(1, 2, 1, -1, 1, -1, false, false)},
+			Captures: []IterationCapture{{Group: 2, Loop: 0}},
+			Hidden:   []int{1}, Drop: true}, "hm0 l0"},
 		// None: at most one iteration, no capturing group, one in every
-		// iteration, or one in a lookaround.
-		{`(?:(a)|b)?(a){1}(?:ab)+(?:x(a))+(?:(a)+ ?){3}(?:(?=(a))b)+(?:(x*))+`, ``, `(?:(a)|b)?(a){1}(?:ab)+(?:x(a))+(?:(a)+ ?){3}(?:(?=(a))b)+(?:(x*))+`, nil, ""},
+		// iteration of a body that always consumes something, or one in a
+		// lookaround.
+		{`(?:(a)|b)?(a){1}(?:ab)+(?:x(a))+(?:(a)+ ?){3}(?:(?=(a))b)+`, ``, `(?:(a)|b)?(a){1}(?:ab)+(?:x(a))+(?:(a)+ ?){3}(?:(?=(a))b)+`, nil, ""},
 	} {
 		goText, r2Text, iter, err := TransformRegExpIter(tc.pattern, false, false, false)
 		if _, incompat := err.(RegexpErrorIncompatible); err != nil && !incompat {
@@ -84,18 +99,25 @@ func TestTransformRegExpIterations(t *testing.T) {
 	}
 }
 
-// describeGroups describes Iterations.Groups (from 1), a word a group: c
-// and a for Consumed and Around when they are set, with their values ("-"
-// for none).
+// describeGroups describes Iterations.Groups (from 1), a word a group: h
+// for a hidden one, r for one a backreference is to, then c, a, l, m, p
+// and b for Consumed, Around, Loop, Marks, Parent and Before when they
+// are set, with their values ("-" for none).
 func describeGroups(groups []IterationGroup) string {
 	var words []string
 	for _, g := range groups[1:] {
 		var w strings.Builder
+		if g.Hidden {
+			w.WriteString("h")
+		}
+		if g.Referenced {
+			w.WriteString("r")
+		}
 		for _, f := range []struct {
 			name  string
 			value int
 			set   bool
-		}{{"c", g.Consumed, g.Consumed > 0}, {"a", g.Around, g.Around > 0}} {
+		}{{"c", g.Consumed, g.Consumed > 0}, {"a", g.Around, g.Around > 0}, {"l", g.Loop, g.Loop >= 0}, {"m", g.Marks, g.Marks >= 0}, {"p", g.Parent, g.Parent > 0}, {"b", g.Before, g.Before > 0}} {
 			if f.set {
 				w.WriteString(f.name + strconv.Itoa(f.value))
 			}
