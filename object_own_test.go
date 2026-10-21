@@ -106,6 +106,22 @@ func checkOwnAPIs(t *testing.T, r *Runtime, label string, o *Object) {
 			}
 		} else if s := symbols[i-len(names)]; k != s {
 			t.Fatalf("%s: symbol %d = %v, want %v", label, i, s, k)
+		} else {
+			d, err := describeFn(nil, o, k)
+			if err != nil {
+				t.Fatal(err)
+			}
+			v, w, e, c, ok := o.GetOwnDataPropertySymbol(s)
+			dObj := d.(*Object)
+			if dObj.Get("0").ToBoolean() {
+				if ok || v != nil {
+					t.Fatalf("%s: %v is an accessor; got %v %v", label, s, v, ok)
+				}
+				continue
+			}
+			if !ok || !v.SameAs(dObj.Get("1")) || w != dObj.Get("2").ToBoolean() || e != dObj.Get("3").ToBoolean() || c != dObj.Get("4").ToBoolean() {
+				t.Fatalf("%s: %v = %v %v/%v/%v %v, want %v", label, s, v, w, e, c, ok, d)
+			}
 		}
 	}
 	for _, missing := range []string{"nope", "\u0000", ""} {
@@ -118,8 +134,8 @@ func checkOwnAPIs(t *testing.T, r *Runtime, label string, o *Object) {
 }
 
 // TestOwnAPIs_MatchReflect: AppendOwnPropertyKeys lists exactly
-// Reflect.ownKeys, and GetOwnDataProperty exactly
-// Object.getOwnPropertyDescriptor's data descriptors (accessors and
+// Reflect.ownKeys, and GetOwnDataProperty and GetOwnDataPropertySymbol
+// exactly Object.getOwnPropertyDescriptor's data descriptors (accessors and
 // missing properties are not ok), over the fuzzed ordinary objects and
 // the exotic ones, and over Go-backed and dynamic objects.
 func TestOwnAPIs_MatchReflect(t *testing.T) {
@@ -240,5 +256,91 @@ func TestOwnAPIs_RunNoJavaScript(t *testing.T) {
 	}
 	if traps := r.Get("traps").ToInteger(); traps != 0 {
 		t.Fatalf("%d traps or accessors ran", traps)
+	}
+}
+
+// TestGetOwnDataPropertySymbol: the symbol-keyed lookup finds an own data
+// property with its attributes, also on a frozen object, and is not ok
+// for an accessor (running neither getter nor setter), for an inherited
+// or missing symbol, and for a Proxy (running no trap).
+func TestGetOwnDataPropertySymbol(t *testing.T) {
+	r := New()
+	v, err := r.RunString(`(function () {
+		globalThis.calls = 0;
+		const s = Symbol("s"), acc = Symbol("acc"), inh = Symbol("inh"), u = Symbol("u"), missing = Symbol("missing");
+		const proto = {[inh]: 1};
+		const o = Object.create(proto);
+		o[s] = 1;
+		Object.defineProperty(o, u, {value: undefined, writable: false, enumerable: false, configurable: true});
+		Object.defineProperty(o, acc, {get() { globalThis.calls++; return 1; }, set(v) { globalThis.calls++; }, configurable: true});
+		const frozen = Object.freeze({[s]: 2});
+		const handler = {};
+		for (const trap of ["getOwnPropertyDescriptor", "get", "has", "ownKeys", "getPrototypeOf"]) {
+			handler[trap] = function () { globalThis.calls++; return Reflect[trap].apply(null, arguments); };
+		}
+		const p = new Proxy({[s]: 3}, handler);
+		const arr = [1]; arr[s] = 4;
+		return {s, acc, inh, u, missing, o, frozen, p, pp: new Proxy(p, handler), arr, fn: Object.assign(function () {}, {[s]: 5})};
+	})()`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := v.(*Object)
+	sym := func(name string) *Symbol { return root.Get(name).(*Symbol) }
+	obj := func(name string) *Object { return root.Get(name).(*Object) }
+	s := sym("s")
+
+	check := func(label string, o *Object, key *Symbol, wantOK bool, want Value, wantW, wantE, wantC bool) {
+		t.Helper()
+		v, w, e, c, ok := o.GetOwnDataPropertySymbol(key)
+		if ok != wantOK {
+			t.Fatalf("%s: ok = %v, want %v (%v)", label, ok, wantOK, v)
+		}
+		if !wantOK {
+			if v != nil || w || e || c {
+				t.Fatalf("%s: not ok must return zero values, got %v %v/%v/%v", label, v, w, e, c)
+			}
+			return
+		}
+		if !v.SameAs(want) || w != wantW || e != wantE || c != wantC {
+			t.Fatalf("%s: got %v %v/%v/%v, want %v %v/%v/%v", label, v, w, e, c, want, wantW, wantE, wantC)
+		}
+	}
+	o := obj("o")
+	check("data", o, s, true, intToValue(1), true, true, true)
+	check("undefined value", o, sym("u"), true, _undefined, false, false, true)
+	check("accessor", o, sym("acc"), false, nil, false, false, false)
+	check("inherited", o, sym("inh"), false, nil, false, false, false)
+	check("missing", o, sym("missing"), false, nil, false, false, false)
+	check("frozen", obj("frozen"), s, true, intToValue(2), false, true, false)
+	check("proxy", obj("p"), s, false, nil, false, false, false)
+	check("proxy of proxy", obj("pp"), s, false, nil, false, false, false)
+	check("array", obj("arr"), s, true, intToValue(4), true, true, true)
+	check("function", obj("fn"), s, true, intToValue(5), true, true, true)
+	check("well-known on ordinary object", o, SymIterator, false, nil, false, false, false)
+	if calls := r.Get("calls").ToInteger(); calls != 0 {
+		t.Fatalf("%d traps or accessors ran", calls)
+	}
+
+	builtin := r.Get("Array").(*Object).Get("prototype").(*Object)
+	if v, _, _, _, ok := builtin.GetOwnDataPropertySymbol(SymIterator); !ok || v == nil {
+		t.Fatalf("Array.prototype[Symbol.iterator] = %v %v", v, ok)
+	}
+	if v, _, _, _, ok := r.ToValue(map[string]any{"k": 1}).(*Object).GetOwnDataPropertySymbol(s); ok || v != nil {
+		t.Fatalf("go map = %v %v", v, ok)
+	}
+	dyn := r.NewDynamicObject(&testDynObject{r: r, m: map[string]Value{"only": valueInt(1)}})
+	if v, _, _, _, ok := dyn.GetOwnDataPropertySymbol(s); ok || v != nil {
+		t.Fatalf("dynamic = %v %v", v, ok)
+	}
+
+	missing, frozen, arr := sym("missing"), obj("frozen"), obj("arr")
+	if allocs := testing.AllocsPerRun(100, func() {
+		o.GetOwnDataPropertySymbol(s)
+		o.GetOwnDataPropertySymbol(missing)
+		frozen.GetOwnDataPropertySymbol(s)
+		arr.GetOwnDataPropertySymbol(s)
+	}); allocs != 0 {
+		t.Fatalf("GetOwnDataPropertySymbol: %v allocs", allocs)
 	}
 }

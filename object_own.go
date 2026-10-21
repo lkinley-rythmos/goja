@@ -72,6 +72,41 @@ func (o *Object) GetOwnDataProperty(name string) (v Value, writable, enumerable,
 	default:
 		prop = o.self.getOwnPropStr(unistring.NewFromString(name))
 	}
+	return ownDataProperty(prop)
+}
+
+// GetOwnDataPropertySymbol is GetOwnDataProperty for a symbol-keyed
+// property: it returns the object's own data property sym, as
+// Object.getOwnPropertyDescriptor describes it. ok is false when the
+// object has no own property sym (an inherited one does not count), when
+// the property is an accessor, and for a Proxy, whose own properties only
+// its getOwnPropertyDescriptor trap can describe. It never runs
+// JavaScript: no getter, setter or Proxy trap.
+//
+// For an ordinary object the lookup allocates nothing, and neither does
+// it for other objects that keep their symbol properties as ordinary ones
+// do (arrays, functions, typed arrays and the like). A built-in object
+// (a prototype, a constructor, Math and the like) may build its symbol
+// properties in Go on its first lookup, which allocates once.
+// This method will panic with an *Exception if a JavaScript exception is thrown in the process. Use Runtime.Try to catch these.
+func (o *Object) GetOwnDataPropertySymbol(sym *Symbol) (v Value, writable, enumerable, configurable, ok bool) {
+	var prop Value
+	switch impl := o.self.(type) {
+	case *proxyObject:
+		return nil, false, false, false, false
+	case *baseObject:
+		if impl.symValues != nil {
+			prop = impl.symValues.get(sym)
+		}
+	default:
+		prop = o.self.getOwnPropSym(sym)
+	}
+	return ownDataProperty(prop)
+}
+
+// ownDataProperty describes an own property as GetOwnDataProperty returns
+// it: ok is false when prop is nil (no such property) or an accessor.
+func ownDataProperty(prop Value) (v Value, writable, enumerable, configurable, ok bool) {
 	switch p := prop.(type) {
 	case nil:
 		return nil, false, false, false, false
