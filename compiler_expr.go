@@ -1512,7 +1512,13 @@ func (e *compiledFunctionLiteral) compile() (prg *Program, name unistring.String
 				e.c.emit(nil)
 				mark := len(e.c.p.code)
 				e.c.emit(nil)
-				e.c.emitExpr(e.c.compileExpression(item.Initializer), true)
+				// A parameter's default is named after the parameter
+				// (NamedEvaluation in IteratorBindingInitialization).
+				if id, ok := item.Target.(*ast.Identifier); ok {
+					e.c.emitNamedOrConst(e.c.compileExpression(item.Initializer), id.Name)
+				} else {
+					e.c.emitExpr(e.c.compileExpression(item.Initializer), true)
+				}
 				if firstForwardRef == -1 && (s.isDynamic() || s.bindings[i].useCount() > 0) {
 					firstForwardRef = i
 				}
@@ -1832,6 +1838,10 @@ type compiledClassLiteral struct {
 	lhsName    unistring.String
 	source     string
 	isExpr     bool
+	// nameFromKey is set for an anonymous class that is the value of a
+	// property with a computed key: the key, under it on the stack, is
+	// its name.
+	nameFromKey bool
 }
 
 func (c *compiler) processKey(expr ast.Expression) (val unistring.String, computed bool) {
@@ -2135,6 +2145,18 @@ func (e *compiledClassLiteral) emitGetter(putOnStack bool) {
 	if curIsPrototype {
 		e.c.emit(pop)
 	}
+	if e.name == nil && e.nameFromKey {
+		// As Node.js does, the key names the class once its methods and
+		// accessors are defined, replacing a static name among them,
+		// and before its static fields and blocks run, which may give
+		// it a name of their own. Stack: key, staticInit (if any),
+		// prototype, class.
+		offset := 3
+		if staticInit != nil {
+			offset++
+		}
+		e.c.emit(setClassNameFromKey(offset))
+	}
 
 	if len(instanceFields) > 0 {
 		newClassIns.initFields = e.compileFieldsAndStaticBlocks(instanceFields, "<instance_members_initializer>")
@@ -2238,10 +2260,12 @@ func (e *compiledClassLiteral) compileFieldsAndStaticBlocks(elements []clsElemen
 				e.c.emit(loadComputedKey(valIdx))
 				valIdx++
 			}
+			nameAfter := false
 			if init := elt.initializer; init != nil {
 				if !elt.computed {
 					e.c.emitNamedOrConst(init, elt.key)
 				} else {
+					nameAfter = nameFromComputedKey(init)
 					e.c.emitExpr(init, true)
 				}
 			} else {
@@ -2252,7 +2276,7 @@ func (e *compiledClassLiteral) compileFieldsAndStaticBlocks(elements []clsElemen
 					idx: elt.privateName.idx,
 				})
 			} else if elt.computed {
-				if elt.initializer != nil && isAnonymousFunctionDefinition(elt.initializer) {
+				if nameAfter {
 					e.c.emit(definePropNamed{})
 				} else {
 					e.c.emit(defineProp{})
@@ -2962,6 +2986,7 @@ func (e *compiledObjectLiteral) emitGetter(putOnStack bool) {
 			}
 			if computed {
 				e.c.emit(_toPropertyKey{})
+				nameAfter := prop.Kind == ast.PropertyKindValue && nameFromComputedKey(valueExpr)
 				e.c.emitExpr(valueExpr, true)
 				switch prop.Kind {
 				case ast.PropertyKindValue:
@@ -2969,7 +2994,7 @@ func (e *compiledObjectLiteral) emitGetter(putOnStack bool) {
 					// (CreateDataPropertyOrThrow): it runs no
 					// inherited setter, replaces an own accessor, and
 					// a computed "__proto__" is an own property.
-					if isAnonymousFunctionDefinition(valueExpr) {
+					if nameAfter {
 						e.c.emit(definePropNamed{})
 					} else {
 						e.c.emit(defineProp{})
@@ -3440,16 +3465,23 @@ func (c *compiler) emitExpr(expr compiledExpr, putOnStack bool) {
 	}
 }
 
-// isAnonymousFunctionDefinition reports whether expr is a function, arrow
-// function or class expression without a name of its own, which a
-// property definition with a computed key names after the key
-// (IsAnonymousFunctionDefinition, NamedEvaluation).
-func isAnonymousFunctionDefinition(expr compiledExpr) bool {
+// nameFromComputedKey arranges for expr, the value of a property with a
+// computed key, to be named after the key when it is a function, arrow
+// function or class expression without a name of its own
+// (IsAnonymousFunctionDefinition, NamedEvaluation). A class takes the
+// key, which is on the stack under it, as its name before its static
+// fields and blocks run, so that a name they give it replaces it
+// (setClassNameFromKey); a function has no such elements and is named
+// once made: nameFromComputedKey reports whether that is to be done, with
+// definePropNamed.
+func nameFromComputedKey(expr compiledExpr) (nameAfter bool) {
 	switch expr := expr.(type) {
 	case *compiledFunctionLiteral:
 		return expr.name == nil
 	case *compiledClassLiteral:
-		return expr.name == nil
+		if expr.name == nil {
+			expr.nameFromKey = true
+		}
 	}
 	return false
 }

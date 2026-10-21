@@ -184,20 +184,97 @@ func TestObjectLiteralDefinesProperties(t *testing.T) {
 }
 
 // TestArrayUnscopables: Array.prototype[Symbol.unscopables] has Node.js
-// 26.8.1's (and ECMAScript's) names, in its order, each true and
-// writable, enumerable and configurable, on an object with no prototype;
-// a with statement on an array leaves each to the outer scope.
+// 26.8.1's (and ECMAScript's) names, in its order, each an own data
+// property that is true and writable, enumerable and configurable, on an
+// object with no prototype; a with statement on an array leaves each of
+// them, and no other array method, to the outer scope.
 func TestArrayUnscopables(t *testing.T) {
 	const SCRIPT = `
+	const names = ["at", "copyWithin", "entries", "fill", "find", "findIndex", "findLast", "findLastIndex", "flat", "flatMap", "includes", "keys", "toReversed", "toSorted", "toSpliced", "values"];
 	const u = Array.prototype[Symbol.unscopables];
-	assert.sameValue(JSON.stringify(Reflect.ownKeys(u)), '["at","copyWithin","entries","fill","find","findIndex","findLast","findLastIndex","flat","flatMap","includes","keys","toReversed","toSorted","toSpliced","values"]', "names");
+	assert.sameValue(JSON.stringify(Reflect.ownKeys(u)), JSON.stringify(names), "names");
 	assert.sameValue(Object.getPrototypeOf(u), null, "prototype");
-	assert.sameValue(JSON.stringify(Object.getOwnPropertyDescriptor(u, "at")), '{"value":true,"writable":true,"enumerable":true,"configurable":true}', "at");
-	assert.sameValue(JSON.stringify(Object.getOwnPropertyDescriptor(Array.prototype, Symbol.unscopables).value === u), "true", "same object");
-	var at = "outer", groupBy = "outer";
-	var seen;
-	with ([]) { seen = [typeof at, typeof groupBy, typeof includes]; }
-	assert.sameValue(JSON.stringify(seen), '["string","string","undefined"]', "with");
+	const d = Object.getOwnPropertyDescriptor(Array.prototype, Symbol.unscopables);
+	assert.sameValue(d.value === u && !d.writable && !d.enumerable && d.configurable, true, "Array.prototype[Symbol.unscopables]");
+	for (const name of names) {
+		assert.sameValue(JSON.stringify(Object.getOwnPropertyDescriptor(u, name)), '{"value":true,"writable":true,"enumerable":true,"configurable":true}', name);
+		const seen = new Function("arr", "var " + name + ' = "outer"; with (arr) { return ' + name + "; }")([]);
+		assert.sameValue(seen, "outer", "with: " + name);
+	}
+	for (const name of ["concat", "join", "map", "push", "slice"]) {
+		const seen = new Function("arr", "var " + name + ' = "outer"; with (arr) { return typeof ' + name + "; }")([]);
+		assert.sameValue(seen, "function", "with: " + name);
+	}
 	`
 	testScriptWithTestLib(SCRIPT, _undefined, t)
+}
+
+// TestComputedKeyClassName: an anonymous class that is the value of a
+// property with a computed key, in an object literal or a class's instance
+// or static field, is named after the key once its methods and accessors
+// are defined (a static name method or getter does not stay) and before its
+// static fields and blocks run (a static name field, or a name a static
+// block defines, stays, and a static block reads the key's name);
+// anonymous functions and arrow functions are named after the key, and a
+// class in a variable, assignment, field, parameter default or destructuring
+// default is named after its target. Each row is as Node.js 26.8.1 has it
+// (run in a fresh vm context).
+func TestComputedKeyClassName(t *testing.T) {
+	r := New()
+	if _, err := r.RunString(`
+	globalThis.k = "x";
+	globalThis.sym = Symbol("s");
+	globalThis.nameOf = f => {
+		try {
+			const n = f();
+			return typeof n === "string" ? JSON.stringify(n) : typeof n;
+		} catch (e) {
+			return e.constructor.name;
+		}
+	};
+	`); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct{ label, fn, want string }{
+		{"instance computed field, static name field", `() => new (class { [k] = class { static name = "kept"; }; })()[k].name`, `"kept"`},
+		{"instance computed field, static name method", `() => typeof new (class { [k] = class { static name() {} }; })()[k].name`, `"string"`},
+		{"instance computed field, static name getter", `() => new (class { [k] = class { static get name() { return "got"; } }; })()[k].name`, `"x"`},
+		{"instance computed field, static block non-configurable", `() => new (class { [k] = class { static { Object.defineProperty(this, "name", {value: "fixed", configurable: false}); } }; })()[k].name`, `"fixed"`},
+		{"instance computed field, static block reads name", `() => { let seen; new (class { [k] = class { static { seen = this.name; } }; })(); return seen; }`, `"x"`},
+		{"instance computed field, plain class", `() => new (class { [k] = class {}; })()[k].name`, `"x"`},
+		{"instance computed symbol field, plain class", `() => new (class { [sym] = class {}; })()[sym].name`, `"[s]"`},
+		{"instance computed field, function", `() => new (class { [k] = function () {}; })()[k].name`, `"x"`},
+		{"instance computed field, arrow", `() => new (class { [k] = () => {}; })()[k].name`, `"x"`},
+		{"static computed field, static name field", `() => (class { static [k] = class { static name = "kept"; }; })[k].name`, `"kept"`},
+		{"static computed field, plain class", `() => (class { static [k] = class {}; })[k].name`, `"x"`},
+		{"static computed field, static block reads name", `() => { let seen; (class { static [k] = class { static { seen = this.name; } }; }); return seen; }`, `"x"`},
+		{"static computed field, derived plain class", `() => (class { static [k] = class extends Object {}; })[k].name`, `"x"`},
+		{"object literal computed, static name field", `() => ({[k]: class { static name = "kept"; }})[k].name`, `"kept"`},
+		{"object literal computed, static name getter", `() => ({[k]: class { static get name() { return "got"; } }})[k].name`, `"x"`},
+		{"object literal computed, static block non-configurable", `() => ({[k]: class { static { Object.defineProperty(this, "name", {value: "fixed", configurable: false}); } }})[k].name`, `"fixed"`},
+		{"object literal computed, static block reads name", `() => { let seen; ({[k]: class { static { seen = this.name; } }}); return seen; }`, `"x"`},
+		{"object literal computed, derived static block reads name", `() => { let seen; ({[k]: class extends Object { static { seen = this.name; } }}); return seen; }`, `"x"`},
+		{"object literal computed symbol, plain class", `() => ({[sym]: class {}})[sym].name`, `"[s]"`},
+		{"object literal computed, function", `() => ({[k]: function () {}})[k].name`, `"x"`},
+		{"plain field, static name field", `() => new (class { f = class { static name = "kept"; }; })().f.name`, `"kept"`},
+		{"plain field, static block reads name", `() => { let seen; new (class { f = class { static { seen = this.name; } }; })(); return seen; }`, `"f"`},
+		{"object literal plain, static block reads name", `() => { let seen; ({f: class { static { seen = this.name; } }}); return seen; }`, `"f"`},
+		{"variable, static name field", `() => { const v = class { static name = "kept"; }; return v.name; }`, `"kept"`},
+		{"variable, static block reads name", `() => { let seen; const v = class { static { seen = this.name; } }; return seen; }`, `"v"`},
+		{"assignment, static block reads name", `() => { let seen, v; v = class { static { seen = this.name; } }; return seen; }`, `"v"`},
+		{"default value, static block reads name", `() => { let seen; (function (d = class { static { seen = this.name; } }) {})(); return seen; }`, `"d"`},
+		{"destructuring default, static block reads name", `() => { let seen; const {d = class { static { seen = this.name; } }} = {}; return seen; }`, `"d"`},
+		{"object literal computed, static name method", `() => typeof ({[k]: class { static name() {} }})[k].name`, `"string"`},
+		{"variable, static name method", `() => { const v = class { static name() {} }; return typeof v.name; }`, `"function"`},
+		{"variable, static name getter", `() => { const v = class { static get name() { return "got"; } }; return v.name; }`, `"got"`},
+	} {
+		v, err := r.RunString("nameOf(" + row.fn + ")")
+		if err != nil {
+			t.Errorf("%s: %v", row.label, err)
+			continue
+		}
+		if got := v.String(); got != row.want {
+			t.Errorf("%s: got %s, want %s", row.label, got, row.want)
+		}
+	}
 }

@@ -5705,6 +5705,20 @@ func (c *newDerivedClass) exec(vm *vm) {
 	vm.pc++
 }
 
+// setClassNameFromKey names the class on the stack's top after the key the
+// given number of slots under the top: an anonymous class that is the value
+// of a property with a computed key, once its methods and accessors are
+// defined and before its static fields and blocks run.
+type setClassNameFromKey int
+
+func (n setClassNameFromKey) exec(vm *vm) {
+	vm.r.toObject(vm.stack[vm.sp-1]).self.defineOwnPropertyStr("name", PropertyDescriptor{
+		Value:        funcName("", vm.stack[vm.sp-int(n)]),
+		Configurable: FLAG_TRUE,
+	}, true)
+	vm.pc++
+}
+
 // Creates a special instance of *classFuncObject which is only used during evaluation of a class declaration
 // to initialise static fields and instance private methods of another class.
 type newStaticFieldInit struct {
