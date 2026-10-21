@@ -2172,6 +2172,8 @@ func (e *compiledClassLiteral) emitGetter(putOnStack bool) {
 			offset++
 		}
 		e.c.emit(setClassNameFromKey(offset))
+	} else if e.name == nil && e.nameFromComputedSyntax {
+		e.c.emit(setClassNameConst(e.lhsName))
 	}
 
 	if len(instanceFields) > 0 {

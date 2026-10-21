@@ -2,6 +2,7 @@ package goja
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -292,13 +293,13 @@ globalThis.nameOf = f => {
 		{"object literal computed key, static name field and another", `() => { const c = ({[k]: class { static name = "kept"; static y = 1; }})[k]; return desc(c, "name") + " " + Reflect.ownKeys(c).join(","); }`, `"{\"value\":\"x\",\"writable\":false,\"enumerable\":false,\"configurable\":true} length,name,prototype,y"`},
 		// Not Node.js 18's ("fixed", then "x" configurable): a non-configurable
 		// name is kept, with no error.
-		{"object literal computed key, static block fixes name", `() => { let inBlock; const c = ({[k]: class { static { Object.defineProperty(this, "name", {value: "fixed", configurable: false}); inBlock = this.name; } }})[k]; return inBlock + " " + desc(c, "name"); }`, `"fixed {\"value\":\"fixed\",\"writable\":false,\"enumerable\":false,\"configurable\":false}"`},
+		{"object literal computed key, static block fixes name", `() => { let inBlock; const c = ({[k]: class { static { Object.defineProperty(this, "name", {value: "fixed", configurable: false}); inBlock = this.name; } }})[k]; return inBlock + " " + desc(c, "name"); }`, `"fixed {\"value\":\"fixed\",\"writable\":true,\"enumerable\":true,\"configurable\":false}"`},
 		{"object literal computed key, static block deletes name", `() => { const c = ({[k]: class { static { delete this.name; } }})[k]; return desc(c, "name") + " " + Reflect.ownKeys(c).join(","); }`, `"{\"value\":\"x\",\"writable\":false,\"enumerable\":false,\"configurable\":true} length,prototype,name"`},
 		// Not Node.js 18's, which throws a TypeError adding the name
 		// back: a class made non-extensible gets no name it lacks.
 		{"object literal computed key, static block deletes name and prevents extensions", `() => { const c = ({[k]: class { static { delete this.name; Object.preventExtensions(this); } }})[k]; return desc(c, "name") + " extensible=" + Object.isExtensible(c); }`, `"absent extensible=false"`},
 		// Not Node.js 18's (configurable true): the frozen class stays frozen.
-		{"object literal computed key, static block freezes", `() => { const c = ({[k]: class { static { Object.freeze(this); } }})[k]; return desc(c, "name") + " frozen=" + Object.isFrozen(c); }`, `"{\"value\":\"x\",\"writable\":false,\"enumerable\":false,\"configurable\":false} frozen=true"`},
+		{"object literal computed key, static block freezes", `() => { const c = ({[k]: class { static { Object.freeze(this); } }})[k]; return desc(c, "name") + " frozen=" + Object.isFrozen(c); }`, `"{\"value\":\"x\",\"writable\":false,\"enumerable\":true,\"configurable\":false} frozen=true"`},
 		{"object literal computed key, static name method descriptor", `() => desc(({[k]: class { static name() {} }})[k], "name")`, `"{\"value\":\"x\",\"writable\":false,\"enumerable\":false,\"configurable\":true}"`},
 		{"class computed field, function name descriptor", `() => { const f = new (class { [k] = function () {}; })()[k]; return desc(f, "name"); }`, `"{\"writable\":false,\"enumerable\":false,\"configurable\":true}"`},
 		{"class computed field, arrow name descriptor", `() => desc(new (class { [k] = () => {}; })()[k], "name")`, `"{\"writable\":false,\"enumerable\":false,\"configurable\":true}"`},
@@ -341,4 +342,297 @@ globalThis.nameOf = f => {
 			t.Errorf("%s: got %s, want %s", row.label, got, row.want)
 		}
 	}
+}
+
+// classNameStaticsProbe builds, for an anonymous class that is the value of
+// an object literal's computed key (a string, number or symbol variable, a
+// constant string or number), of a class's computed field (instance or
+// static) and of an identifier key, each with one of a set of members
+// (static name fields, methods and accessors, static blocks that write,
+// delete or define name or freeze, seal or prevent extensions of the
+// class, a static field that reads name, an instance field, a heritage),
+// the name's descriptor and the class's keys when its statics start, when
+// they end and once the class is made.
+const classNameStaticsProbe = `(function () {
+	const sym = Symbol("s");
+	const keyExprs = {
+		"string var": 'k', "number var": 'n', "symbol": 'sym', "constant string": '"x"', "constant number": '1',
+	};
+	const variants = {
+		"plain": '',
+		"static name field": 'static name = "kept";',
+		"static name field undefined": 'static name;',
+		"static name method": 'static name() {}',
+		"static name getter": 'static get name() { return "got"; }',
+		"static name setter": 'static set name(v) {}',
+		"static computed name method": 'static ["name"]() {}',
+		"block writes name": 'static { this.name = "changed"; }',
+		"block deletes name": 'static { delete this.name; }',
+		"block defines non-configurable": 'static { Object.defineProperty(this, "name", {value: "fixed", configurable: false}); }',
+		"block defines accessor": 'static { Object.defineProperty(this, "name", {get() { return "acc"; }, configurable: true}); }',
+		"block freezes": 'static { Object.freeze(this); }',
+		"block seals": 'static { Object.seal(this); }',
+		"block prevents extensions": 'static { Object.preventExtensions(this); }',
+		"block deletes, prevents extensions": 'static { delete this.name; Object.preventExtensions(this); }',
+		"static field reads name": 'static seen = typeof this.name === "symbol" ? "sym" : this.name;',
+		"instance field": 'f = 1;',
+		"derived": 'extends Object',
+	};
+	const show = (o, key) => {
+		let d;
+		try { d = Object.getOwnPropertyDescriptor(o, "name"); } catch (e) { return "gopd throws " + e.constructor.name; }
+		let s;
+		if (d === undefined) s = "absent";
+		else if ("get" in d || "set" in d) s = "accessor/" + typeof d.get + "/" + typeof d.set + "/" + d.enumerable + "/" + d.configurable;
+		else s = (typeof d.value === "symbol" ? "symbol" + (d.value === key ? "(key)" : "") : JSON.stringify(d.value)) + "/" + d.writable + "/" + d.enumerable + "/" + d.configurable;
+		return s + " keys=" + Reflect.ownKeys(o).map(String).filter(x => x !== "seen").join(",");
+	};
+	const out = [];
+	for (const [kl, ke] of Object.entries(keyExprs)) {
+		for (const [vl, vs] of Object.entries(variants)) {
+			const ext = vl === "derived" ? "extends Object " : "";
+			const body = vl === "derived" ? "" : vs;
+			const src = ` + "`" + `(function (k, n, sym, show, out) {
+				const key = ${ke};
+				let start, end;
+				const v = ({[${ke}]: class ${ext}{ static { start = show(this, key); } ${body} static { end = show(this, key); } }})[${ke}];
+				return "start=" + start + " | end=" + end + " | final=" + show(v, key) + (v.seen !== undefined ? " | seen=" + String(v.seen) : "");
+			})` + "`" + `;
+			let r;
+			try { r = (0, eval)(src)("x", 1, sym, show); } catch (e) { r = "throws " + e.constructor.name + ": " + e.message; }
+			out.push("ol " + kl + ", " + vl + ": " + r);
+		}
+	}
+	// controls: class computed field (instance and static) and non-computed key
+	for (const [vl, vs] of Object.entries(variants)) {
+		if (vl === "derived") continue;
+		const srcs = {
+			"class computed field": ` + "`" + `(function (k, show) { let start, end; const v = new (class { [k] = class { static { start = show(this); } ${vs} static { end = show(this); } }; })()[k]; return "start=" + start + " | end=" + end + " | final=" + show(v); })` + "`" + `,
+			"class static computed field": ` + "`" + `(function (k, show) { let start, end; const v = (class { static [k] = class { static { start = show(this); } ${vs} static { end = show(this); } }; })[k]; return "start=" + start + " | end=" + end + " | final=" + show(v); })` + "`" + `,
+			"ol identifier key": ` + "`" + `(function (k, show) { let start, end; const v = ({x: class { static { start = show(this); } ${vs} static { end = show(this); } }}).x; return "start=" + start + " | end=" + end + " | final=" + show(v); })` + "`" + `,
+		};
+		for (const [pl, src] of Object.entries(srcs)) {
+			let r;
+			try { r = (0, eval)(src)("x", show); } catch (e) { r = "throws " + e.constructor.name + ": " + e.message; }
+			out.push(pl + ", " + vl + ": " + r);
+		}
+	}
+	// the review's three findings
+	const f = [
+		["computed write", () => { let k = "x"; const C = ({[k]: class { static { this.name = "changed"; this.seen = this.name; } }}).x; return C.seen; }],
+		["computed constant getter", () => { let seen; ({["x"]: class { static get name() { throw Error("getter called"); } static { seen = this.name; } }}); return seen; }],
+		["computed symbol read", () => { let s = Symbol("s"), seen; ({[s]: class { static { seen = typeof this.name + "/" + (this.name === s); } }}); return seen; }],
+	];
+	for (const [l, fn] of f) { let r; try { r = String(fn()); } catch (e) { r = e.name + ": " + e.message; } out.push("finding " + l + ": " + r); }
+	return out.join("\n");
+})()
+`
+
+// TestComputedKeyClassNameDuringStatics: classNameStaticsProbe gives
+// Node.js 18.20.3's result (run in a fresh vm context in the rle-api
+// image) on every line but those in classNameStaticsIntegrity, where goja
+// keeps the class's integrity: a non-configurable name stays as it is, a
+// frozen or sealed class keeps its name, and a class that deleted its name
+// and was made non-extensible gets none, with no error. In Node.js 18 the
+// object literal's computed key names an anonymous class once made over
+// each of them, or throws a TypeError.
+func TestComputedKeyClassNameDuringStatics(t *testing.T) {
+	v, err := New().RunString(classNameStaticsProbe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Split(v.String(), "\n")
+	if len(got) != len(classNameStaticsWant) {
+		t.Fatalf("%d lines, want %d", len(got), len(classNameStaticsWant))
+	}
+	integrity := 0
+	for i, want := range classNameStaticsWant {
+		label := want[:strings.Index(want, ": ")]
+		if node18, ok := classNameStaticsIntegrity[label]; ok {
+			integrity++
+			if node18 == want {
+				t.Errorf("%s: listed as differing from Node.js 18 but is the same", label)
+			}
+		}
+		if got[i] != want {
+			t.Errorf("line %d:\n got %s\nwant %s", i, got[i], want)
+		}
+	}
+	if integrity != len(classNameStaticsIntegrity) {
+		t.Errorf("%d integrity lines found, %d listed", integrity, len(classNameStaticsIntegrity))
+	}
+}
+
+// classNameStaticsWant is classNameStaticsProbe's result: Node.js 18.20.3's
+// but on the lines classNameStaticsIntegrity lists.
+var classNameStaticsWant = []string{
+	`ol string var, plain: start="x"/true/true/true keys=length,name,prototype | end="x"/true/true/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol string var, static name field: start="x"/true/true/true keys=length,name,prototype | end="kept"/true/true/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol string var, static name field undefined: start="x"/true/true/true keys=length,name,prototype | end=undefined/true/true/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol string var, static name method: start="x"/true/true/true keys=length,name,prototype | end="x"/true/true/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol string var, static name getter: start="x"/true/true/true keys=length,name,prototype | end="x"/true/true/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol string var, static name setter: start="x"/true/true/true keys=length,name,prototype | end="x"/true/true/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol string var, static computed name method: start="x"/true/true/true keys=length,name,prototype | end="x"/true/true/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol string var, block writes name: start="x"/true/true/true keys=length,name,prototype | end="changed"/true/true/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol string var, block deletes name: start="x"/true/true/true keys=length,name,prototype | end=absent keys=length,prototype | final="x"/false/false/true keys=length,prototype,name`,
+	`ol string var, block defines non-configurable: start="x"/true/true/true keys=length,name,prototype | end="fixed"/true/true/false keys=length,name,prototype | final="fixed"/true/true/false keys=length,name,prototype`,
+	`ol string var, block defines accessor: start="x"/true/true/true keys=length,name,prototype | end=accessor/function/undefined/true/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol string var, block freezes: start="x"/true/true/true keys=length,name,prototype | end="x"/false/true/false keys=length,name,prototype | final="x"/false/true/false keys=length,name,prototype`,
+	`ol string var, block seals: start="x"/true/true/true keys=length,name,prototype | end="x"/true/true/false keys=length,name,prototype | final="x"/true/true/false keys=length,name,prototype`,
+	`ol string var, block prevents extensions: start="x"/true/true/true keys=length,name,prototype | end="x"/true/true/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol string var, block deletes, prevents extensions: start="x"/true/true/true keys=length,name,prototype | end=absent keys=length,prototype | final=absent keys=length,prototype`,
+	`ol string var, static field reads name: start="x"/true/true/true keys=length,name,prototype | end="x"/true/true/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype | seen=x`,
+	`ol string var, instance field: start="x"/true/true/true keys=length,name,prototype | end="x"/true/true/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol string var, derived: start="x"/true/true/true keys=length,name,prototype | end="x"/true/true/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol number var, plain: start="1"/true/true/true keys=length,name,prototype | end="1"/true/true/true keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol number var, static name field: start="1"/true/true/true keys=length,name,prototype | end="kept"/true/true/true keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol number var, static name field undefined: start="1"/true/true/true keys=length,name,prototype | end=undefined/true/true/true keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol number var, static name method: start="1"/true/true/true keys=length,name,prototype | end="1"/true/true/true keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol number var, static name getter: start="1"/true/true/true keys=length,name,prototype | end="1"/true/true/true keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol number var, static name setter: start="1"/true/true/true keys=length,name,prototype | end="1"/true/true/true keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol number var, static computed name method: start="1"/true/true/true keys=length,name,prototype | end="1"/true/true/true keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol number var, block writes name: start="1"/true/true/true keys=length,name,prototype | end="changed"/true/true/true keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol number var, block deletes name: start="1"/true/true/true keys=length,name,prototype | end=absent keys=length,prototype | final="1"/false/false/true keys=length,prototype,name`,
+	`ol number var, block defines non-configurable: start="1"/true/true/true keys=length,name,prototype | end="fixed"/true/true/false keys=length,name,prototype | final="fixed"/true/true/false keys=length,name,prototype`,
+	`ol number var, block defines accessor: start="1"/true/true/true keys=length,name,prototype | end=accessor/function/undefined/true/true keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol number var, block freezes: start="1"/true/true/true keys=length,name,prototype | end="1"/false/true/false keys=length,name,prototype | final="1"/false/true/false keys=length,name,prototype`,
+	`ol number var, block seals: start="1"/true/true/true keys=length,name,prototype | end="1"/true/true/false keys=length,name,prototype | final="1"/true/true/false keys=length,name,prototype`,
+	`ol number var, block prevents extensions: start="1"/true/true/true keys=length,name,prototype | end="1"/true/true/true keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol number var, block deletes, prevents extensions: start="1"/true/true/true keys=length,name,prototype | end=absent keys=length,prototype | final=absent keys=length,prototype`,
+	`ol number var, static field reads name: start="1"/true/true/true keys=length,name,prototype | end="1"/true/true/true keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype | seen=1`,
+	`ol number var, instance field: start="1"/true/true/true keys=length,name,prototype | end="1"/true/true/true keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol number var, derived: start="1"/true/true/true keys=length,name,prototype | end="1"/true/true/true keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol symbol, plain: start=symbol(key)/true/true/true keys=length,name,prototype | end=symbol(key)/true/true/true keys=length,name,prototype | final="[s]"/false/false/true keys=length,name,prototype`,
+	`ol symbol, static name field: start=symbol(key)/true/true/true keys=length,name,prototype | end="kept"/true/true/true keys=length,name,prototype | final="[s]"/false/false/true keys=length,name,prototype`,
+	`ol symbol, static name field undefined: start=symbol(key)/true/true/true keys=length,name,prototype | end=undefined/true/true/true keys=length,name,prototype | final="[s]"/false/false/true keys=length,name,prototype`,
+	`ol symbol, static name method: start=symbol(key)/true/true/true keys=length,name,prototype | end=symbol(key)/true/true/true keys=length,name,prototype | final="[s]"/false/false/true keys=length,name,prototype`,
+	`ol symbol, static name getter: start=symbol(key)/true/true/true keys=length,name,prototype | end=symbol(key)/true/true/true keys=length,name,prototype | final="[s]"/false/false/true keys=length,name,prototype`,
+	`ol symbol, static name setter: start=symbol(key)/true/true/true keys=length,name,prototype | end=symbol(key)/true/true/true keys=length,name,prototype | final="[s]"/false/false/true keys=length,name,prototype`,
+	`ol symbol, static computed name method: start=symbol(key)/true/true/true keys=length,name,prototype | end=symbol(key)/true/true/true keys=length,name,prototype | final="[s]"/false/false/true keys=length,name,prototype`,
+	`ol symbol, block writes name: start=symbol(key)/true/true/true keys=length,name,prototype | end="changed"/true/true/true keys=length,name,prototype | final="[s]"/false/false/true keys=length,name,prototype`,
+	`ol symbol, block deletes name: start=symbol(key)/true/true/true keys=length,name,prototype | end=absent keys=length,prototype | final="[s]"/false/false/true keys=length,prototype,name`,
+	`ol symbol, block defines non-configurable: start=symbol(key)/true/true/true keys=length,name,prototype | end="fixed"/true/true/false keys=length,name,prototype | final="fixed"/true/true/false keys=length,name,prototype`,
+	`ol symbol, block defines accessor: start=symbol(key)/true/true/true keys=length,name,prototype | end=accessor/function/undefined/true/true keys=length,name,prototype | final="[s]"/false/false/true keys=length,name,prototype`,
+	`ol symbol, block freezes: start=symbol(key)/true/true/true keys=length,name,prototype | end=symbol(key)/false/true/false keys=length,name,prototype | final=symbol(key)/false/true/false keys=length,name,prototype`,
+	`ol symbol, block seals: start=symbol(key)/true/true/true keys=length,name,prototype | end=symbol(key)/true/true/false keys=length,name,prototype | final=symbol(key)/true/true/false keys=length,name,prototype`,
+	`ol symbol, block prevents extensions: start=symbol(key)/true/true/true keys=length,name,prototype | end=symbol(key)/true/true/true keys=length,name,prototype | final="[s]"/false/false/true keys=length,name,prototype`,
+	`ol symbol, block deletes, prevents extensions: start=symbol(key)/true/true/true keys=length,name,prototype | end=absent keys=length,prototype | final=absent keys=length,prototype`,
+	`ol symbol, static field reads name: start=symbol(key)/true/true/true keys=length,name,prototype | end=symbol(key)/true/true/true keys=length,name,prototype | final="[s]"/false/false/true keys=length,name,prototype | seen=sym`,
+	`ol symbol, instance field: start=symbol(key)/true/true/true keys=length,name,prototype | end=symbol(key)/true/true/true keys=length,name,prototype | final="[s]"/false/false/true keys=length,name,prototype`,
+	`ol symbol, derived: start=symbol(key)/true/true/true keys=length,name,prototype | end=symbol(key)/true/true/true keys=length,name,prototype | final="[s]"/false/false/true keys=length,name,prototype`,
+	`ol constant string, plain: start="x"/true/true/true keys=length,name,prototype | end="x"/true/true/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol constant string, static name field: start="x"/true/true/true keys=length,name,prototype | end="kept"/true/true/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol constant string, static name field undefined: start="x"/true/true/true keys=length,name,prototype | end=undefined/true/true/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol constant string, static name method: start="x"/true/true/true keys=length,name,prototype | end="x"/true/true/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol constant string, static name getter: start="x"/true/true/true keys=length,name,prototype | end="x"/true/true/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol constant string, static name setter: start="x"/true/true/true keys=length,name,prototype | end="x"/true/true/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol constant string, static computed name method: start="x"/true/true/true keys=length,name,prototype | end="x"/true/true/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol constant string, block writes name: start="x"/true/true/true keys=length,name,prototype | end="changed"/true/true/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol constant string, block deletes name: start="x"/true/true/true keys=length,name,prototype | end=absent keys=length,prototype | final="x"/false/false/true keys=length,prototype,name`,
+	`ol constant string, block defines non-configurable: start="x"/true/true/true keys=length,name,prototype | end="fixed"/true/true/false keys=length,name,prototype | final="fixed"/true/true/false keys=length,name,prototype`,
+	`ol constant string, block defines accessor: start="x"/true/true/true keys=length,name,prototype | end=accessor/function/undefined/true/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol constant string, block freezes: start="x"/true/true/true keys=length,name,prototype | end="x"/false/true/false keys=length,name,prototype | final="x"/false/true/false keys=length,name,prototype`,
+	`ol constant string, block seals: start="x"/true/true/true keys=length,name,prototype | end="x"/true/true/false keys=length,name,prototype | final="x"/true/true/false keys=length,name,prototype`,
+	`ol constant string, block prevents extensions: start="x"/true/true/true keys=length,name,prototype | end="x"/true/true/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol constant string, block deletes, prevents extensions: start="x"/true/true/true keys=length,name,prototype | end=absent keys=length,prototype | final=absent keys=length,prototype`,
+	`ol constant string, static field reads name: start="x"/true/true/true keys=length,name,prototype | end="x"/true/true/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype | seen=x`,
+	`ol constant string, instance field: start="x"/true/true/true keys=length,name,prototype | end="x"/true/true/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol constant string, derived: start="x"/true/true/true keys=length,name,prototype | end="x"/true/true/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol constant number, plain: start="1"/true/true/true keys=length,name,prototype | end="1"/true/true/true keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol constant number, static name field: start="1"/true/true/true keys=length,name,prototype | end="kept"/true/true/true keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol constant number, static name field undefined: start="1"/true/true/true keys=length,name,prototype | end=undefined/true/true/true keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol constant number, static name method: start="1"/true/true/true keys=length,name,prototype | end="1"/true/true/true keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol constant number, static name getter: start="1"/true/true/true keys=length,name,prototype | end="1"/true/true/true keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol constant number, static name setter: start="1"/true/true/true keys=length,name,prototype | end="1"/true/true/true keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol constant number, static computed name method: start="1"/true/true/true keys=length,name,prototype | end="1"/true/true/true keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol constant number, block writes name: start="1"/true/true/true keys=length,name,prototype | end="changed"/true/true/true keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol constant number, block deletes name: start="1"/true/true/true keys=length,name,prototype | end=absent keys=length,prototype | final="1"/false/false/true keys=length,prototype,name`,
+	`ol constant number, block defines non-configurable: start="1"/true/true/true keys=length,name,prototype | end="fixed"/true/true/false keys=length,name,prototype | final="fixed"/true/true/false keys=length,name,prototype`,
+	`ol constant number, block defines accessor: start="1"/true/true/true keys=length,name,prototype | end=accessor/function/undefined/true/true keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol constant number, block freezes: start="1"/true/true/true keys=length,name,prototype | end="1"/false/true/false keys=length,name,prototype | final="1"/false/true/false keys=length,name,prototype`,
+	`ol constant number, block seals: start="1"/true/true/true keys=length,name,prototype | end="1"/true/true/false keys=length,name,prototype | final="1"/true/true/false keys=length,name,prototype`,
+	`ol constant number, block prevents extensions: start="1"/true/true/true keys=length,name,prototype | end="1"/true/true/true keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol constant number, block deletes, prevents extensions: start="1"/true/true/true keys=length,name,prototype | end=absent keys=length,prototype | final=absent keys=length,prototype`,
+	`ol constant number, static field reads name: start="1"/true/true/true keys=length,name,prototype | end="1"/true/true/true keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype | seen=1`,
+	`ol constant number, instance field: start="1"/true/true/true keys=length,name,prototype | end="1"/true/true/true keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol constant number, derived: start="1"/true/true/true keys=length,name,prototype | end="1"/true/true/true keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`class computed field, plain: start=""/false/false/true keys=length,name,prototype | end=""/false/false/true keys=length,name,prototype | final=""/false/false/true keys=length,name,prototype`,
+	`class static computed field, plain: start=""/false/false/true keys=length,name,prototype | end=""/false/false/true keys=length,name,prototype | final=""/false/false/true keys=length,name,prototype`,
+	`ol identifier key, plain: start="x"/false/false/true keys=length,name,prototype | end="x"/false/false/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`class computed field, static name field: start=""/false/false/true keys=length,name,prototype | end="kept"/true/true/true keys=length,name,prototype | final="kept"/true/true/true keys=length,name,prototype`,
+	`class static computed field, static name field: start=""/false/false/true keys=length,name,prototype | end="kept"/true/true/true keys=length,name,prototype | final="kept"/true/true/true keys=length,name,prototype`,
+	`ol identifier key, static name field: start="x"/false/false/true keys=length,name,prototype | end="kept"/true/true/true keys=length,name,prototype | final="kept"/true/true/true keys=length,name,prototype`,
+	`class computed field, static name field undefined: start=""/false/false/true keys=length,name,prototype | end=undefined/true/true/true keys=length,name,prototype | final=undefined/true/true/true keys=length,name,prototype`,
+	`class static computed field, static name field undefined: start=""/false/false/true keys=length,name,prototype | end=undefined/true/true/true keys=length,name,prototype | final=undefined/true/true/true keys=length,name,prototype`,
+	`ol identifier key, static name field undefined: start="x"/false/false/true keys=length,name,prototype | end=undefined/true/true/true keys=length,name,prototype | final=undefined/true/true/true keys=length,name,prototype`,
+	`class computed field, static name method: start=undefined/true/false/true keys=length,name,prototype | end=undefined/true/false/true keys=length,name,prototype | final=undefined/true/false/true keys=length,name,prototype`,
+	`class static computed field, static name method: start=undefined/true/false/true keys=length,name,prototype | end=undefined/true/false/true keys=length,name,prototype | final=undefined/true/false/true keys=length,name,prototype`,
+	`ol identifier key, static name method: start=undefined/true/false/true keys=length,name,prototype | end=undefined/true/false/true keys=length,name,prototype | final=undefined/true/false/true keys=length,name,prototype`,
+	`class computed field, static name getter: start=accessor/function/undefined/false/true keys=length,name,prototype | end=accessor/function/undefined/false/true keys=length,name,prototype | final=accessor/function/undefined/false/true keys=length,name,prototype`,
+	`class static computed field, static name getter: start=accessor/function/undefined/false/true keys=length,name,prototype | end=accessor/function/undefined/false/true keys=length,name,prototype | final=accessor/function/undefined/false/true keys=length,name,prototype`,
+	`ol identifier key, static name getter: start=accessor/function/undefined/false/true keys=length,name,prototype | end=accessor/function/undefined/false/true keys=length,name,prototype | final=accessor/function/undefined/false/true keys=length,name,prototype`,
+	`class computed field, static name setter: start=accessor/undefined/function/false/true keys=length,name,prototype | end=accessor/undefined/function/false/true keys=length,name,prototype | final=accessor/undefined/function/false/true keys=length,name,prototype`,
+	`class static computed field, static name setter: start=accessor/undefined/function/false/true keys=length,name,prototype | end=accessor/undefined/function/false/true keys=length,name,prototype | final=accessor/undefined/function/false/true keys=length,name,prototype`,
+	`ol identifier key, static name setter: start=accessor/undefined/function/false/true keys=length,name,prototype | end=accessor/undefined/function/false/true keys=length,name,prototype | final=accessor/undefined/function/false/true keys=length,name,prototype`,
+	`class computed field, static computed name method: start=undefined/true/false/true keys=length,name,prototype | end=undefined/true/false/true keys=length,name,prototype | final=undefined/true/false/true keys=length,name,prototype`,
+	`class static computed field, static computed name method: start=undefined/true/false/true keys=length,name,prototype | end=undefined/true/false/true keys=length,name,prototype | final=undefined/true/false/true keys=length,name,prototype`,
+	`ol identifier key, static computed name method: start=undefined/true/false/true keys=length,name,prototype | end=undefined/true/false/true keys=length,name,prototype | final=undefined/true/false/true keys=length,name,prototype`,
+	`class computed field, block writes name: throws TypeError: Cannot assign to read only property 'name' of function 'class { static { start = show(this); } static { this.name = "changed"; } static { end = show(this); } }'`,
+	`class static computed field, block writes name: throws TypeError: Cannot assign to read only property 'name' of function 'class { static { start = show(this); } static { this.name = "changed"; } static { end = show(this); } }'`,
+	`ol identifier key, block writes name: throws TypeError: Cannot assign to read only property 'name' of function 'class { static { start = show(this); } static { this.name = "changed"; } static { end = show(this); } }'`,
+	`class computed field, block deletes name: start=""/false/false/true keys=length,name,prototype | end=absent keys=length,prototype | final=absent keys=length,prototype`,
+	`class static computed field, block deletes name: start=""/false/false/true keys=length,name,prototype | end=absent keys=length,prototype | final=absent keys=length,prototype`,
+	`ol identifier key, block deletes name: start="x"/false/false/true keys=length,name,prototype | end=absent keys=length,prototype | final=absent keys=length,prototype`,
+	`class computed field, block defines non-configurable: start=""/false/false/true keys=length,name,prototype | end="fixed"/false/false/false keys=length,name,prototype | final="fixed"/false/false/false keys=length,name,prototype`,
+	`class static computed field, block defines non-configurable: start=""/false/false/true keys=length,name,prototype | end="fixed"/false/false/false keys=length,name,prototype | final="fixed"/false/false/false keys=length,name,prototype`,
+	`ol identifier key, block defines non-configurable: start="x"/false/false/true keys=length,name,prototype | end="fixed"/false/false/false keys=length,name,prototype | final="fixed"/false/false/false keys=length,name,prototype`,
+	`class computed field, block defines accessor: start=""/false/false/true keys=length,name,prototype | end=accessor/function/undefined/false/true keys=length,name,prototype | final=accessor/function/undefined/false/true keys=length,name,prototype`,
+	`class static computed field, block defines accessor: start=""/false/false/true keys=length,name,prototype | end=accessor/function/undefined/false/true keys=length,name,prototype | final=accessor/function/undefined/false/true keys=length,name,prototype`,
+	`ol identifier key, block defines accessor: start="x"/false/false/true keys=length,name,prototype | end=accessor/function/undefined/false/true keys=length,name,prototype | final=accessor/function/undefined/false/true keys=length,name,prototype`,
+	`class computed field, block freezes: start=""/false/false/true keys=length,name,prototype | end=""/false/false/false keys=length,name,prototype | final=""/false/false/false keys=length,name,prototype`,
+	`class static computed field, block freezes: start=""/false/false/true keys=length,name,prototype | end=""/false/false/false keys=length,name,prototype | final=""/false/false/false keys=length,name,prototype`,
+	`ol identifier key, block freezes: start="x"/false/false/true keys=length,name,prototype | end="x"/false/false/false keys=length,name,prototype | final="x"/false/false/false keys=length,name,prototype`,
+	`class computed field, block seals: start=""/false/false/true keys=length,name,prototype | end=""/false/false/false keys=length,name,prototype | final=""/false/false/false keys=length,name,prototype`,
+	`class static computed field, block seals: start=""/false/false/true keys=length,name,prototype | end=""/false/false/false keys=length,name,prototype | final=""/false/false/false keys=length,name,prototype`,
+	`ol identifier key, block seals: start="x"/false/false/true keys=length,name,prototype | end="x"/false/false/false keys=length,name,prototype | final="x"/false/false/false keys=length,name,prototype`,
+	`class computed field, block prevents extensions: start=""/false/false/true keys=length,name,prototype | end=""/false/false/true keys=length,name,prototype | final=""/false/false/true keys=length,name,prototype`,
+	`class static computed field, block prevents extensions: start=""/false/false/true keys=length,name,prototype | end=""/false/false/true keys=length,name,prototype | final=""/false/false/true keys=length,name,prototype`,
+	`ol identifier key, block prevents extensions: start="x"/false/false/true keys=length,name,prototype | end="x"/false/false/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`class computed field, block deletes, prevents extensions: start=""/false/false/true keys=length,name,prototype | end=absent keys=length,prototype | final=absent keys=length,prototype`,
+	`class static computed field, block deletes, prevents extensions: start=""/false/false/true keys=length,name,prototype | end=absent keys=length,prototype | final=absent keys=length,prototype`,
+	`ol identifier key, block deletes, prevents extensions: start="x"/false/false/true keys=length,name,prototype | end=absent keys=length,prototype | final=absent keys=length,prototype`,
+	`class computed field, static field reads name: start=""/false/false/true keys=length,name,prototype | end=""/false/false/true keys=length,name,prototype | final=""/false/false/true keys=length,name,prototype`,
+	`class static computed field, static field reads name: start=""/false/false/true keys=length,name,prototype | end=""/false/false/true keys=length,name,prototype | final=""/false/false/true keys=length,name,prototype`,
+	`ol identifier key, static field reads name: start="x"/false/false/true keys=length,name,prototype | end="x"/false/false/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`class computed field, instance field: start=""/false/false/true keys=length,name,prototype | end=""/false/false/true keys=length,name,prototype | final=""/false/false/true keys=length,name,prototype`,
+	`class static computed field, instance field: start=""/false/false/true keys=length,name,prototype | end=""/false/false/true keys=length,name,prototype | final=""/false/false/true keys=length,name,prototype`,
+	`ol identifier key, instance field: start="x"/false/false/true keys=length,name,prototype | end="x"/false/false/true keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`finding computed write: changed`,
+	`finding computed constant getter: x`,
+	`finding computed symbol read: symbol/true`,
+}
+
+// classNameStaticsIntegrity lists, by label, the lines where goja keeps
+// the class's integrity, with Node.js 18.20.3's line for each.
+var classNameStaticsIntegrity = map[string]string{
+	`ol string var, block defines non-configurable`:          `ol string var, block defines non-configurable: start="x"/true/true/true keys=length,name,prototype | end="fixed"/true/true/false keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol string var, block freezes`:                           `ol string var, block freezes: start="x"/true/true/true keys=length,name,prototype | end="x"/false/true/false keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol string var, block seals`:                             `ol string var, block seals: start="x"/true/true/true keys=length,name,prototype | end="x"/true/true/false keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol string var, block deletes, prevents extensions`:      `ol string var, block deletes, prevents extensions: throws TypeError: Cannot add property name, object is not extensible`,
+	`ol number var, block defines non-configurable`:          `ol number var, block defines non-configurable: start="1"/true/true/true keys=length,name,prototype | end="fixed"/true/true/false keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol number var, block freezes`:                           `ol number var, block freezes: start="1"/true/true/true keys=length,name,prototype | end="1"/false/true/false keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol number var, block seals`:                             `ol number var, block seals: start="1"/true/true/true keys=length,name,prototype | end="1"/true/true/false keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol number var, block deletes, prevents extensions`:      `ol number var, block deletes, prevents extensions: throws TypeError: Cannot add property name, object is not extensible`,
+	`ol symbol, block defines non-configurable`:              `ol symbol, block defines non-configurable: start=symbol(key)/true/true/true keys=length,name,prototype | end="fixed"/true/true/false keys=length,name,prototype | final="[s]"/false/false/true keys=length,name,prototype`,
+	`ol symbol, block freezes`:                               `ol symbol, block freezes: start=symbol(key)/true/true/true keys=length,name,prototype | end=symbol(key)/false/true/false keys=length,name,prototype | final="[s]"/false/false/true keys=length,name,prototype`,
+	`ol symbol, block seals`:                                 `ol symbol, block seals: start=symbol(key)/true/true/true keys=length,name,prototype | end=symbol(key)/true/true/false keys=length,name,prototype | final="[s]"/false/false/true keys=length,name,prototype`,
+	`ol symbol, block deletes, prevents extensions`:          `ol symbol, block deletes, prevents extensions: throws TypeError: Cannot add property name, object is not extensible`,
+	`ol constant string, block defines non-configurable`:     `ol constant string, block defines non-configurable: start="x"/true/true/true keys=length,name,prototype | end="fixed"/true/true/false keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol constant string, block freezes`:                      `ol constant string, block freezes: start="x"/true/true/true keys=length,name,prototype | end="x"/false/true/false keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol constant string, block seals`:                        `ol constant string, block seals: start="x"/true/true/true keys=length,name,prototype | end="x"/true/true/false keys=length,name,prototype | final="x"/false/false/true keys=length,name,prototype`,
+	`ol constant string, block deletes, prevents extensions`: `ol constant string, block deletes, prevents extensions: throws TypeError: Cannot add property name, object is not extensible`,
+	`ol constant number, block defines non-configurable`:     `ol constant number, block defines non-configurable: start="1"/true/true/true keys=length,name,prototype | end="fixed"/true/true/false keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol constant number, block freezes`:                      `ol constant number, block freezes: start="1"/true/true/true keys=length,name,prototype | end="1"/false/true/false keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol constant number, block seals`:                        `ol constant number, block seals: start="1"/true/true/true keys=length,name,prototype | end="1"/true/true/false keys=length,name,prototype | final="1"/false/false/true keys=length,name,prototype`,
+	`ol constant number, block deletes, prevents extensions`: `ol constant number, block deletes, prevents extensions: throws TypeError: Cannot add property name, object is not extensible`,
 }

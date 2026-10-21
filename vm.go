@@ -5752,18 +5752,40 @@ func (c *newDerivedClass) exec(vm *vm) {
 	vm.pc++
 }
 
-// setClassNameFromKey names the class on the stack's top after the key the
-// given number of slots under the top: an anonymous class that is the value
-// of a property with a computed key, once its methods and accessors are
-// defined and before its static fields and blocks run.
+// setClassNameFromKey gives the class on the stack's top, an anonymous
+// class that is the value of an object literal's property with a computed
+// key, the key the given number of slots under the top as its name once
+// its methods and accessors are defined and before its static fields and
+// blocks run, as Node.js 18 does: the key itself (a symbol stays one), in
+// a writable, enumerable and configurable data property that replaces a
+// static name method or accessor. Once the class is made, definePropNamed
+// names it again, as a function is named.
 type setClassNameFromKey int
 
 func (n setClassNameFromKey) exec(vm *vm) {
+	vm.setStaticsClassName(vm.stack[vm.sp-int(n)])
+	vm.pc++
+}
+
+// setClassNameConst is setClassNameFromKey for a constant computed key,
+// ["x"], which is not on the stack.
+type setClassNameConst unistring.String
+
+func (n setClassNameConst) exec(vm *vm) {
+	vm.setStaticsClassName(stringValueFromRaw(unistring.String(n)))
+	vm.pc++
+}
+
+func (vm *vm) setStaticsClassName(key Value) {
+	if _, isSym := key.(*Symbol); !isSym {
+		key = key.toString() // a property key the VM keeps as a number
+	}
 	vm.r.toObject(vm.stack[vm.sp-1]).self.defineOwnPropertyStr("name", PropertyDescriptor{
-		Value:        funcName("", vm.stack[vm.sp-int(n)]),
+		Value:        key,
+		Writable:     FLAG_TRUE,
+		Enumerable:   FLAG_TRUE,
 		Configurable: FLAG_TRUE,
 	}, true)
-	vm.pc++
 }
 
 // Creates a special instance of *classFuncObject which is only used during evaluation of a class declaration
