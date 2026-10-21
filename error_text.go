@@ -650,7 +650,7 @@ func (r *Runtime) dynamicImportError() *Object {
 	e.self._putProp("toString", r.newNativeFunc(func(FunctionCall) Value {
 		return asciiString("TypeError [" + code + "]: " + msg)
 	}, "toString", 0), true, false, true)
-	e.self.setOwnStr("code", asciiString(code), false)
+	e.self._putProp("code", asciiString(code), true, true, true)
 	if eo, ok := e.self.(*errorObject); ok {
 		eo._putProp("name", asciiString("TypeError ["+code+"]"), true, false, true)
 		eo.addStackProp()

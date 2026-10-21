@@ -601,7 +601,7 @@ func (r *Runtime) NewTypeError(args ...interface{}) *Object {
 
 func (r *Runtime) NewGoError(err error) *Object {
 	e := r.newError(r.getGoError(), err.Error()).(*Object)
-	e.Set("value", err)
+	e.self._putProp("value", r.ToValue(err), true, true, true)
 	return e
 }
 
@@ -3154,8 +3154,8 @@ func (r *Runtime) forOfMethod(iterable Value, method func(FunctionCall) Value, s
 
 func (r *Runtime) createIterResultObject(value Value, done bool) Value {
 	o := r.NewObject()
-	o.self.setOwnStr("value", value, false)
-	o.self.setOwnStr("done", r.toBoolean(done), false)
+	o.self._putProp("value", value, true, true, true)
+	o.self._putProp("done", r.toBoolean(done), true, true, true)
 	return o
 }
 

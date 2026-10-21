@@ -1754,8 +1754,8 @@ func (r *Runtime) uint8ArrayProto_setFromHex(call FunctionCall) Value {
 		panic(r.newSyntaxError(err.Error()))
 	}
 	res := r.NewObject()
-	res.self.setOwnStr("read", intToValue(int64(2*written)), false)
-	res.self.setOwnStr("written", intToValue(int64(written)), false)
+	res.self._putProp("read", intToValue(int64(2*written)), true, true, true)
+	res.self._putProp("written", intToValue(int64(written)), true, true, true)
 	return res
 }
 
@@ -1786,8 +1786,8 @@ func (r *Runtime) uint8ArrayProto_setFromBase64(call FunctionCall) Value {
 	}
 
 	res := r.NewObject()
-	res.self.setOwnStr("read", intToValue(int64(read)), false)
-	res.self.setOwnStr("written", intToValue(int64(written)), false)
+	res.self._putProp("read", intToValue(int64(read)), true, true, true)
+	res.self._putProp("written", intToValue(int64(written)), true, true, true)
 	return res
 }
 

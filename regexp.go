@@ -1606,8 +1606,8 @@ func (r *regexpObject) execResultToArray(target String, result regexpResult) Val
 		}
 	}
 	match := r.val.runtime.newArrayValues(valueArray)
-	match.self.setOwnStr("input", target, false)
-	match.self.setOwnStr("index", intToValue(int64(matchIndex)), false)
+	match.self._putProp("input", target, true, true, true)
+	match.self._putProp("index", intToValue(int64(matchIndex)), true, true, true)
 
 	groups := r.val.runtime.createRegexpGroupsObj(valueArray, result.groups)
 
