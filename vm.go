@@ -2026,38 +2026,18 @@ func (_setElem) exec(vm *vm) {
 	vm.pc++
 }
 
-type _setElem1 struct{}
+// definePropNamed is defineProp for an anonymous function value, which
+// is given the key as its name first: an object literal's computed
+// property whose value is an anonymous function, arrow function or class.
+type definePropNamed struct{}
 
-var setElem1 _setElem1
-
-func (_setElem1) exec(vm *vm) {
-	obj := vm.toSetBase(vm.stack[vm.sp-3], vm.stack[vm.sp-2])
+func (definePropNamed) exec(vm *vm) {
 	propName := vm.stack[vm.sp-2]
-	val := vm.stack[vm.sp-1]
-
-	obj.setOwn(propName, val, true)
-
-	vm.sp -= 2
-	vm.pc++
-}
-
-type _setElem1Named struct{}
-
-var setElem1Named _setElem1Named
-
-func (_setElem1Named) exec(vm *vm) {
-	receiver := vm.stack[vm.sp-3]
-	base := receiver.ToObject(vm.r)
-	propName := vm.stack[vm.sp-2]
-	val := vm.stack[vm.sp-1]
-	vm.r.toObject(val).self.defineOwnPropertyStr("name", PropertyDescriptor{
+	vm.r.toObject(vm.stack[vm.sp-1]).self.defineOwnPropertyStr("name", PropertyDescriptor{
 		Value:        funcName("", propName),
 		Configurable: FLAG_TRUE,
 	}, true)
-	base.set(propName, val, receiver, true)
-
-	vm.sp -= 2
-	vm.pc++
+	defineProp{}.exec(vm)
 }
 
 type defineMethod struct {

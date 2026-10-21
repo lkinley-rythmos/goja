@@ -2252,7 +2252,11 @@ func (e *compiledClassLiteral) compileFieldsAndStaticBlocks(elements []clsElemen
 					idx: elt.privateName.idx,
 				})
 			} else if elt.computed {
-				e.c.emit(defineProp{})
+				if elt.initializer != nil && isAnonymousFunctionDefinition(elt.initializer) {
+					e.c.emit(definePropNamed{})
+				} else {
+					e.c.emit(defineProp{})
+				}
 			} else {
 				e.c.emit(definePropKeyed(elt.key))
 			}
@@ -2961,10 +2965,14 @@ func (e *compiledObjectLiteral) emitGetter(putOnStack bool) {
 				e.c.emitExpr(valueExpr, true)
 				switch prop.Kind {
 				case ast.PropertyKindValue:
-					if ne != nil {
-						e.c.emit(setElem1Named)
+					// A property definition creates the property
+					// (CreateDataPropertyOrThrow): it runs no
+					// inherited setter, replaces an own accessor, and
+					// a computed "__proto__" is an own property.
+					if isAnonymousFunctionDefinition(valueExpr) {
+						e.c.emit(definePropNamed{})
 					} else {
-						e.c.emit(setElem1)
+						e.c.emit(defineProp{})
 					}
 				case ast.PropertyKindMethod:
 					e.c.emit(&defineMethod{enumerable: true})
@@ -3430,6 +3438,20 @@ func (c *compiler) emitExpr(expr compiledExpr, putOnStack bool) {
 	} else {
 		expr.emitGetter(putOnStack)
 	}
+}
+
+// isAnonymousFunctionDefinition reports whether expr is a function, arrow
+// function or class expression without a name of its own, which a
+// property definition with a computed key names after the key
+// (IsAnonymousFunctionDefinition, NamedEvaluation).
+func isAnonymousFunctionDefinition(expr compiledExpr) bool {
+	switch expr := expr.(type) {
+	case *compiledFunctionLiteral:
+		return expr.name == nil
+	case *compiledClassLiteral:
+		return expr.name == nil
+	}
+	return false
 }
 
 type namedEmitter interface {

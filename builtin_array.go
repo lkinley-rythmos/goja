@@ -4,6 +4,8 @@ import (
 	"math"
 	"sort"
 	"sync"
+
+	"github.com/dop251/goja/unistring"
 )
 
 // arrayObjectBox co-allocates an array's impl with its Object (see
@@ -1834,23 +1836,12 @@ func createArrayProtoTemplate() *objectTemplate {
 	t.putSym(SymIterator, func(r *Runtime) Value { return valueProp(r.getArrayValues(), true, false, true) })
 	t.putSym(SymUnscopables, func(r *Runtime) Value {
 		bl := r.newBaseObject(nil, classObject)
-		bl._putProp("copyWithin", valueTrue, true, true, true)
-		bl._putProp("entries", valueTrue, true, true, true)
-		bl._putProp("fill", valueTrue, true, true, true)
-		bl._putProp("find", valueTrue, true, true, true)
-		bl._putProp("findIndex", valueTrue, true, true, true)
-		bl._putProp("findLast", valueTrue, true, true, true)
-		bl._putProp("findLastIndex", valueTrue, true, true, true)
-		bl._putProp("flat", valueTrue, true, true, true)
-		bl._putProp("flatMap", valueTrue, true, true, true)
-		bl._putProp("includes", valueTrue, true, true, true)
-		bl._putProp("keys", valueTrue, true, true, true)
-		bl._putProp("values", valueTrue, true, true, true)
-		bl._putProp("groupBy", valueTrue, true, true, true)
-		bl._putProp("groupByToMap", valueTrue, true, true, true)
-		bl._putProp("toReversed", valueTrue, true, true, true)
-		bl._putProp("toSorted", valueTrue, true, true, true)
-		bl._putProp("toSpliced", valueTrue, true, true, true)
+		// The names and their order are ECMAScript's (and Node.js's).
+		for _, name := range []unistring.String{"at", "copyWithin", "entries", "fill", "find", "findIndex",
+			"findLast", "findLastIndex", "flat", "flatMap", "includes", "keys", "toReversed", "toSorted",
+			"toSpliced", "values"} {
+			bl._putProp(name, valueTrue, true, true, true)
+		}
 
 		return valueProp(bl.val, false, false, true)
 	})
