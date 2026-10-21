@@ -54,6 +54,14 @@ const ownAPIFixtures = `(function () {
 	out.push(arr, fn, new K(), K, new Uint8Array(3), new Float64Array([1, 2]), new String("ab"), args, strictArgs, new Date(0), re, err,
 		new Map([[1, 2]]), fn.bind(null), nul, Object.getOwnPropertyDescriptor({a: 1}, "a"),
 		Object.getOwnPropertyDescriptor({get a() { return 1; }}, "a"), Math, JSON, Object.prototype, Array.prototype, [], new Boolean(true));
+	const tag = s => s; const sparse = []; sparse[100000] = 1; sparse.p = 2;
+	const methods = {m() {}, *g() {}, async a() {}};
+	function* gen() {}
+	out.push(tag` + "`a${1}b`" + `, tag` + "`a${1}b`" + `.raw, sparse, new Promise(() => {}), gen(), gen, async function () {}, async () => {}, () => {},
+		methods.m, methods.g, methods.a, new Set([1]), new WeakMap(), new WeakSet(), new ArrayBuffer(2), new DataView(new ArrayBuffer(2)),
+		[1][Symbol.iterator](), new Map().entries(), new Set().values(), "ab"[Symbol.iterator](), "ab".matchAll(/a/g),
+		Object(Symbol("w")), new Number(1), Function.prototype, Function.prototype.call, Function.prototype.apply, RegExp.prototype,
+		Array, Object, Reflect, Symbol, Promise, Uint8Array, Error.prototype, globalThis);
 	return out;
 })()`
 
@@ -154,13 +162,18 @@ func TestOwnAPIs_MatchReflect(t *testing.T) {
 		B string
 	}
 	for label, value := range map[string]any{
-		"go map":    map[string]any{"k": 1},
-		"go struct": &goStruct{A: 1, B: "x"},
-		"go slice":  []any{1, "a"},
+		"go map":           map[string]any{"k": 1},
+		"go struct":        &goStruct{A: 1, B: "x"},
+		"go slice":         []any{1, "a"},
+		"go typed map":     map[string]int{"k": 1},
+		"go typed slice":   []int{1, 2},
+		"go array pointer": &[2]int{1, 2},
+		"go func":          func(a int) int { return a },
 	} {
 		checkOwnAPIs(t, r, label, r.ToValue(value).(*Object))
 	}
 	checkOwnAPIs(t, r, "dynamic", r.NewDynamicObject(&testDynObject{r: r, m: map[string]Value{"only": valueInt(1)}}))
+	checkOwnAPIs(t, r, "dynamic array", r.NewDynamicArray(&testDynArray{r: r, a: []Value{valueInt(1)}}))
 }
 
 // TestOwnAPIs_ZeroAlloc: on an ordinary object, with capacity for the
@@ -342,5 +355,66 @@ func TestGetOwnDataPropertySymbol(t *testing.T) {
 		arr.GetOwnDataPropertySymbol(s)
 	}); allocs != 0 {
 		t.Fatalf("GetOwnDataPropertySymbol: %v allocs", allocs)
+	}
+}
+
+// TestOwnAPIs_DestructuringSource: an object rest destructuring hands a
+// getter, as this, a source object that forwards to the destructured
+// value and records the keys read from it, which the rest then leaves
+// out. The own-property APIs treat it as they treat a Proxy, which it may
+// wrap: not ok, no trap run, and no key recorded.
+func TestOwnAPIs_DestructuringSource(t *testing.T) {
+	r := New()
+	var probed []*Object
+	r.Set("probe", func(o *Object) {
+		probed = append(probed, o)
+		o.GetOwnDataProperty("b")
+		o.GetOwnDataPropertySymbol(r.Get("slot").(*Symbol))
+		o.AppendOwnPropertyKeys(nil, nil)
+	})
+	v, err := r.RunString(`(function () {
+		globalThis.traps = 0;
+		globalThis.slot = Symbol("slot");
+		const target = {b: 2, [slot]: 42, get a() { probe(this); return 1; }};
+		const handler = {};
+		for (const trap of ["getOwnPropertyDescriptor", "ownKeys", "get", "has"]) {
+			handler[trap] = function () { globalThis.traps++; return Reflect[trap].apply(null, arguments); };
+		}
+		const {a: a1, ...plainRest} = target;
+		const {a: a2, ...proxyRest} = new Proxy(target, handler);
+		globalThis.traps = 0;
+		return [plainRest, proxyRest];
+	})()`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(probed) != 2 {
+		t.Fatalf("getter ran %d times, want 2", len(probed))
+	}
+	slot := r.Get("slot").(*Symbol)
+	for i, o := range probed {
+		if v, _, _, _, ok := o.GetOwnDataProperty("b"); ok || v != nil {
+			t.Fatalf("source %d: b = %v %v", i, v, ok)
+		}
+		if v, _, _, _, ok := o.GetOwnDataPropertySymbol(slot); ok || v != nil {
+			t.Fatalf("source %d: slot = %v %v", i, v, ok)
+		}
+		if names, symbols, ok := o.AppendOwnPropertyKeys(nil, nil); ok || names != nil || symbols != nil {
+			t.Fatalf("source %d: keys %v %v %v", i, names, symbols, ok)
+		}
+	}
+	if traps := r.Get("traps").ToInteger(); traps != 0 {
+		t.Fatalf("%d traps ran", traps)
+	}
+	// The reads made while the rest was being built recorded no key.
+	rests := v.(*Object)
+	for i := 0; i < 2; i++ {
+		rest := rests.Get(fmt.Sprint(i)).(*Object)
+		if v, _, _, _, ok := rest.GetOwnDataProperty("b"); !ok || v.ToInteger() != 2 {
+			t.Fatalf("rest %d: b = %v %v", i, v, ok)
+		}
+		if v, _, _, _, ok := rest.GetOwnDataPropertySymbol(slot); !ok || v.ToInteger() != 42 {
+			t.Fatalf("rest %d: slot = %v %v", i, v, ok)
+		}
 	}
 }

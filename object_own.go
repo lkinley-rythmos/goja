@@ -9,8 +9,11 @@ import "github.com/dop251/goja/unistring"
 // creation order), and every symbol key, enumerable or not, to symbols (in
 // creation order). Reflect.ownKeys(o) is names followed by symbols.
 //
-// ok is false, and names and symbols are returned unchanged, for a Proxy:
-// only its ownKeys trap can give its keys, and the trap is never run.
+// ok is false, and names and symbols are returned unchanged, for a Proxy,
+// as only its ownKeys trap can give its keys, and the trap is never run;
+// and for any other object whose keys this package cannot read without
+// running JavaScript or reading another object, such as the source an
+// object rest destructuring passes a getter as this.
 //
 // For an ordinary object (an object literal, new Object(), Object.create
 // and the like) the call allocates nothing when names and symbols have
@@ -23,8 +26,6 @@ import "github.com/dop251/goja/unistring"
 // This method will panic with an *Exception if a JavaScript exception is thrown in the process. Use Runtime.Try to catch these.
 func (o *Object) AppendOwnPropertyKeys(names []string, symbols []*Symbol) (namesOut []string, symbolsOut []*Symbol, ok bool) {
 	switch impl := o.self.(type) {
-	case *proxyObject:
-		return names, symbols, false
 	case *baseObject:
 		impl.ensurePropOrder()
 		for _, k := range impl.propNames {
@@ -38,6 +39,9 @@ func (o *Object) AppendOwnPropertyKeys(names []string, symbols []*Symbol) (names
 			}
 		}
 		return names, symbols, true
+	}
+	if !ownPropsReadable(o.self) {
+		return names, symbols, false
 	}
 	for _, k := range o.self.stringKeys(true, nil) {
 		names = append(names, k.String())
@@ -53,9 +57,12 @@ func (o *Object) AppendOwnPropertyKeys(names []string, symbols []*Symbol) (names
 // GetOwnDataProperty returns the object's own data property name, as
 // Object.getOwnPropertyDescriptor describes it: its value and its
 // writable, enumerable and configurable attributes. ok is false when the
-// object has no own property name, when the property is an accessor, and
-// for a Proxy, whose own properties only its getOwnPropertyDescriptor trap
-// can describe. It never runs JavaScript: no getter, setter or Proxy trap.
+// object has no own property name, when the property is an accessor, for
+// a Proxy, whose own properties only its getOwnPropertyDescriptor trap can
+// describe, and for any other object whose properties this package cannot
+// read without running JavaScript or reading another object, such as the
+// source an object rest destructuring passes a getter as this. It never
+// runs JavaScript: no getter, setter or Proxy trap.
 //
 // For an ordinary object and an ASCII name the lookup allocates nothing.
 // Other objects describe the property as Object.getOwnPropertyDescriptor
@@ -65,11 +72,12 @@ func (o *Object) AppendOwnPropertyKeys(names []string, symbols []*Symbol) (names
 func (o *Object) GetOwnDataProperty(name string) (v Value, writable, enumerable, configurable, ok bool) {
 	var prop Value
 	switch impl := o.self.(type) {
-	case *proxyObject:
-		return nil, false, false, false, false
 	case *baseObject:
 		prop = impl.values[unistring.NewFromString(name)]
 	default:
+		if !ownPropsReadable(o.self) {
+			return nil, false, false, false, false
+		}
 		prop = o.self.getOwnPropStr(unistring.NewFromString(name))
 	}
 	return ownDataProperty(prop)
@@ -79,9 +87,9 @@ func (o *Object) GetOwnDataProperty(name string) (v Value, writable, enumerable,
 // property: it returns the object's own data property sym, as
 // Object.getOwnPropertyDescriptor describes it. ok is false when the
 // object has no own property sym (an inherited one does not count), when
-// the property is an accessor, and for a Proxy, whose own properties only
-// its getOwnPropertyDescriptor trap can describe. It never runs
-// JavaScript: no getter, setter or Proxy trap.
+// the property is an accessor, and for a Proxy and any other object
+// GetOwnDataProperty cannot read. It never runs JavaScript: no getter,
+// setter or Proxy trap.
 //
 // For an ordinary object the lookup allocates nothing, and neither does
 // it for other objects that keep their symbol properties as ordinary ones
@@ -92,16 +100,44 @@ func (o *Object) GetOwnDataProperty(name string) (v Value, writable, enumerable,
 func (o *Object) GetOwnDataPropertySymbol(sym *Symbol) (v Value, writable, enumerable, configurable, ok bool) {
 	var prop Value
 	switch impl := o.self.(type) {
-	case *proxyObject:
-		return nil, false, false, false, false
 	case *baseObject:
 		if impl.symValues != nil {
 			prop = impl.symValues.get(sym)
 		}
 	default:
+		if !ownPropsReadable(o.self) {
+			return nil, false, false, false, false
+		}
 		prop = o.self.getOwnPropSym(sym)
 	}
 	return ownDataProperty(prop)
+}
+
+// ownPropsReadable reports whether impl's own properties and keys can be
+// read, with getOwnPropStr, getOwnPropSym, stringKeys and symbols, without
+// running JavaScript and without reading another object: the object keeps
+// them itself, or Go code gives them (a Go-backed or dynamic object's, or
+// a built-in object's that builds them on first use). It lists the
+// implementations known to be so, and every other one is not: among them
+// a Proxy, whose traps would run, and a destructKeyedSource (the source
+// an object rest destructuring passes a getter as this), which reads the
+// object it wraps, perhaps a Proxy, and records the keys read from it.
+func ownPropsReadable(impl objectImpl) bool {
+	switch impl.(type) {
+	case *baseObject, *guardedObject, *templatedObject, *templatedFuncObject, *templatedArrayObject,
+		*arrayObject, *sparseArrayObject, *taggedTemplateArray, *argumentsObject, *stringObject,
+		*primitiveValueObject, *errorObject, *dateObject, *regexpObject, *descriptorObject,
+		*mapObject, *setObject, *weakMapObject, *weakSetObject, *Promise,
+		*arrayBufferObject, *dataViewObject, *typedArrayObject,
+		*arrayIterObject, *mapIterObject, *setIterObject, *stringIterObject, *regExpStringIterObject, *generatorObject,
+		*funcObject, *classFuncObject, *methodFuncObject, *arrowFuncObject,
+		*generatorFuncObject, *generatorMethodFuncObject, *asyncFuncObject, *asyncMethodFuncObject, *asyncArrowFuncObject,
+		*nativeFuncObject, *wrappedFuncObject, *boundFuncObject, *funcProtoCallObject, *funcProtoApplyObject,
+		*objectGoReflect, *objectGoMapReflect, *objectGoArrayReflect, *objectGoSliceReflect,
+		*objectGoMapSimple, *objectGoSlice, *dynamicObject, *dynamicArray:
+		return true
+	}
+	return false
 }
 
 // ownDataProperty describes an own property as GetOwnDataProperty returns
