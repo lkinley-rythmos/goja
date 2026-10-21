@@ -54,19 +54,30 @@ func (d *destructKeyedSource) typeOf() String {
 	return d.w().typeOf()
 }
 
+// receiver is the receiver of a read the pattern makes through the
+// source: the destructured value, as the pattern's Get(value, key) has it,
+// for a read the VM makes of the source itself, so that no getter or Proxy
+// trap is given the source.
+func (d *destructKeyedSource) receiver(receiver Value) Value {
+	if o, ok := receiver.(*Object); receiver == nil || ok && o.self == d {
+		return d.wrapped
+	}
+	return receiver
+}
+
 func (d *destructKeyedSource) getStr(p unistring.String, receiver Value) Value {
 	d.recordKey(stringValueFromRaw(p))
-	return d.w().getStr(p, receiver)
+	return d.w().getStr(p, d.receiver(receiver))
 }
 
 func (d *destructKeyedSource) getIdx(p valueInt, receiver Value) Value {
 	d.recordKey(p.toString())
-	return d.w().getIdx(p, receiver)
+	return d.w().getIdx(p, d.receiver(receiver))
 }
 
 func (d *destructKeyedSource) getSym(p *Symbol, receiver Value) Value {
 	d.recordKey(p)
-	return d.w().getSym(p, receiver)
+	return d.w().getSym(p, d.receiver(receiver))
 }
 
 func (d *destructKeyedSource) getOwnPropStr(u unistring.String) Value {
@@ -186,6 +197,20 @@ func (d *destructKeyedSource) isExtensible() bool {
 
 func (d *destructKeyedSource) preventExtensions(throw bool) bool {
 	return d.w().preventExtensions(throw)
+}
+
+// copyRest copies to target the own enumerable properties of the
+// destructured value the pattern took no key of, as CopyDataProperties
+// does with the keys taken excluded: from the value converted to an
+// object, which is what its getters and its Proxy's get trap get as
+// this and receiver, not the source.
+func (d *destructKeyedSource) copyRest(target *Object) {
+	from := d.wrapped.ToObject(d.r)
+	keys := (&destructKeyedSourceIter{d: d, wrapped: from.self.iterateKeys()}).next
+	props := (&enumPropertiesIter{o: from, wrapped: (&enumerableIter{o: from, wrapped: keys}).next}).next
+	for item, next := props(); next != nil; item, next = next() {
+		createDataPropertyOrThrow(target, item.name, item.value)
+	}
 }
 
 type destructKeyedSourceIter struct {

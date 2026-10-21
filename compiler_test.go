@@ -4175,6 +4175,58 @@ func TestObjectPatternShorthandInit(t *testing.T) {
 	testScript(SCRIPT, valueInt(1), t)
 }
 
+// TestObjectRestPatternReceiver: in an object pattern with a rest element,
+// the getters the pattern and the rest run, own and inherited, get the
+// destructured value as this, and a Proxy's get trap gets it as the
+// receiver, in the order CopyDataProperties makes the calls (as Node.js
+// 26 does); a primitive's getter gets the primitive. The rest is
+// unchanged.
+func TestObjectRestPatternReceiver(t *testing.T) {
+	const SCRIPT = `
+	const log = [];
+	const sym = Symbol("s");
+	const proto = { get inherited() { log.push("inherited " + (this === src)); return 0; } };
+	const src = Object.create(proto, {
+		a: { get() { log.push("a " + (this === src)); return 1; }, enumerable: true },
+		b: { value: 2, enumerable: true },
+		c: { get() { log.push("c " + (this === src)); return 3; }, enumerable: true },
+		[sym]: { get() { log.push("sym " + (this === src)); return 4; }, enumerable: true },
+	});
+	const k = "a";
+	({ inherited: _, [k]: _a, ...rest1 } = src);
+	var _, _a, rest1;
+	assert.sameValue(JSON.stringify(rest1), '{"b":2,"c":3}', "rest1");
+	assert.sameValue(rest1[sym], 4, "rest1[sym]");
+	const { a, ...rest2 } = src;
+	assert.sameValue(JSON.stringify(rest2), '{"b":2,"c":3}', "rest2");
+	assert.sameValue(JSON.stringify(log), JSON.stringify(["inherited true", "a true", "c true", "sym true", "a true", "c true", "sym true"]), "getters");
+
+	log.length = 0;
+	const target = { a: 1, b: 2, get c() { log.push("c this " + (this === p)); return 3; } };
+	const p = new Proxy(target, {
+		get(t, k, r) { log.push("get " + String(k) + " " + (r === p)); return Reflect.get(t, k, r); },
+		ownKeys(t) { log.push("ownKeys"); return Reflect.ownKeys(t); },
+		getOwnPropertyDescriptor(t, k) { log.push("gopd " + String(k)); return Reflect.getOwnPropertyDescriptor(t, k); },
+	});
+	const { a: pa, ...prest } = p;
+	assert.sameValue(JSON.stringify(log), JSON.stringify(["get a true", "ownKeys", "gopd b", "get b true", "gopd c", "get c true", "c this true"]), "proxy");
+	assert.sameValue(JSON.stringify(prest), '{"b":2,"c":3}', "proxy rest");
+
+	Object.defineProperty(Number.prototype, "g", { get() { "use strict"; return this; }, configurable: true });
+	try {
+		const { g, ...nrest } = 5;
+		assert.sameValue(g, 5, "primitive getter");
+		assert.sameValue(JSON.stringify(nrest), "{}", "primitive rest");
+	} finally {
+		delete Number.prototype.g;
+	}
+	const { 0: first, ...srest } = "ab";
+	assert.sameValue(first, "a", "string first");
+	assert.sameValue(JSON.stringify(srest), '{"1":"b"}', "string rest");
+	`
+	testScriptWithTestLib(SCRIPT, _undefined, t)
+}
+
 func TestArrayBindingPatternRestPattern(t *testing.T) {
 	const SCRIPT = `
 	const [a, b, ...[c, d]] = [1, 2, 3, 4];

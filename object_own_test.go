@@ -358,11 +358,13 @@ func TestGetOwnDataPropertySymbol(t *testing.T) {
 	}
 }
 
-// TestOwnAPIs_DestructuringSource: an object rest destructuring hands a
-// getter, as this, a source object that forwards to the destructured
-// value and records the keys read from it, which the rest then leaves
-// out. The own-property APIs treat it as they treat a Proxy, which it may
-// wrap: not ok, no trap run, and no key recorded.
+// TestOwnAPIs_DestructuringSource: the source an object rest destructuring
+// reads through, which forwards to the destructured value and records the
+// keys read from it, never reaches script: a getter run by the pattern
+// gets the value itself as this, on which the APIs read as on any other
+// object, and the rest keeps the keys read. Built from Go, the source is
+// not ok for the APIs, as a Proxy is, which it may wrap: no trap runs and
+// no key is recorded.
 func TestOwnAPIs_DestructuringSource(t *testing.T) {
 	r := New()
 	var probed []*Object
@@ -370,7 +372,6 @@ func TestOwnAPIs_DestructuringSource(t *testing.T) {
 		probed = append(probed, o)
 		o.GetOwnDataProperty("b")
 		o.GetOwnDataPropertySymbol(r.Get("slot").(*Symbol))
-		o.AppendOwnPropertyKeys(nil, nil)
 	})
 	v, err := r.RunString(`(function () {
 		globalThis.traps = 0;
@@ -380,41 +381,47 @@ func TestOwnAPIs_DestructuringSource(t *testing.T) {
 		for (const trap of ["getOwnPropertyDescriptor", "ownKeys", "get", "has"]) {
 			handler[trap] = function () { globalThis.traps++; return Reflect[trap].apply(null, arguments); };
 		}
+		const p = new Proxy(target, handler);
 		const {a: a1, ...plainRest} = target;
-		const {a: a2, ...proxyRest} = new Proxy(target, handler);
-		globalThis.traps = 0;
-		return [plainRest, proxyRest];
+		const {a: a2, ...proxyRest} = p;
+		return [target, p, plainRest, proxyRest];
 	})()`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(probed) != 2 {
-		t.Fatalf("getter ran %d times, want 2", len(probed))
+	results := v.(*Object)
+	target, p := results.Get("0").(*Object), results.Get("1").(*Object)
+	if len(probed) != 2 || probed[0] != target || probed[1] != p {
+		t.Fatalf("getters got %v as this, want the target and the proxy", probed)
 	}
 	slot := r.Get("slot").(*Symbol)
-	for i, o := range probed {
-		if v, _, _, _, ok := o.GetOwnDataProperty("b"); ok || v != nil {
-			t.Fatalf("source %d: b = %v %v", i, v, ok)
-		}
-		if v, _, _, _, ok := o.GetOwnDataPropertySymbol(slot); ok || v != nil {
-			t.Fatalf("source %d: slot = %v %v", i, v, ok)
-		}
-		if names, symbols, ok := o.AppendOwnPropertyKeys(nil, nil); ok || names != nil || symbols != nil {
-			t.Fatalf("source %d: keys %v %v %v", i, names, symbols, ok)
-		}
-	}
-	if traps := r.Get("traps").ToInteger(); traps != 0 {
-		t.Fatalf("%d traps ran", traps)
-	}
-	// The reads made while the rest was being built recorded no key.
-	rests := v.(*Object)
-	for i := 0; i < 2; i++ {
-		rest := rests.Get(fmt.Sprint(i)).(*Object)
+	for i := 2; i < 4; i++ {
+		rest := results.Get(fmt.Sprint(i)).(*Object)
 		if v, _, _, _, ok := rest.GetOwnDataProperty("b"); !ok || v.ToInteger() != 2 {
 			t.Fatalf("rest %d: b = %v %v", i, v, ok)
 		}
 		if v, _, _, _, ok := rest.GetOwnDataPropertySymbol(slot); !ok || v.ToInteger() != 42 {
 			t.Fatalf("rest %d: slot = %v %v", i, v, ok)
+		}
+	}
+
+	for _, wrapped := range []*Object{target, p} {
+		src := r.newDestructKeyedSource(wrapped)
+		r.Set("traps", 0)
+		if v, _, _, _, ok := src.GetOwnDataProperty("b"); ok || v != nil {
+			t.Fatalf("source of %v: b = %v %v", wrapped, v, ok)
+		}
+		if v, _, _, _, ok := src.GetOwnDataPropertySymbol(slot); ok || v != nil {
+			t.Fatalf("source of %v: slot = %v %v", wrapped, v, ok)
+		}
+		if names, symbols, ok := src.AppendOwnPropertyKeys(nil, nil); ok || names != nil || symbols != nil {
+			t.Fatalf("source of %v: keys %v %v %v", wrapped, names, symbols, ok)
+		}
+		if traps := r.Get("traps").ToInteger(); traps != 0 {
+			t.Fatalf("source of %v: %d traps ran", wrapped, traps)
+		}
+		if d := src.self.(*destructKeyedSource); len(d.usedKeys.stringProps) != 0 || len(d.usedKeys.symbolProps) != 0 {
+			t.Fatalf("source of %v: keys recorded", wrapped)
 		}
 	}
 }

@@ -12,8 +12,7 @@ import "github.com/dop251/goja/unistring"
 // ok is false, and names and symbols are returned unchanged, for a Proxy,
 // as only its ownKeys trap can give its keys, and the trap is never run;
 // and for any other object whose keys this package cannot read without
-// running JavaScript or reading another object, such as the source an
-// object rest destructuring passes a getter as this.
+// running JavaScript or reading another object.
 //
 // For an ordinary object (an object literal, new Object(), Object.create
 // and the like) the call allocates nothing when names and symbols have
@@ -60,8 +59,7 @@ func (o *Object) AppendOwnPropertyKeys(names []string, symbols []*Symbol) (names
 // object has no own property name, when the property is an accessor, for
 // a Proxy, whose own properties only its getOwnPropertyDescriptor trap can
 // describe, and for any other object whose properties this package cannot
-// read without running JavaScript or reading another object, such as the
-// source an object rest destructuring passes a getter as this. It never
+// read without running JavaScript or reading another object. It never
 // runs JavaScript: no getter, setter or Proxy trap.
 //
 // For an ordinary object and an ASCII name the lookup allocates nothing.
@@ -119,9 +117,9 @@ func (o *Object) GetOwnDataPropertySymbol(sym *Symbol) (v Value, writable, enume
 // them itself, or Go code gives them (a Go-backed or dynamic object's, or
 // a built-in object's that builds them on first use). It lists the
 // implementations known to be so, and every other one is not: among them
-// a Proxy, whose traps would run, and a destructKeyedSource (the source
-// an object rest destructuring passes a getter as this), which reads the
-// object it wraps, perhaps a Proxy, and records the keys read from it.
+// a Proxy, whose traps would run, and a destructKeyedSource (what an
+// object pattern with a rest element reads the value through), which
+// reads the object it wraps, perhaps a Proxy, and records the keys read.
 func ownPropsReadable(impl objectImpl) bool {
 	switch impl.(type) {
 	case *baseObject, *guardedObject, *templatedObject, *templatedFuncObject, *templatedArrayObject,

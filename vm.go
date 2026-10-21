@@ -5432,8 +5432,16 @@ type _copyRest struct{}
 var copyRest _copyRest
 
 func (_copyRest) exec(vm *vm) {
-	vm.push(vm.r.NewObject())
-	vm.r.copyDataProperties(vm.stack[vm.sp-1], vm.stack[vm.sp-2])
+	target := vm.r.NewObject()
+	vm.push(target)
+	if src, ok := vm.stack[vm.sp-2].(*Object); ok {
+		if d, ok := src.self.(*destructKeyedSource); ok {
+			d.copyRest(target)
+			vm.pc++
+			return
+		}
+	}
+	vm.r.copyDataProperties(target, vm.stack[vm.sp-2])
 	vm.pc++
 }
 
