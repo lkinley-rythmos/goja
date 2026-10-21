@@ -111,13 +111,13 @@ func (r *Runtime) createSymbolProto(val *Object) objectImpl {
 	o.init()
 
 	o._putProp("constructor", r.getSymbol(), true, false, true)
-	o.setOwnStr("description", &valueProperty{
+	o._put("description", &valueProperty{
 		configurable: true,
 		getterFunc: r.newNativeFunc(func(call FunctionCall) Value {
 			return r.thisSymbolValue(call.This).desc
 		}, "get description", 0),
 		accessor: true,
-	}, false)
+	})
 	o._putProp("toString", r.newNativeFunc(r.symbolproto_tostring, "toString", 0), true, false, true)
 	o._putProp("valueOf", r.newNativeFunc(r.symbolproto_valueOf, "valueOf", 0), true, false, true)
 	o._putSym(SymToPrimitive, valueProp(r.newNativeFunc(r.symbolproto_valueOf, "[Symbol.toPrimitive]", 1), false, false, true))

@@ -278,12 +278,12 @@ func (r *Runtime) createMapProto(val *Object) objectImpl {
 	o._putProp("forEach", r.newNativeFunc(r.mapProto_forEach, "forEach", 1), true, false, true)
 	o._putProp("has", r.newNativeFunc(r.mapProto_has, "has", 1), true, false, true)
 	o._putProp("get", r.newNativeFunc(r.mapProto_get, "get", 1), true, false, true)
-	o.setOwnStr("size", &valueProperty{
+	o._put("size", &valueProperty{
 		getterFunc:   r.newNativeFunc(r.mapProto_getSize, "get size", 0),
 		accessor:     true,
 		writable:     true,
 		configurable: true,
-	}, true)
+	})
 	o._putProp("keys", r.newNativeFunc(r.mapProto_keys, "keys", 0), true, false, true)
 	o._putProp("values", r.newNativeFunc(r.mapProto_values, "values", 0), true, false, true)
 

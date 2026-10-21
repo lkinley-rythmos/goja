@@ -588,12 +588,12 @@ func (r *Runtime) createSetProto(val *Object) objectImpl {
 	o._putProp("forEach", r.newNativeFunc(r.setProto_forEach, "forEach", 1), true, false, true)
 	r.global.setHas = r.newNativeFunc(r.setProto_has, "has", 1)
 	o._putProp("has", r.global.setHas, true, false, true)
-	o.setOwnStr("size", &valueProperty{
+	o._put("size", &valueProperty{
 		getterFunc:   r.newNativeFunc(r.setProto_getSize, "get size", 0),
 		accessor:     true,
 		writable:     true,
 		configurable: true,
-	}, true)
+	})
 
 	o._putProp("difference", r.newNativeFunc(r.setProto_difference, "difference", 1), true, false, true)
 	o._putProp("intersection", r.newNativeFunc(r.setProto_intersection, "intersection", 1), true, false, true)

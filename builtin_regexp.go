@@ -1679,51 +1679,51 @@ func (r *Runtime) getRegExpPrototype() *Object {
 		o._putProp("exec", r.newNativeFunc(r.regexpproto_exec, "exec", 1), true, false, true)
 		o._putProp("test", r.newNativeFunc(r.regexpproto_test, "test", 1), true, false, true)
 		o._putProp("toString", r.newNativeFunc(r.regexpproto_toString, "toString", 0), true, false, true)
-		o.setOwnStr("source", &valueProperty{
+		o._put("source", &valueProperty{
 			configurable: true,
 			getterFunc:   r.newNativeFunc(r.regexpproto_getSource, "get source", 0),
 			accessor:     true,
-		}, false)
-		o.setOwnStr("global", &valueProperty{
+		})
+		o._put("global", &valueProperty{
 			configurable: true,
 			getterFunc:   r.newNativeFunc(r.regexpproto_getGlobal, "get global", 0),
 			accessor:     true,
-		}, false)
-		o.setOwnStr("hasIndices", &valueProperty{
+		})
+		o._put("hasIndices", &valueProperty{
 			configurable: true,
 			getterFunc:   r.newNativeFunc(r.regexpproto_getHasIndices, "get hasIndices", 0),
 			accessor:     true,
-		}, false)
-		o.setOwnStr("multiline", &valueProperty{
+		})
+		o._put("multiline", &valueProperty{
 			configurable: true,
 			getterFunc:   r.newNativeFunc(r.regexpproto_getMultiline, "get multiline", 0),
 			accessor:     true,
-		}, false)
-		o.setOwnStr("dotAll", &valueProperty{
+		})
+		o._put("dotAll", &valueProperty{
 			configurable: true,
 			getterFunc:   r.newNativeFunc(r.regexpproto_getDotAll, "get dotAll", 0),
 			accessor:     true,
-		}, false)
-		o.setOwnStr("ignoreCase", &valueProperty{
+		})
+		o._put("ignoreCase", &valueProperty{
 			configurable: true,
 			getterFunc:   r.newNativeFunc(r.regexpproto_getIgnoreCase, "get ignoreCase", 0),
 			accessor:     true,
-		}, false)
-		o.setOwnStr("unicode", &valueProperty{
+		})
+		o._put("unicode", &valueProperty{
 			configurable: true,
 			getterFunc:   r.newNativeFunc(r.regexpproto_getUnicode, "get unicode", 0),
 			accessor:     true,
-		}, false)
-		o.setOwnStr("sticky", &valueProperty{
+		})
+		o._put("sticky", &valueProperty{
 			configurable: true,
 			getterFunc:   r.newNativeFunc(r.regexpproto_getSticky, "get sticky", 0),
 			accessor:     true,
-		}, false)
-		o.setOwnStr("flags", &valueProperty{
+		})
+		o._put("flags", &valueProperty{
 			configurable: true,
 			getterFunc:   r.newNativeFunc(r.regexpproto_getFlags, "get flags", 0),
 			accessor:     true,
-		}, false)
+		})
 
 		o._putSym(SymMatch, valueProp(r.newNativeFunc(r.regexpproto_stdMatcher, "[Symbol.match]", 1), true, false, true))
 		o._putSym(SymMatchAll, valueProp(r.newNativeFunc(r.regexpproto_stdMatcherAll, "[Symbol.matchAll]", 1), true, false, true))
