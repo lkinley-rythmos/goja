@@ -59,7 +59,9 @@ func (o *Object) AppendOwnPropertyKeys(names []string, symbols []*Symbol) (names
 // object has no own property name, when the property is an accessor, for
 // a Proxy, whose own properties only its getOwnPropertyDescriptor trap can
 // describe, and for any other object whose properties this package cannot
-// read without running JavaScript or reading another object. It never
+// read without running JavaScript or reading another object. It is false
+// too for an Error's stack until something else has read it: building it
+// reads the error's name and message, which may run JavaScript. It never
 // runs JavaScript: no getter, setter or Proxy trap.
 //
 // For an ordinary object and an ASCII name the lookup allocates nothing.
@@ -72,6 +74,12 @@ func (o *Object) GetOwnDataProperty(name string) (v Value, writable, enumerable,
 	switch impl := o.self.(type) {
 	case *baseObject:
 		prop = impl.values[unistring.NewFromString(name)]
+	case *errorObject:
+		u := unistring.NewFromString(name)
+		if u == propNameStack && !impl.stackPropAdded {
+			return nil, false, false, false, false
+		}
+		prop = impl.getOwnPropStr(u)
 	default:
 		if !ownPropsReadable(o.self) {
 			return nil, false, false, false, false
@@ -115,11 +123,13 @@ func (o *Object) GetOwnDataPropertySymbol(sym *Symbol) (v Value, writable, enume
 // read, with getOwnPropStr, getOwnPropSym, stringKeys and symbols, without
 // running JavaScript and without reading another object: the object keeps
 // them itself, or Go code gives them (a Go-backed or dynamic object's, or
-// a built-in object's that builds them on first use). It lists the
-// implementations known to be so, and every other one is not: among them
-// a Proxy, whose traps would run, and a destructKeyedSource (what an
-// object pattern with a rest element reads the value through), which
-// reads the object it wraps, perhaps a Proxy, and records the keys read.
+// a built-in object's that builds them on first use; an Error's stack,
+// whose building reads the error's name and message, GetOwnDataProperty
+// leaves out itself). It lists the implementations known to be so, and
+// every other one is not: among them a Proxy, whose traps would run, and
+// a destructKeyedSource (what an object pattern with a rest element reads
+// the value through), which reads the object it wraps, perhaps a Proxy,
+// and records the keys read.
 func ownPropsReadable(impl objectImpl) bool {
 	switch impl.(type) {
 	case *baseObject, *guardedObject, *templatedObject, *templatedFuncObject, *templatedArrayObject,

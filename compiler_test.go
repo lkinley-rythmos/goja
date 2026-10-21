@@ -4176,8 +4176,9 @@ func TestObjectPatternShorthandInit(t *testing.T) {
 }
 
 // TestObjectRestPatternReceiver: in an object pattern with a rest element,
-// the getters the pattern and the rest run, own and inherited, get the
-// destructured value as this, and a Proxy's get trap gets it as the
+// the getters the pattern and the rest run, own and inherited, under
+// string, numeric, symbol and computed keys, get the destructured value as
+// this, and a Proxy's get trap gets it as the
 // receiver, in the order CopyDataProperties makes the calls (as Node.js
 // 26 does); a primitive's getter gets the primitive. The rest is
 // unchanged.
@@ -4220,6 +4221,13 @@ func TestObjectRestPatternReceiver(t *testing.T) {
 	} finally {
 		delete Number.prototype.g;
 	}
+	const s2 = Symbol("s2");
+	const src2 = { get [s2]() { return this; }, get 0() { return this; }, c: 1 };
+	const { [s2]: sa, 0: sb, ...rest3 } = src2;
+	assert.sameValue(sa, src2, "symbol key");
+	assert.sameValue(sb, src2, "numeric key");
+	assert.sameValue(JSON.stringify(rest3), '{"c":1}', "rest3");
+
 	const { 0: first, ...srest } = "ab";
 	assert.sameValue(first, "a", "string first");
 	assert.sameValue(JSON.stringify(srest), '{"1":"b"}', "string rest");

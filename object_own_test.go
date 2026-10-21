@@ -65,6 +65,22 @@ const ownAPIFixtures = `(function () {
 	return out;
 })()`
 
+// ownLookup is what GetOwnDataProperty or GetOwnDataPropertySymbol gave
+// for a key. unbuilt is set for an Error's stack the lookup found not yet
+// built, which it reports not ok.
+type ownLookup struct {
+	v                        Value
+	writable, enum, conf, ok bool
+	unbuilt                  bool
+}
+
+// checkOwnAPIs makes the Go lookups of the properties first, on the
+// object as the fixture left it, and only then asks
+// Object.getOwnPropertyDescriptor, so that a property built on first read
+// is built by the Go lookup, not before it by JavaScript. Reflect.ownKeys,
+// which builds none, is asked before, so that the keys are compared on the
+// object as the fixture left it too: a function lists its prototype in
+// another place once it is built.
 func checkOwnAPIs(t *testing.T, r *Runtime, label string, o *Object) {
 	t.Helper()
 	ownKeys, err := r.RunString(`(o => Reflect.ownKeys(o))`)
@@ -77,14 +93,34 @@ func checkOwnAPIs(t *testing.T, r *Runtime, label string, o *Object) {
 	}
 	ownKeysFn, _ := AssertFunction(ownKeys)
 	describeFn, _ := AssertFunction(describe)
-	want, err := ownKeysFn(nil, o)
-	if err != nil {
-		t.Fatal(err)
-	}
 	names, symbols, ok := o.AppendOwnPropertyKeys(nil, nil)
 	if !ok {
 		t.Fatalf("%s: ok false", label)
 	}
+	want, err := ownKeysFn(nil, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]ownLookup, 0, len(names)+len(symbols))
+	for _, name := range names {
+		var l ownLookup
+		if e, isErr := o.self.(*errorObject); isErr && name == propNameStack && !e.stackPropAdded {
+			l.unbuilt = true
+		}
+		l.v, l.writable, l.enum, l.conf, l.ok = o.GetOwnDataProperty(name)
+		got = append(got, l)
+	}
+	for _, sym := range symbols {
+		var l ownLookup
+		l.v, l.writable, l.enum, l.conf, l.ok = o.GetOwnDataPropertySymbol(sym)
+		got = append(got, l)
+	}
+	var missing []bool
+	for _, name := range []string{"nope", "\u0000", ""} {
+		v, _, _, _, ok := o.GetOwnDataProperty(name)
+		missing = append(missing, ok || v != nil)
+	}
+
 	wantObj := want.(*Object)
 	n := int(wantObj.Get("length").ToInteger())
 	if n != len(names)+len(symbols) {
@@ -92,51 +128,42 @@ func checkOwnAPIs(t *testing.T, r *Runtime, label string, o *Object) {
 	}
 	for i := 0; i < n; i++ {
 		k := wantObj.Get(fmt.Sprint(i))
+		var key any
 		if i < len(names) {
 			if _, isSym := k.(*Symbol); isSym || k.String() != names[i] {
 				t.Fatalf("%s: key %d = %q, want %v", label, i, names[i], k)
 			}
-			d, err := describeFn(nil, o, k)
-			if err != nil {
-				t.Fatal(err)
-			}
-			v, w, e, c, ok := o.GetOwnDataProperty(names[i])
-			dObj := d.(*Object)
-			accessor := dObj.Get("0").ToBoolean()
-			if accessor {
-				if ok || v != nil {
-					t.Fatalf("%s: %q is an accessor; got %v %v", label, names[i], v, ok)
-				}
-				continue
-			}
-			if !ok || !v.SameAs(dObj.Get("1")) || w != dObj.Get("2").ToBoolean() || e != dObj.Get("3").ToBoolean() || c != dObj.Get("4").ToBoolean() {
-				t.Fatalf("%s: %q = %v %v/%v/%v %v, want %v", label, names[i], v, w, e, c, ok, d)
-			}
+			key = names[i]
 		} else if s := symbols[i-len(names)]; k != s {
 			t.Fatalf("%s: symbol %d = %v, want %v", label, i, s, k)
 		} else {
-			d, err := describeFn(nil, o, k)
-			if err != nil {
-				t.Fatal(err)
+			key = s
+		}
+		l := got[i]
+		if l.unbuilt {
+			if l.ok || l.v != nil {
+				t.Fatalf("%s: unbuilt stack = %v %v", label, l.v, l.ok)
 			}
-			v, w, e, c, ok := o.GetOwnDataPropertySymbol(s)
-			dObj := d.(*Object)
-			if dObj.Get("0").ToBoolean() {
-				if ok || v != nil {
-					t.Fatalf("%s: %v is an accessor; got %v %v", label, s, v, ok)
-				}
-				continue
+			continue
+		}
+		d, err := describeFn(nil, o, k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dObj := d.(*Object)
+		if dObj.Get("0").ToBoolean() {
+			if l.ok || l.v != nil {
+				t.Fatalf("%s: %v is an accessor; got %v %v", label, key, l.v, l.ok)
 			}
-			if !ok || !v.SameAs(dObj.Get("1")) || w != dObj.Get("2").ToBoolean() || e != dObj.Get("3").ToBoolean() || c != dObj.Get("4").ToBoolean() {
-				t.Fatalf("%s: %v = %v %v/%v/%v %v, want %v", label, s, v, w, e, c, ok, d)
-			}
+			continue
+		}
+		if !l.ok || !l.v.SameAs(dObj.Get("1")) || l.writable != dObj.Get("2").ToBoolean() || l.enum != dObj.Get("3").ToBoolean() || l.conf != dObj.Get("4").ToBoolean() {
+			t.Fatalf("%s: %v = %v %v/%v/%v %v, want %v", label, key, l.v, l.writable, l.enum, l.conf, l.ok, d)
 		}
 	}
-	for _, missing := range []string{"nope", "\u0000", ""} {
-		if has := o.hasOwnProperty(newStringValue(missing)); !has {
-			if v, _, _, _, ok := o.GetOwnDataProperty(missing); ok || v != nil {
-				t.Fatalf("%s: missing %q = %v %v", label, missing, v, ok)
-			}
+	for i, name := range []string{"nope", "\u0000", ""} {
+		if missing[i] && !o.hasOwnProperty(newStringValue(name)) {
+			t.Fatalf("%s: missing %q found", label, name)
 		}
 	}
 }
@@ -422,6 +449,56 @@ func TestOwnAPIs_DestructuringSource(t *testing.T) {
 		}
 		if d := src.self.(*destructKeyedSource); len(d.usedKeys.stringProps) != 0 || len(d.usedKeys.symbolProps) != 0 {
 			t.Fatalf("source of %v: keys recorded", wrapped)
+		}
+	}
+}
+
+// TestOwnAPIs_ErrorStack: an Error builds its stack on first read, from
+// its name and message, which a getter, a conversion or a Proxy trap may
+// give. Until script has read it GetOwnDataProperty reports the stack not
+// ok and runs none of them, and AppendOwnPropertyKeys lists it without
+// building it; once read, it is an own data property like any other.
+func TestOwnAPIs_ErrorStack(t *testing.T) {
+	r := New()
+	v, err := r.RunString(`(function () {
+		globalThis.calls = 0;
+		const named = new Error("message");
+		Object.defineProperty(named, "name", {get() { calls++; return "Error"; }});
+		const messaged = new Error();
+		messaged.message = {toString() { calls++; return "m"; }};
+		const proxied = new Error("m");
+		Object.setPrototypeOf(proxied, new Proxy(Error.prototype, {get(t, k, r) { calls++; return Reflect.get(t, k, r); }}));
+		return [named, messaged, proxied];
+	})()`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	errs := v.(*Object)
+	for i := 0; i < 3; i++ {
+		e := errs.Get(fmt.Sprint(i)).(*Object)
+		if v, _, _, _, ok := e.GetOwnDataProperty("stack"); ok || v != nil {
+			t.Fatalf("error %d: unbuilt stack = %v %v", i, v, ok)
+		}
+		if names, _, ok := e.AppendOwnPropertyKeys(nil, nil); !ok || len(names) == 0 || names[0] != "stack" {
+			t.Fatalf("error %d: keys %v %v", i, names, ok)
+		}
+	}
+	if calls := r.Get("calls").ToInteger(); calls != 0 {
+		t.Fatalf("%d getters, conversions or traps ran", calls)
+	}
+	r.Set("errs", errs)
+	stacks, err := r.RunString(`[0, 1, 2].map(i => errs[i].stack)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls := r.Get("calls").ToInteger(); calls == 0 {
+		t.Fatal("reading the stacks from script ran nothing")
+	}
+	for i := 0; i < 3; i++ {
+		e := errs.Get(fmt.Sprint(i)).(*Object)
+		v, w, en, c, ok := e.GetOwnDataProperty("stack")
+		if want := stacks.(*Object).Get(fmt.Sprint(i)); !ok || !v.SameAs(want) || !w || en || !c {
+			t.Fatalf("error %d: built stack = %v %v/%v/%v %v, want %v", i, v, w, en, c, ok, want)
 		}
 	}
 }
