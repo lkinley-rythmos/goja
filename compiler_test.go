@@ -4180,8 +4180,10 @@ func TestObjectPatternShorthandInit(t *testing.T) {
 // string, numeric, symbol and computed keys, get the destructured value as
 // this, and a Proxy's get trap gets it as the
 // receiver, in the order CopyDataProperties makes the calls (as Node.js
-// 26 does); a primitive's getter gets the primitive. The rest is
-// unchanged.
+// 18.20.3 does); a primitive's getter gets the primitive. The rest is
+// unchanged. Node.js 18 runs a getter under a computed key in such a
+// pattern twice (a V8 bug), which is not reproduced: the "getters" log
+// has each once.
 func TestObjectRestPatternReceiver(t *testing.T) {
 	const SCRIPT = `
 	const log = [];

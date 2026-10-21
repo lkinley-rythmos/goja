@@ -106,6 +106,10 @@ type classFuncObject struct {
 	baseJsFuncObject
 	initFields   *Program
 	computedKeys []Value
+	// ctorName is the name the class was given where it is written: its
+	// own, or its binding's, property key's or parameter's (not a computed
+	// key's). Calling it without new names it, as Node.js 18 does.
+	ctorName unistring.String
 
 	privateEnvType *privateEnvType
 	privateMethods []Value
@@ -310,8 +314,8 @@ func (f *baseJsFuncObject) construct(args []Value, newTarget *Object) *Object {
 }
 
 func (f *classFuncObject) Call(FunctionCall) Value {
-	if name := dataPropertyString(f.val, "name", ""); name != "" {
-		panic(f.val.runtime.newTypeErrorString("Class constructor " + name + " cannot be invoked without 'new'"))
+	if name := f.ctorName; name != "" {
+		panic(f.val.runtime.newTypeErrorString("Class constructor " + name.String() + " cannot be invoked without 'new'"))
 	}
 	panic(f.val.runtime.newTypeErrorString("Class constructors cannot be invoked without 'new'"))
 }
@@ -590,6 +594,24 @@ func (f *baseFuncObject) materializeIntrinsics() {
 	// re-scan from the beginning on the next enumeration.
 	f.lastSortedPropLen = 0
 	f.idxPropCount = 0
+}
+
+// forceName makes name the function's name: a non-writable,
+// non-enumerable, configurable data property, in place of whatever name it
+// has, even a non-configurable one or on a frozen function, or at the end
+// of its keys when it has none. Node.js 18 names an object literal's
+// anonymous class under a computed key so once it is made.
+func (f *baseFuncObject) forceName(name Value) {
+	if f.intrinsicsVirtual {
+		f.nameProp = valueProperty{value: name, configurable: true}
+		return
+	}
+	prop := &valueProperty{value: name, configurable: true}
+	if _, exists := f.values["name"]; exists {
+		f.values["name"] = prop
+	} else {
+		f._put("name", prop)
+	}
 }
 
 func (f *baseFuncObject) intrinsicProp(name unistring.String) *valueProperty {

@@ -213,6 +213,10 @@ var (
 		"test/language/module-code/top-level-await/pending-async-dep-from-cycle.js":                                                         true,
 		"test/language/module-code/top-level-await/module-graphs-does-not-hang.js":                                                          true,
 
+		// Array.prototype[Symbol.unscopables] has Node.js 18's names, which
+		// do not include toReversed, toSorted and toSpliced.
+		"test/built-ins/Array/prototype/Symbol.unscopables/change-array-by-copy.js": true,
+
 		// Unicode property escapes follow Node.js 18 (Unicode 15.1): scripts
 		// added since are not accepted, and the properties Go's unicode
 		// package has no data for (Script_Extensions, Bidi_Mirrored, the

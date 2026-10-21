@@ -11,9 +11,10 @@ import (
 // a setter for each of the names on Object.prototype, Array.prototype,
 // Error.prototype and TypeError.prototype, making the object runs neither,
 // and the object has its own data properties, with the attributes Node.js
-// 26.8.1 gives them (run in a fresh vm context; for the dynamic import
-// error, in Node.js's own realm; NewGoError has no Node.js counterpart and
-// keeps the attributes it had).
+// 18.20.3 gives them (run in a fresh vm context). Node.js 18 has no
+// Uint8Array.prototype.setFromHex or setFromBase64: their rows follow
+// ECMAScript (as Node.js 26.8.1 does); NewGoError has no Node.js
+// counterpart and keeps the attributes it had.
 func TestEngineCreatedObjectsDefineProperties(t *testing.T) {
 	r := New()
 	_, err := r.RunString(`
@@ -76,7 +77,7 @@ func TestEngineCreatedObjectsDefineProperties(t *testing.T) {
 }
 
 // TestRegExpResultKeyOrder: a RegExp match result has index before input,
-// as ECMAScript makes them and Node.js 26.8.1 lists them, in
+// as ECMAScript makes them and Node.js 18.20.3 lists them, in
 // Reflect.ownKeys, in Object.keys and in what JSON.stringify gives of a
 // copy, for exec, match and matchAll, with named groups and with the d
 // flag's indices.
@@ -131,9 +132,11 @@ globalThis.describe = (o, ks) => {
 // array literals are created, not assigned: no inherited setter or getter
 // runs, an own accessor is replaced, a computed "__proto__" is an own
 // property while a literal __proto__ sets the prototype, and an anonymous
-// function, arrow function or class value is named after its key. Each row
-// is as Node.js 26.8.1 has it (run in a fresh vm context); the static
-// block's assignment runs the inherited setter in both.
+// function, arrow function or class value of an object literal's computed
+// key is named after the key (a class field's is not, see
+// TestComputedKeyClassName). Each row is as Node.js 18.20.3 has it (run in
+// a fresh vm context); the static block's assignment runs the inherited
+// setter there too.
 func TestObjectLiteralDefinesProperties(t *testing.T) {
 	r := New()
 	if _, err := r.RunString(objectLiteralHarness); err != nil {
@@ -163,8 +166,8 @@ func TestObjectLiteralDefinesProperties(t *testing.T) {
 		{"spread then computed", `{...{x: 1}, [k]: 2}`, `["x", "k"]`, `keys=x,k x=1/true/true/true k=2/true/true/true proto=Object.prototype calls=0`},
 		{"array with a hole", `[1, , 3]`, `["0", "1", "2"]`, `keys=0,2,length 0=1/true/true/true 1=absent 2=3/true/true/true proto=other calls=0`},
 		{"array spread", `[...[1, 2]]`, `["0", "1"]`, `keys=0,1,length 0=1/true/true/true 1=2/true/true/true proto=other calls=0`},
-		{"class computed fields", `new (class { [k] = 1; [sym] = function () {}; })()`, `["k", sym]`, `keys=k,Symbol(sym) k=1/true/true/true Symbol(sym)=fn:[sym]/true/true/true proto=other calls=0`},
-		{"class computed arrow field", `new (class { [k] = () => {}; })()`, `["k"]`, `keys=k k=fn:k/true/true/true proto=other calls=0`},
+		{"class computed fields", `new (class { [k] = 1; [sym] = function () {}; })()`, `["k", sym]`, `keys=k,Symbol(sym) k=1/true/true/true Symbol(sym)=fn:undefined/true/true/true proto=other calls=0`},
+		{"class computed arrow field", `new (class { [k] = () => {}; })()`, `["k"]`, `keys=k k=fn:undefined/true/true/true proto=other calls=0`},
 		{"class computed named class field", `new (class { [k] = class B {}; })()`, `["k"]`, `keys=k k=fn:B/true/true/true proto=other calls=0`},
 		{"class static computed field", `(class C { static [k] = 2; })`, `["k"]`, `keys=length,name,prototype,k k=2/true/true/true proto=other calls=0`},
 		{"class computed methods", `(class { [k]() {} get [one]() { return 1; } }).prototype`, `["k", "1"]`, `keys=1,constructor,k k=fn:k/true/false/true 1=accessor/function/undefined/false/true proto=Object.prototype calls=0`},
@@ -184,13 +187,14 @@ func TestObjectLiteralDefinesProperties(t *testing.T) {
 }
 
 // TestArrayUnscopables: Array.prototype[Symbol.unscopables] has Node.js
-// 26.8.1's (and ECMAScript's) names, in its order, each an own data
-// property that is true and writable, enumerable and configurable, on an
-// object with no prototype; a with statement on an array leaves each of
-// them, and no other array method, to the outer scope.
+// 18.20.3's names, in its order, each an own data property that is true
+// and writable, enumerable and configurable, on an object with no
+// prototype; a with statement on an array leaves each of them, and no
+// other array method, to the outer scope. (Node.js 18 has no toReversed,
+// toSorted or toSpliced, which goja has; they are not unscopable.)
 func TestArrayUnscopables(t *testing.T) {
 	const SCRIPT = `
-	const names = ["at", "copyWithin", "entries", "fill", "find", "findIndex", "findLast", "findLastIndex", "flat", "flatMap", "includes", "keys", "toReversed", "toSorted", "toSpliced", "values"];
+	const names = ["copyWithin", "entries", "fill", "find", "findIndex", "flat", "flatMap", "includes", "keys", "values", "at", "findLast", "findLastIndex"];
 	const u = Array.prototype[Symbol.unscopables];
 	assert.sameValue(JSON.stringify(Reflect.ownKeys(u)), JSON.stringify(names), "names");
 	assert.sameValue(Object.getPrototypeOf(u), null, "prototype");
@@ -209,49 +213,57 @@ func TestArrayUnscopables(t *testing.T) {
 	testScriptWithTestLib(SCRIPT, _undefined, t)
 }
 
-// TestComputedKeyClassName: an anonymous class that is the value of a
-// property with a computed key, in an object literal or a class's instance
-// or static field, is named after the key once its methods and accessors
-// are defined (a static name method or getter does not stay) and before its
-// static fields and blocks run (a static name field, or a name a static
-// block defines, stays, and a static block reads the key's name);
-// anonymous functions and arrow functions are named after the key, and a
-// class in a variable, assignment, field, parameter default or destructuring
-// default is named after its target. Each row is as Node.js 26.8.1 has it
-// (run in a fresh vm context).
+// TestComputedKeyClassName: how a function, arrow function or class
+// without a name of its own is named after where it is written, and how
+// calling a class without new names it, as Node.js 18.20.3 (production
+// rle-api) has it, which differs from ECMAScript and later Node.js:
+//   - an object literal's computed key, constant ones (["x"]) too, names
+//     the value; a class is named before its static fields and blocks run
+//     and again once made, whatever name they gave it (a static name
+//     field, method or getter, a non-configurable name, a deleted name, a
+//     frozen class);
+//   - a class's field with a computed key, constant ones too, does not
+//     name its value: a class keeps "", a function or arrow function gets
+//     an undefined name;
+//   - calling a class without new names it only by a name it was given
+//     where it is written (its own, or its binding's, property key's,
+//     field's or parameter's), never by a computed key.
+//
+// Each expected value is Node.js 18.20.3's, run in a fresh vm context.
 func TestComputedKeyClassName(t *testing.T) {
 	r := New()
-	if _, err := r.RunString(`
-	globalThis.k = "x";
-	globalThis.sym = Symbol("s");
-	globalThis.nameOf = f => {
-		try {
-			const n = f();
-			return typeof n === "string" ? JSON.stringify(n) : typeof n;
-		} catch (e) {
-			return e.constructor.name;
-		}
-	};
-	`); err != nil {
+	if _, err := r.RunString(`globalThis.k = "x";
+globalThis.sym = Symbol("s");
+globalThis.desc = (o, p) => { const d = Object.getOwnPropertyDescriptor(o, p); return d === undefined ? "absent" : JSON.stringify(d); };
+globalThis.msg = f => { try { f(); return "no throw"; } catch (e) { return e.constructor.name + ": " + e.message; } };
+globalThis.nameOf = f => {
+	try {
+		const n = f();
+		return typeof n === "string" ? JSON.stringify(n) : typeof n;
+	} catch (e) {
+		return e.constructor.name;
+	}
+};
+`); err != nil {
 		t.Fatal(err)
 	}
 	for _, row := range []struct{ label, fn, want string }{
 		{"instance computed field, static name field", `() => new (class { [k] = class { static name = "kept"; }; })()[k].name`, `"kept"`},
-		{"instance computed field, static name method", `() => typeof new (class { [k] = class { static name() {} }; })()[k].name`, `"string"`},
-		{"instance computed field, static name getter", `() => new (class { [k] = class { static get name() { return "got"; } }; })()[k].name`, `"x"`},
+		{"instance computed field, static name method", `() => typeof new (class { [k] = class { static name() {} }; })()[k].name`, `"function"`},
+		{"instance computed field, static name getter", `() => new (class { [k] = class { static get name() { return "got"; } }; })()[k].name`, `"got"`},
 		{"instance computed field, static block non-configurable", `() => new (class { [k] = class { static { Object.defineProperty(this, "name", {value: "fixed", configurable: false}); } }; })()[k].name`, `"fixed"`},
-		{"instance computed field, static block reads name", `() => { let seen; new (class { [k] = class { static { seen = this.name; } }; })(); return seen; }`, `"x"`},
-		{"instance computed field, plain class", `() => new (class { [k] = class {}; })()[k].name`, `"x"`},
-		{"instance computed symbol field, plain class", `() => new (class { [sym] = class {}; })()[sym].name`, `"[s]"`},
-		{"instance computed field, function", `() => new (class { [k] = function () {}; })()[k].name`, `"x"`},
-		{"instance computed field, arrow", `() => new (class { [k] = () => {}; })()[k].name`, `"x"`},
+		{"instance computed field, static block reads name", `() => { let seen; new (class { [k] = class { static { seen = this.name; } }; })(); return seen; }`, `""`},
+		{"instance computed field, plain class", `() => new (class { [k] = class {}; })()[k].name`, `""`},
+		{"instance computed symbol field, plain class", `() => new (class { [sym] = class {}; })()[sym].name`, `""`},
+		{"instance computed field, function", `() => new (class { [k] = function () {}; })()[k].name`, `undefined`},
+		{"instance computed field, arrow", `() => new (class { [k] = () => {}; })()[k].name`, `undefined`},
 		{"static computed field, static name field", `() => (class { static [k] = class { static name = "kept"; }; })[k].name`, `"kept"`},
-		{"static computed field, plain class", `() => (class { static [k] = class {}; })[k].name`, `"x"`},
-		{"static computed field, static block reads name", `() => { let seen; (class { static [k] = class { static { seen = this.name; } }; }); return seen; }`, `"x"`},
-		{"static computed field, derived plain class", `() => (class { static [k] = class extends Object {}; })[k].name`, `"x"`},
-		{"object literal computed, static name field", `() => ({[k]: class { static name = "kept"; }})[k].name`, `"kept"`},
+		{"static computed field, plain class", `() => (class { static [k] = class {}; })[k].name`, `""`},
+		{"static computed field, static block reads name", `() => { let seen; (class { static [k] = class { static { seen = this.name; } }; }); return seen; }`, `""`},
+		{"static computed field, derived plain class", `() => (class { static [k] = class extends Object {}; })[k].name`, `""`},
+		{"object literal computed, static name field", `() => ({[k]: class { static name = "kept"; }})[k].name`, `"x"`},
 		{"object literal computed, static name getter", `() => ({[k]: class { static get name() { return "got"; } }})[k].name`, `"x"`},
-		{"object literal computed, static block non-configurable", `() => ({[k]: class { static { Object.defineProperty(this, "name", {value: "fixed", configurable: false}); } }})[k].name`, `"fixed"`},
+		{"object literal computed, static block non-configurable", `() => ({[k]: class { static { Object.defineProperty(this, "name", {value: "fixed", configurable: false}); } }})[k].name`, `"x"`},
 		{"object literal computed, static block reads name", `() => { let seen; ({[k]: class { static { seen = this.name; } }}); return seen; }`, `"x"`},
 		{"object literal computed, derived static block reads name", `() => { let seen; ({[k]: class extends Object { static { seen = this.name; } }}); return seen; }`, `"x"`},
 		{"object literal computed symbol, plain class", `() => ({[sym]: class {}})[sym].name`, `"[s]"`},
@@ -267,6 +279,49 @@ func TestComputedKeyClassName(t *testing.T) {
 		{"object literal computed, static name method", `() => typeof ({[k]: class { static name() {} }})[k].name`, `"string"`},
 		{"variable, static name method", `() => { const v = class { static name() {} }; return typeof v.name; }`, `"function"`},
 		{"variable, static name getter", `() => { const v = class { static get name() { return "got"; } }; return v.name; }`, `"got"`},
+		{"object literal constant computed key, static name field", `() => desc(({["x"]: class { static name = "kept"; }})["x"], "name")`, `"{\"value\":\"x\",\"writable\":false,\"enumerable\":false,\"configurable\":true}"`},
+		{"object literal constant computed key, static block reads name", `() => { let s; ({["x"]: class { static { s = this.name; } }}); return s; }`, `"x"`},
+		{"object literal constant computed key, static name method", `() => typeof ({["x"]: class { static name() {} }})["x"].name`, `"string"`},
+		{"object literal constant computed number key, class", `() => desc(({[1]: class {}})[1], "name")`, `"{\"value\":\"1\",\"writable\":false,\"enumerable\":false,\"configurable\":true}"`},
+		{"object literal constant computed key, function", `() => desc(({["x"]: function () {}})["x"], "name")`, `"{\"value\":\"x\",\"writable\":false,\"enumerable\":false,\"configurable\":true}"`},
+		{"object literal string key, class with static name field", `() => desc(({"s": class { static name = "kept"; }}).s, "name")`, `"{\"value\":\"kept\",\"writable\":true,\"enumerable\":true,\"configurable\":true}"`},
+		{"object literal computed key, class name descriptor", `() => { const c = ({[k]: class {}})[k]; return desc(c, "name") + " " + Reflect.ownKeys(c).join(","); }`, `"{\"value\":\"x\",\"writable\":false,\"enumerable\":false,\"configurable\":true} length,name,prototype"`},
+		{"object literal computed key, static name field and another", `() => { const c = ({[k]: class { static name = "kept"; static y = 1; }})[k]; return desc(c, "name") + " " + Reflect.ownKeys(c).join(","); }`, `"{\"value\":\"x\",\"writable\":false,\"enumerable\":false,\"configurable\":true} length,name,prototype,y"`},
+		{"object literal computed key, static block fixes name", `() => { let inBlock; const c = ({[k]: class { static { Object.defineProperty(this, "name", {value: "fixed", configurable: false}); inBlock = this.name; } }})[k]; return inBlock + " " + desc(c, "name"); }`, `"fixed {\"value\":\"x\",\"writable\":false,\"enumerable\":false,\"configurable\":true}"`},
+		{"object literal computed key, static block deletes name", `() => { const c = ({[k]: class { static { delete this.name; } }})[k]; return desc(c, "name") + " " + Reflect.ownKeys(c).join(","); }`, `"{\"value\":\"x\",\"writable\":false,\"enumerable\":false,\"configurable\":true} length,prototype,name"`},
+		{"object literal computed key, static block freezes", `() => desc(({[k]: class { static { Object.freeze(this); } }})[k], "name")`, `"{\"value\":\"x\",\"writable\":false,\"enumerable\":false,\"configurable\":true}"`},
+		{"object literal computed key, static name method descriptor", `() => desc(({[k]: class { static name() {} }})[k], "name")`, `"{\"value\":\"x\",\"writable\":false,\"enumerable\":false,\"configurable\":true}"`},
+		{"class computed field, function name descriptor", `() => { const f = new (class { [k] = function () {}; })()[k]; return desc(f, "name"); }`, `"{\"writable\":false,\"enumerable\":false,\"configurable\":true}"`},
+		{"class computed field, arrow name descriptor", `() => desc(new (class { [k] = () => {}; })()[k], "name")`, `"{\"writable\":false,\"enumerable\":false,\"configurable\":true}"`},
+		{"class computed field, class name descriptor", `() => desc(new (class { [k] = class {}; })()[k], "name")`, `"{\"value\":\"\",\"writable\":false,\"enumerable\":false,\"configurable\":true}"`},
+		{"class static computed symbol field, function", `() => desc((class { static [sym] = function () {}; })[sym], "name")`, `"{\"writable\":false,\"enumerable\":false,\"configurable\":true}"`},
+		{"class constant computed field, class", `() => desc(new (class { ["x"] = class {}; })().x, "name")`, `"{\"value\":\"\",\"writable\":false,\"enumerable\":false,\"configurable\":true}"`},
+		{"class constant computed field, function", `() => desc(new (class { ["x"] = function () {}; })().x, "name")`, `"{\"writable\":false,\"enumerable\":false,\"configurable\":true}"`},
+		{"class constant computed field, arrow", `() => desc(new (class { ["x"] = () => {}; })().x, "name")`, `"{\"writable\":false,\"enumerable\":false,\"configurable\":true}"`},
+		{"class static constant computed field, static block reads name", `() => { let s; (class { static ["x"] = class { static { s = this.name; } }; }); return JSON.stringify(s); }`, `"\"\""`},
+		{"class string key field, class", `() => desc(new (class { "s" = class {}; })().s, "name")`, `"{\"value\":\"s\",\"writable\":false,\"enumerable\":false,\"configurable\":true}"`},
+		{"class numeric key field, function", `() => desc(new (class { 1 = function () {}; })()[1], "name")`, `"{\"value\":\"1\",\"writable\":false,\"enumerable\":false,\"configurable\":true}"`},
+		{"without new: named", `() => msg(() => { class A {} A(); })`, `"TypeError: Class constructor A cannot be invoked without 'new'"`},
+		{"without new: derived named", `() => msg(() => { class A {} class B extends A {} B(); })`, `"TypeError: Class constructor B cannot be invoked without 'new'"`},
+		{"without new: anonymous", `() => msg(() => (0, class {})())`, `"TypeError: Class constructors cannot be invoked without 'new'"`},
+		{"without new: anonymous derived", `() => msg(() => (0, class extends Object {})())`, `"TypeError: Class constructors cannot be invoked without 'new'"`},
+		{"without new: variable", `() => msg(() => { const v = class {}; v(); })`, `"TypeError: Class constructor v cannot be invoked without 'new'"`},
+		{"without new: variable derived", `() => msg(() => { const vd = class extends Object {}; vd(); })`, `"TypeError: Class constructor vd cannot be invoked without 'new'"`},
+		{"without new: object literal key", `() => msg(() => ({p: class {}}).p())`, `"TypeError: Class constructor p cannot be invoked without 'new'"`},
+		{"without new: object literal key derived", `() => msg(() => ({q: class extends Object {}}).q())`, `"TypeError: Class constructor q cannot be invoked without 'new'"`},
+		{"without new: object literal computed key", `() => msg(() => ({[k]: class {}})[k]())`, `"TypeError: Class constructors cannot be invoked without 'new'"`},
+		{"without new: object literal constant computed key", `() => msg(() => ({["x"]: class {}})["x"]())`, `"TypeError: Class constructors cannot be invoked without 'new'"`},
+		{"without new: object literal constant computed number key", `() => msg(() => ({[1]: class {}})[1]())`, `"TypeError: Class constructors cannot be invoked without 'new'"`},
+		{"without new: object literal numeric key", `() => msg(() => ({1: class {}})[1]())`, `"TypeError: Class constructor 1 cannot be invoked without 'new'"`},
+		{"without new: anonymous with static name field", `() => msg(() => (class { static name = "z"; })())`, `"TypeError: Class constructors cannot be invoked without 'new'"`},
+		{"without new: named with static name field", `() => msg(() => (class N { static name = "z"; })())`, `"TypeError: Class constructor N cannot be invoked without 'new'"`},
+		{"without new: class field", `() => msg(() => new (class { f = class {}; })().f())`, `"TypeError: Class constructor f cannot be invoked without 'new'"`},
+		{"without new: class computed field", `() => msg(() => new (class { [k] = class {}; })()[k]())`, `"TypeError: Class constructors cannot be invoked without 'new'"`},
+		{"without new: class constant computed field", `() => msg(() => new (class { ["x"] = class {}; })().x())`, `"TypeError: Class constructors cannot be invoked without 'new'"`},
+		{"without new: call", `() => msg(() => { class A {} A.call({}); })`, `"TypeError: Class constructor A cannot be invoked without 'new'"`},
+		{"without new: parameter default", `() => msg(() => (function (d = class {}) { return d; })()())`, `"TypeError: Class constructor d cannot be invoked without 'new'"`},
+		{"without new: destructuring default", `() => msg(() => { const {d = class {}} = {}; d(); })`, `"TypeError: Class constructor d cannot be invoked without 'new'"`},
+		{"without new: assignment", `() => msg(() => { let a; a = class {}; a(); })`, `"TypeError: Class constructor a cannot be invoked without 'new'"`},
 	} {
 		v, err := r.RunString("nameOf(" + row.fn + ")")
 		if err != nil {

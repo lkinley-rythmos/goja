@@ -2029,15 +2029,60 @@ func (_setElem) exec(vm *vm) {
 // definePropNamed is defineProp for an anonymous function value, which
 // is given the key as its name first: an object literal's computed
 // property whose value is an anonymous function, arrow function or class.
+// A class is given it as Node.js 18 does, whatever name its static fields
+// or blocks gave it, even a non-configurable one (forceName).
 type definePropNamed struct{}
 
 func (definePropNamed) exec(vm *vm) {
-	propName := vm.stack[vm.sp-2]
+	name := funcName("", vm.stack[vm.sp-2])
+	fn := vm.r.toObject(vm.stack[vm.sp-1])
+	if cls, ok := fn.self.(*classFuncObject); ok {
+		cls.forceName(name)
+	} else {
+		fn.self.defineOwnPropertyStr("name", PropertyDescriptor{
+			Value:        name,
+			Configurable: FLAG_TRUE,
+		}, true)
+	}
+	defineProp{}.exec(vm)
+}
+
+// definePropUndefinedName is defineProp for an anonymous function or arrow
+// function that is the value of a class's field with a computed key: as
+// in Node.js 18, its name is undefined.
+type definePropUndefinedName struct{}
+
+func (definePropUndefinedName) exec(vm *vm) {
+	vm.setFuncNameUndefined()
+	defineProp{}.exec(vm)
+}
+
+// setFuncNameUndefined makes the name of the function on the stack's top
+// undefined, as Node.js 18 has it for an anonymous function or arrow
+// function that is the value of a class's field with a computed key.
+type setFuncNameUndefined struct{}
+
+func (setFuncNameUndefined) exec(vm *vm) {
+	vm.setFuncNameUndefined()
+	vm.pc++
+}
+
+func (vm *vm) setFuncNameUndefined() {
 	vm.r.toObject(vm.stack[vm.sp-1]).self.defineOwnPropertyStr("name", PropertyDescriptor{
-		Value:        funcName("", propName),
+		Value:        _undefined,
 		Configurable: FLAG_TRUE,
 	}, true)
-	defineProp{}.exec(vm)
+}
+
+// forceClassName names the anonymous class on the stack's top as
+// definePropNamed does, for an object literal's constant computed key.
+type forceClassName unistring.String
+
+func (n forceClassName) exec(vm *vm) {
+	if cls, ok := vm.r.toObject(vm.stack[vm.sp-1]).self.(*classFuncObject); ok {
+		cls.forceName(stringValueFromRaw(unistring.String(n)))
+	}
+	vm.pc++
 }
 
 type defineMethod struct {
@@ -5600,6 +5645,7 @@ func (_loadSuper) exec(vm *vm) {
 type newClass struct {
 	ctor       *Program
 	name       unistring.String
+	ctorName   unistring.String
 	source     string
 	initFields *Program
 
@@ -5648,6 +5694,7 @@ func (vm *vm) fillPrivateNamesMap(typ *privateEnvType, privateFields, privateMet
 func (c *newClass) create(protoParent, ctorParent *Object, vm *vm, derived bool) (prototype, cls *Object) {
 	proto := vm.r.newBaseObject(protoParent, classObject)
 	f := vm.r.newClassFunc(c.name, c.length, ctorParent, derived)
+	f.ctorName = c.ctorName
 	f._putProp("prototype", proto.val, false, false, false)
 	proto._putProp("constructor", f.val, true, false, true)
 	f.prg = c.ctor
