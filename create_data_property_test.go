@@ -220,8 +220,9 @@ func TestArrayUnscopables(t *testing.T) {
 //   - an object literal's computed key, constant ones (["x"]) too, names
 //     the value; a class is named before its static fields and blocks run
 //     and again once made, whatever name they gave it (a static name
-//     field, method or getter, a non-configurable name, a deleted name, a
-//     frozen class);
+//     field, method or getter, a deleted name), except that, unlike
+//     Node.js 18, a non-configurable name is kept and a frozen class stays
+//     frozen (the rows marked so);
 //   - a class's field with a computed key, constant ones too, does not
 //     name its value: a class keeps "", a function or arrow function gets
 //     an undefined name;
@@ -229,7 +230,8 @@ func TestArrayUnscopables(t *testing.T) {
 //     where it is written (its own, or its binding's, property key's,
 //     field's or parameter's), never by a computed key.
 //
-// Each expected value is Node.js 18.20.3's, run in a fresh vm context.
+// Each expected value is Node.js 18.20.3's, run in a fresh vm context, but
+// for the rows marked otherwise.
 func TestComputedKeyClassName(t *testing.T) {
 	r := New()
 	if _, err := r.RunString(`globalThis.k = "x";
@@ -263,7 +265,8 @@ globalThis.nameOf = f => {
 		{"static computed field, derived plain class", `() => (class { static [k] = class extends Object {}; })[k].name`, `""`},
 		{"object literal computed, static name field", `() => ({[k]: class { static name = "kept"; }})[k].name`, `"x"`},
 		{"object literal computed, static name getter", `() => ({[k]: class { static get name() { return "got"; } }})[k].name`, `"x"`},
-		{"object literal computed, static block non-configurable", `() => ({[k]: class { static { Object.defineProperty(this, "name", {value: "fixed", configurable: false}); } }})[k].name`, `"x"`},
+		// Not Node.js 18's ("x"): a non-configurable name is kept.
+		{"object literal computed, static block non-configurable", `() => ({[k]: class { static { Object.defineProperty(this, "name", {value: "fixed", configurable: false}); } }})[k].name`, `"fixed"`},
 		{"object literal computed, static block reads name", `() => { let seen; ({[k]: class { static { seen = this.name; } }}); return seen; }`, `"x"`},
 		{"object literal computed, derived static block reads name", `() => { let seen; ({[k]: class extends Object { static { seen = this.name; } }}); return seen; }`, `"x"`},
 		{"object literal computed symbol, plain class", `() => ({[sym]: class {}})[sym].name`, `"[s]"`},
@@ -287,9 +290,15 @@ globalThis.nameOf = f => {
 		{"object literal string key, class with static name field", `() => desc(({"s": class { static name = "kept"; }}).s, "name")`, `"{\"value\":\"kept\",\"writable\":true,\"enumerable\":true,\"configurable\":true}"`},
 		{"object literal computed key, class name descriptor", `() => { const c = ({[k]: class {}})[k]; return desc(c, "name") + " " + Reflect.ownKeys(c).join(","); }`, `"{\"value\":\"x\",\"writable\":false,\"enumerable\":false,\"configurable\":true} length,name,prototype"`},
 		{"object literal computed key, static name field and another", `() => { const c = ({[k]: class { static name = "kept"; static y = 1; }})[k]; return desc(c, "name") + " " + Reflect.ownKeys(c).join(","); }`, `"{\"value\":\"x\",\"writable\":false,\"enumerable\":false,\"configurable\":true} length,name,prototype,y"`},
-		{"object literal computed key, static block fixes name", `() => { let inBlock; const c = ({[k]: class { static { Object.defineProperty(this, "name", {value: "fixed", configurable: false}); inBlock = this.name; } }})[k]; return inBlock + " " + desc(c, "name"); }`, `"fixed {\"value\":\"x\",\"writable\":false,\"enumerable\":false,\"configurable\":true}"`},
+		// Not Node.js 18's ("fixed", then "x" configurable): a non-configurable
+		// name is kept, with no error.
+		{"object literal computed key, static block fixes name", `() => { let inBlock; const c = ({[k]: class { static { Object.defineProperty(this, "name", {value: "fixed", configurable: false}); inBlock = this.name; } }})[k]; return inBlock + " " + desc(c, "name"); }`, `"fixed {\"value\":\"fixed\",\"writable\":false,\"enumerable\":false,\"configurable\":false}"`},
 		{"object literal computed key, static block deletes name", `() => { const c = ({[k]: class { static { delete this.name; } }})[k]; return desc(c, "name") + " " + Reflect.ownKeys(c).join(","); }`, `"{\"value\":\"x\",\"writable\":false,\"enumerable\":false,\"configurable\":true} length,prototype,name"`},
-		{"object literal computed key, static block freezes", `() => desc(({[k]: class { static { Object.freeze(this); } }})[k], "name")`, `"{\"value\":\"x\",\"writable\":false,\"enumerable\":false,\"configurable\":true}"`},
+		// Not Node.js 18's, which throws a TypeError adding the name
+		// back: a class made non-extensible gets no name it lacks.
+		{"object literal computed key, static block deletes name and prevents extensions", `() => { const c = ({[k]: class { static { delete this.name; Object.preventExtensions(this); } }})[k]; return desc(c, "name") + " extensible=" + Object.isExtensible(c); }`, `"absent extensible=false"`},
+		// Not Node.js 18's (configurable true): the frozen class stays frozen.
+		{"object literal computed key, static block freezes", `() => { const c = ({[k]: class { static { Object.freeze(this); } }})[k]; return desc(c, "name") + " frozen=" + Object.isFrozen(c); }`, `"{\"value\":\"x\",\"writable\":false,\"enumerable\":false,\"configurable\":false} frozen=true"`},
 		{"object literal computed key, static name method descriptor", `() => desc(({[k]: class { static name() {} }})[k], "name")`, `"{\"value\":\"x\",\"writable\":false,\"enumerable\":false,\"configurable\":true}"`},
 		{"class computed field, function name descriptor", `() => { const f = new (class { [k] = function () {}; })()[k]; return desc(f, "name"); }`, `"{\"writable\":false,\"enumerable\":false,\"configurable\":true}"`},
 		{"class computed field, arrow name descriptor", `() => desc(new (class { [k] = () => {}; })()[k], "name")`, `"{\"writable\":false,\"enumerable\":false,\"configurable\":true}"`},

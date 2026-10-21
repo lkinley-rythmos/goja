@@ -596,20 +596,27 @@ func (f *baseFuncObject) materializeIntrinsics() {
 	f.idxPropCount = 0
 }
 
-// forceName makes name the function's name: a non-writable,
-// non-enumerable, configurable data property, in place of whatever name it
-// has, even a non-configurable one or on a frozen function, or at the end
-// of its keys when it has none. Node.js 18 names an object literal's
-// anonymous class under a computed key so once it is made.
+// forceName makes name the function's name, a non-writable, non-enumerable,
+// configurable data property, in place of the name it has, or at the end
+// of its keys when it has none: Node.js 18 names an object literal's
+// anonymous class under a computed key so once it is made, whatever name
+// its static fields or blocks gave it. Unlike Node.js 18, it keeps the
+// object's integrity: a non-configurable name stays as it is, and a
+// function that is not extensible gets no name it lacks.
 func (f *baseFuncObject) forceName(name Value) {
 	if f.intrinsicsVirtual {
-		f.nameProp = valueProperty{value: name, configurable: true}
+		if f.nameProp.configurable {
+			f.nameProp = valueProperty{value: name, configurable: true}
+		}
 		return
 	}
 	prop := &valueProperty{value: name, configurable: true}
-	if _, exists := f.values["name"]; exists {
+	if existing, exists := f.values["name"]; exists {
+		if p, ok := existing.(*valueProperty); ok && !p.configurable {
+			return
+		}
 		f.values["name"] = prop
-	} else {
+	} else if f.extensible {
 		f._put("name", prop)
 	}
 }
