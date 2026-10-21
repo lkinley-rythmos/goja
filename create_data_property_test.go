@@ -74,3 +74,24 @@ func TestEngineCreatedObjectsDefineProperties(t *testing.T) {
 		}
 	}
 }
+
+// TestRegExpResultKeyOrder: a RegExp match result has index before input,
+// as ECMAScript makes them and Node.js 26.8.1 lists them, in
+// Reflect.ownKeys, in Object.keys and in what JSON.stringify gives of a
+// copy, for exec, match and matchAll, with named groups and with the d
+// flag's indices.
+func TestRegExpResultKeyOrder(t *testing.T) {
+	const SCRIPT = `
+	const show = o => JSON.stringify(Reflect.ownKeys(o)) + " " + JSON.stringify(Object.keys(o)) + " " + JSON.stringify(Object.assign({}, o));
+	const cases = [
+		[/b/.exec("abc"), '["0","length","index","input","groups"] ["0","index","input","groups"] {"0":"b","index":1,"input":"abc"}'],
+		[/(?<x>b)/.exec("abc"), '["0","1","length","index","input","groups"] ["0","1","index","input","groups"] {"0":"b","1":"b","index":1,"input":"abc","groups":{"x":"b"}}'],
+		[/(?<x>b)/d.exec("abc"), '["0","1","length","index","input","groups","indices"] ["0","1","index","input","groups","indices"] {"0":"b","1":"b","index":1,"input":"abc","groups":{"x":"b"},"indices":[[1,2],[1,2]]}'],
+		[/(?<x>b)/d.exec("abc").indices, '["0","1","length","groups"] ["0","1","groups"] {"0":[1,2],"1":[1,2],"groups":{"x":[1,2]}}'],
+		["abc".match(/b/), '["0","length","index","input","groups"] ["0","index","input","groups"] {"0":"b","index":1,"input":"abc"}'],
+		[[..."abcb".matchAll(/(?<x>b)/g)][1], '["0","1","length","index","input","groups"] ["0","1","index","input","groups"] {"0":"b","1":"b","index":3,"input":"abcb","groups":{"x":"b"}}'],
+	];
+	cases.forEach(([result, want], i) => assert.sameValue(show(result), want, "case " + i));
+	`
+	testScriptWithTestLib(SCRIPT, _undefined, t)
+}
