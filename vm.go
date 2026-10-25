@@ -233,7 +233,7 @@ type objRef struct {
 
 func (r *objRef) getKey() Value {
 	if !r.nameConverted {
-		r.name = toPropertyKey(r.name)
+		r.name = r.base.runtime.toPropertyKey(r.name)
 		r.nameConverted = true
 	}
 	return r.name
@@ -1904,7 +1904,7 @@ type _toPropertyKey struct{}
 
 func (_toPropertyKey) exec(vm *vm) {
 	p := vm.sp - 1
-	vm.stack[p] = toPropertyKey(vm.stack[p])
+	vm.stack[p] = vm.r.toPropertyKey(vm.stack[p])
 	vm.pc++
 }
 
@@ -1986,7 +1986,7 @@ var setElem _setElem
 
 func (_setElem) exec(vm *vm) {
 	obj := vm.toSetBase(vm.stack[vm.sp-3], vm.stack[vm.sp-2])
-	propName := toPropertyKey(vm.stack[vm.sp-2])
+	propName := vm.r.toPropertyKey(vm.stack[vm.sp-2])
 	val := vm.stack[vm.sp-1]
 
 	obj.setOwn(propName, val, false)
@@ -2084,7 +2084,7 @@ var setElemP _setElemP
 
 func (_setElemP) exec(vm *vm) {
 	obj := vm.toSetBase(vm.stack[vm.sp-3], vm.stack[vm.sp-2])
-	propName := toPropertyKey(vm.stack[vm.sp-2])
+	propName := vm.r.toPropertyKey(vm.stack[vm.sp-2])
 	val := vm.stack[vm.sp-1]
 
 	obj.setOwn(propName, val, false)
@@ -2098,7 +2098,7 @@ type _setElemStrict struct{}
 var setElemStrict _setElemStrict
 
 func (_setElemStrict) exec(vm *vm) {
-	propName := toPropertyKey(vm.stack[vm.sp-2])
+	propName := vm.r.toPropertyKey(vm.stack[vm.sp-2])
 	receiver := vm.stack[vm.sp-3]
 	val := vm.stack[vm.sp-1]
 	if receiverObj, ok := receiver.(*Object); ok {
@@ -2119,7 +2119,7 @@ var setElemRecv _setElemRecv
 
 func (_setElemRecv) exec(vm *vm) {
 	receiver := vm.stack[vm.sp-4]
-	propName := toPropertyKey(vm.stack[vm.sp-3])
+	propName := vm.r.toPropertyKey(vm.stack[vm.sp-3])
 	o := vm.stack[vm.sp-2]
 	val := vm.stack[vm.sp-1]
 	if obj, ok := o.(*Object); ok {
@@ -2140,7 +2140,7 @@ var setElemRecvStrict _setElemRecvStrict
 
 func (_setElemRecvStrict) exec(vm *vm) {
 	receiver := vm.stack[vm.sp-4]
-	propName := toPropertyKey(vm.stack[vm.sp-3])
+	propName := vm.r.toPropertyKey(vm.stack[vm.sp-3])
 	o := vm.stack[vm.sp-2]
 	val := vm.stack[vm.sp-1]
 	if obj, ok := o.(*Object); ok {
@@ -2160,7 +2160,7 @@ type _setElemStrictP struct{}
 var setElemStrictP _setElemStrictP
 
 func (_setElemStrictP) exec(vm *vm) {
-	propName := toPropertyKey(vm.stack[vm.sp-2])
+	propName := vm.r.toPropertyKey(vm.stack[vm.sp-2])
 	receiver := vm.stack[vm.sp-3]
 	val := vm.stack[vm.sp-1]
 	if receiverObj, ok := receiver.(*Object); ok {
@@ -2180,7 +2180,7 @@ var setElemRecvP _setElemRecvP
 
 func (_setElemRecvP) exec(vm *vm) {
 	receiver := vm.stack[vm.sp-4]
-	propName := toPropertyKey(vm.stack[vm.sp-3])
+	propName := vm.r.toPropertyKey(vm.stack[vm.sp-3])
 	o := vm.stack[vm.sp-2]
 	val := vm.stack[vm.sp-1]
 	if obj, ok := o.(*Object); ok {
@@ -2200,7 +2200,7 @@ var setElemRecvStrictP _setElemRecvStrictP
 
 func (_setElemRecvStrictP) exec(vm *vm) {
 	receiver := vm.stack[vm.sp-4]
-	propName := toPropertyKey(vm.stack[vm.sp-3])
+	propName := vm.r.toPropertyKey(vm.stack[vm.sp-3])
 	o := vm.stack[vm.sp-2]
 	val := vm.stack[vm.sp-1]
 	if obj, ok := o.(*Object); ok {
@@ -2220,7 +2220,7 @@ var deleteElem _deleteElem
 
 func (_deleteElem) exec(vm *vm) {
 	obj := vm.stack[vm.sp-2].ToObject(vm.r)
-	propName := toPropertyKey(vm.stack[vm.sp-1])
+	propName := vm.r.toPropertyKey(vm.stack[vm.sp-1])
 	if obj.delete(propName, false) {
 		vm.stack[vm.sp-2] = valueTrue
 	} else {
@@ -2236,7 +2236,7 @@ var deleteElemStrict _deleteElemStrict
 
 func (_deleteElemStrict) exec(vm *vm) {
 	obj := vm.stack[vm.sp-2].ToObject(vm.r)
-	propName := toPropertyKey(vm.stack[vm.sp-1])
+	propName := vm.r.toPropertyKey(vm.stack[vm.sp-1])
 	obj.delete(propName, true)
 	vm.stack[vm.sp-2] = valueTrue
 	vm.sp--
@@ -2749,7 +2749,7 @@ func (_getElem) exec(vm *vm) {
 		vm.throw(vm.r.readNullishError(v, vm.stack[vm.sp-1]))
 		return
 	}
-	propName := toPropertyKey(vm.stack[vm.sp-1])
+	propName := vm.r.toPropertyKey(vm.stack[vm.sp-1])
 
 	vm.stack[vm.sp-2] = nilSafe(obj.get(propName, v))
 
@@ -2769,7 +2769,7 @@ func (_getElemRecv) exec(vm *vm) {
 		vm.throw(vm.r.readNullishError(v, vm.stack[vm.sp-2]))
 		return
 	}
-	propName := toPropertyKey(vm.stack[vm.sp-2])
+	propName := vm.r.toPropertyKey(vm.stack[vm.sp-2])
 
 	vm.stack[vm.sp-3] = nilSafe(obj.get(propName, recv))
 
@@ -2808,7 +2808,7 @@ func (_getElemCallee) exec(vm *vm) {
 		return
 	}
 
-	propName := toPropertyKey(vm.stack[vm.sp-1])
+	propName := vm.r.toPropertyKey(vm.stack[vm.sp-1])
 	prop := obj.get(propName, v)
 	if prop == nil {
 		prop = memberUnresolved{valueUnresolved{r: vm.r, ref: propName.string()}}
@@ -2831,7 +2831,7 @@ func (_getElemRecvCallee) exec(vm *vm) {
 		return
 	}
 
-	propName := toPropertyKey(vm.stack[vm.sp-1])
+	propName := vm.r.toPropertyKey(vm.stack[vm.sp-1])
 	prop := obj.get(propName, recv)
 	if prop == nil {
 		prop = memberUnresolved{valueUnresolved{r: vm.r, ref: propName.string()}}
@@ -4935,7 +4935,7 @@ func (_op_in) exec(vm *vm) {
 		panic(vm.r.newTypeErrorString("Cannot use 'in' operator to search for '" + vm.r.noSideEffectsToString(left) + "' in " + vm.r.noSideEffectsToString(vm.stack[vm.sp-1])))
 	}
 
-	if right.hasProperty(left) {
+	if right.hasProperty(vm.r.toPropertyKey(left)) {
 		vm.stack[vm.sp-2] = valueTrue
 	} else {
 		vm.stack[vm.sp-2] = valueFalse
@@ -5875,7 +5875,7 @@ type defineComputedKey int
 func (offset defineComputedKey) exec(vm *vm) {
 	obj := vm.r.toObject(vm.stack[vm.sp-int(offset)])
 	if h, ok := obj.self.(*classFuncObject); ok {
-		key := toPropertyKey(vm.stack[vm.sp-1])
+		key := vm.r.toPropertyKey(vm.stack[vm.sp-1])
 		h.computedKeys = append(h.computedKeys, key)
 		vm.sp--
 		vm.pc++
@@ -6331,7 +6331,7 @@ func (d importDynamic) exec(vm *vm) {
 	}
 	specifier := vm.stack[vm.sp-1]
 	if ex := vm.try(func() {
-		specifier.toString()
+		vm.r.toStringValue(specifier)
 		r.importAssertions(options)
 	}); ex != nil {
 		_ = reject(ex.Value())

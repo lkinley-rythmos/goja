@@ -101,3 +101,116 @@ func TestBigIntTextInterruptible(t *testing.T) {
 	}
 	_ = big.NewInt
 }
+
+// Every conversion of a BigInt to a string a script makes goes through
+// bigString: a property key, join, the String.prototype methods and
+// global functions that take a string, an error message. With a BigInt of
+// 2^30 bits (decimal: 323M digits, which big.Int.Text writes in minutes)
+// each is interrupted within milliseconds, and refused by a small
+// allocation limit at once.
+func TestBigIntTextConversionsRouted(t *testing.T) {
+	const setup = "var x = (1n << (2n ** 30n - 1n)) - 12345n, o = {};"
+	for _, c := range []struct {
+		src     string
+		latency time.Duration
+	}{
+		{"o[x]", 30 * time.Millisecond},
+		{"[x].join()", 30 * time.Millisecond},
+		{"o[x] = 1", 100 * time.Millisecond},
+		{"x in o", 100 * time.Millisecond},
+		{"delete o[x]", 100 * time.Millisecond},
+		{"({[x]: 1})", 100 * time.Millisecond},
+		{"Object.defineProperty(o, x, {value: 1})", 100 * time.Millisecond},
+		{"o.hasOwnProperty(x)", 100 * time.Millisecond},
+		{"Reflect.get(o, x)", 100 * time.Millisecond},
+		{"[x].toString()", 100 * time.Millisecond},
+		{"[x, 1n].sort()", 100 * time.Millisecond},
+		{"'a'.concat(x)", 100 * time.Millisecond},
+		{"'a'.padEnd(5, x)", 100 * time.Millisecond},
+		{"parseInt(x)", 100 * time.Millisecond},
+		{"encodeURIComponent(x)", 100 * time.Millisecond},
+		{"new Error(x)", 100 * time.Millisecond},
+		{"Symbol(x)", 100 * time.Millisecond},
+		{"new BigInt64Array(1).join(x)", 100 * time.Millisecond},
+		{"'a' in x", 100 * time.Millisecond},
+	} {
+		t.Run(c.src, func(t *testing.T) {
+			r := New()
+			if _, err := r.RunString(setup); err != nil {
+				t.Fatal(err)
+			}
+			delay := 300 * time.Millisecond
+			timer := time.AfterFunc(delay, func() { r.Interrupt("stop") })
+			defer timer.Stop()
+			start := time.Now()
+			_, err := runWithin(t, r, c.src, 5*time.Second)
+			took := time.Since(start)
+			var ie *InterruptedError
+			if !errors.As(err, &ie) {
+				t.Fatalf("got %v, want interrupted", err)
+			}
+			if took > delay+c.latency {
+				t.Fatalf("interrupted %v late", took-delay)
+			}
+
+			r = New()
+			if _, err := r.RunString(setup); err != nil {
+				t.Fatal(err)
+			}
+			r.SetAllocationLimit(1 << 20)
+			start = time.Now()
+			_, err = runWithin(t, r, c.src, 5*time.Second)
+			if !errors.Is(err, ErrAllocationLimitExceeded) {
+				t.Fatalf("got %v, want the allocation limit", err)
+			}
+			if took := time.Since(start); took > 500*time.Millisecond {
+				t.Fatalf("took %v", took)
+			}
+		})
+	}
+	// The conversions give the same strings.
+	testScript(`var o = {}; var k = 2n ** 70n; o[k] = 1;
+	[Object.keys(o)[0] === String(k), [k, 3n].join() === k + ",3", o.hasOwnProperty(k), (k in o), 'a'.concat(10n), parseInt(77n), new Error(5n).message,
+	 ({[5n]: 2})["5"], [10n, 9n].sort().join(), String(Symbol(4n))].join()`,
+		asciiString("true,true,true,true,a10,77,5,2,10,9,Symbol(4)"), t)
+}
+
+// An object key whose ToPrimitive (hint string) is a BigInt is written by
+// bigString too: through toString, Symbol.toPrimitive, or valueOf.
+func TestBigIntTextObjectKeys(t *testing.T) {
+	const setup = "var x = (1n << (2n ** 30n - 1n)) - 12345n, o = {};" +
+		"var kt = {toString() { return x }}, kp = {[Symbol.toPrimitive]() { return x }}, kv = {toString: null, valueOf() { return x }};"
+	for _, src := range []string{"o[kt]", "kt in o", "o[kp]", "kp in o", "o[kv]", "kv in o", "delete o[kt]", "o.hasOwnProperty(kt)", "o.propertyIsEnumerable(kt)", "Reflect.has(o, kt)", "({[kt]: 1})"} {
+		t.Run(src, func(t *testing.T) {
+			r := New()
+			if _, err := r.RunString(setup); err != nil {
+				t.Fatal(err)
+			}
+			delay := 300 * time.Millisecond
+			timer := time.AfterFunc(delay, func() { r.Interrupt("stop") })
+			defer timer.Stop()
+			start := time.Now()
+			_, err := runWithin(t, r, src, 5*time.Second)
+			took := time.Since(start)
+			var ie *InterruptedError
+			if !errors.As(err, &ie) {
+				t.Fatalf("got %v, want interrupted", err)
+			}
+			if took > delay+30*time.Millisecond {
+				t.Fatalf("interrupted %v late", took-delay)
+			}
+
+			r = New()
+			if _, err := r.RunString(setup); err != nil {
+				t.Fatal(err)
+			}
+			r.SetAllocationLimit(1 << 20)
+			_, err = runWithin(t, r, src, 5*time.Second)
+			if !errors.Is(err, ErrAllocationLimitExceeded) {
+				t.Fatalf("got %v, want the allocation limit", err)
+			}
+		})
+	}
+	testScript(`var o = {"12": 1}, k = {toString() { return 12n }}, n = 0, c = {toString() { n++; return "12" }};
+	[o[k], k in o, ({[k]: 2})["12"], 1 in [5, 6], 2 in [5, 6], c in o, n].join()`, asciiString("1,true,2,true,false,true,1"), t)
+}

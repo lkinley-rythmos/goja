@@ -806,7 +806,7 @@ func (r *Runtime) typedArrayProto_join(call FunctionCall) Value {
 		s := call.Argument(0)
 		var sep String
 		if s != _undefined {
-			sep = s.toString()
+			sep = r.toStringValue(s)
 		} else {
 			sep = asciiString(",")
 		}
@@ -822,7 +822,7 @@ func (r *Runtime) typedArrayProto_join(call FunctionCall) Value {
 			element0 = ta.typedArray.get(ta.offset + 0)
 		}
 		if element0 != nil && element0 != _undefined && element0 != _null {
-			buf.WriteString(element0.toString())
+			buf.WriteString(r.toStringValue(element0))
 		}
 
 		for i := 1; i < l; i++ {
@@ -830,7 +830,7 @@ func (r *Runtime) typedArrayProto_join(call FunctionCall) Value {
 			if ta.isValidIntegerIndex(i) {
 				element := ta.typedArray.get(ta.offset + i)
 				if element != nil && element != _undefined && element != _null {
-					buf.WriteString(element.toString())
+					buf.WriteString(r.toStringValue(element))
 				}
 			}
 		}

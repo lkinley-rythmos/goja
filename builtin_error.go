@@ -124,7 +124,7 @@ func (r *Runtime) newErrorObject(proto *Object, class string) *errorObject {
 func (r *Runtime) builtin_Error(args []Value, proto *Object) *Object {
 	obj := r.newErrorObject(proto, classError)
 	if len(args) > 0 && args[0] != _undefined {
-		obj._putProp("message", args[0].toString(), true, false, true)
+		obj._putProp("message", r.toStringValue(args[0]), true, false, true)
 	}
 	if len(args) > 1 && args[1] != _undefined {
 		if options, ok := args[1].(*Object); ok {
@@ -144,7 +144,7 @@ func (r *Runtime) builtin_Error(args []Value, proto *Object) *Object {
 func (r *Runtime) builtin_AggregateError(args []Value, proto *Object) *Object {
 	obj := r.newErrorObject(proto, classError)
 	if len(args) > 1 && args[1] != nil && args[1] != _undefined {
-		obj._putProp("message", args[1].toString(), true, false, true)
+		obj._putProp("message", r.toStringValue(args[1]), true, false, true)
 	}
 	items := _undefined
 	if len(args) > 0 {
@@ -191,13 +191,13 @@ func writeErrorString(sb *StringBuilder, obj *Object) String {
 	if name == nil || name == _undefined {
 		nameStr = asciiString("Error")
 	} else {
-		nameStr = name.toString()
+		nameStr = obj.runtime.toStringValue(name)
 	}
 	msg := obj.self.getStr("message", nil)
 	if msg == nil || msg == _undefined {
 		msgStr = stringEmpty
 	} else {
-		msgStr = msg.toString()
+		msgStr = obj.runtime.toStringValue(msg)
 	}
 	if nameStr.Length() == 0 {
 		return msgStr

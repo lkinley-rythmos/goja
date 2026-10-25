@@ -46,7 +46,7 @@ func TestToPropertyKeyNoAlloc(t *testing.T) {
 	vm := New()
 	for _, key := range []Value{asciiString("abc"), vm.ToValue("ünicode"), NewSymbol("s")} {
 		var got Value
-		allocs := testing.AllocsPerRun(100, func() { got = toPropertyKey(key) })
+		allocs := testing.AllocsPerRun(100, func() { got = vm.toPropertyKey(key) })
 		// unicodeString is a slice type, so compare with SameAs, not ==.
 		if !got.SameAs(key) {
 			t.Fatalf("toPropertyKey(%v) returned a different value %v", key, got)
@@ -56,7 +56,7 @@ func TestToPropertyKeyNoAlloc(t *testing.T) {
 		}
 	}
 	// Non-key values are still coerced.
-	if got := toPropertyKey(valueInt(42)); got.String() != "42" {
+	if got := vm.toPropertyKey(valueInt(42)); got.String() != "42" {
 		t.Fatalf("toPropertyKey(42) = %v", got)
 	}
 }

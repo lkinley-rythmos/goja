@@ -2888,10 +2888,17 @@ func createDataPropertyOrThrow(o *Object, p Value, v Value) {
 // toPropertyKey coerces key to a property key (a String or a *Symbol).
 // A value that already is one is returned as is: calling ToString on it
 // would re-box the same string into a fresh interface value on every call.
-func toPropertyKey(key Value) Value {
-	switch key.(type) {
+// toPropertyKey is ToPropertyKey: ToPrimitive with hint string for an
+// object, then a String or a *Symbol, with a BigInt written by bigString,
+// so that a script's property keys are interruptible and charged.
+func (r *Runtime) toPropertyKey(key Value) Value {
+	switch k := key.(type) {
 	case String, *Symbol:
 		return key
+	case *valueBigInt:
+		return r.bigString((*big.Int)(k), 10)
+	case *Object:
+		return r.toPropertyKey(k.toPrimitiveString())
 	}
 	return key.ToString()
 }
@@ -2899,11 +2906,12 @@ func toPropertyKey(key Value) Value {
 // toStringValue coerces v to a String. A value that already is one is
 // returned as is: calling toString on it would re-box the same string
 // into a fresh interface value on every call.
-func toStringValue(v Value) String {
+// toStringValue is ToString(v), with a BigInt written by bigString.
+func (r *Runtime) toStringValue(v Value) String {
 	if s, ok := v.(String); ok {
 		return s
 	}
-	return v.toString()
+	return r.toStringOf(v)
 }
 
 func (r *Runtime) getVStr(v Value, p unistring.String) Value {

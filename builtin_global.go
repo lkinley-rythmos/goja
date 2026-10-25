@@ -28,14 +28,14 @@ func (r *Runtime) builtin_isNaN(call FunctionCall) Value {
 }
 
 func (r *Runtime) builtin_parseInt(call FunctionCall) Value {
-	str := call.Argument(0).toString().toTrimmedUTF8()
+	str := r.toStringValue(call.Argument(0)).toTrimmedUTF8()
 	radix := int(toInt32(call.Argument(1)))
 	v, _ := parseInt(str, radix)
 	return v
 }
 
 func (r *Runtime) builtin_parseFloat(call FunctionCall) Value {
-	m := parseFloatRegexp.FindStringSubmatch(call.Argument(0).toString().toTrimmedUTF8())
+	m := parseFloatRegexp.FindStringSubmatch(r.toStringValue(call.Argument(0)).toTrimmedUTF8())
 	if len(m) == 2 {
 		if s := m[1]; s != "" && s != "+" && s != "-" {
 			switch s {
@@ -220,27 +220,27 @@ func unhex(c byte) byte {
 }
 
 func (r *Runtime) builtin_decodeURI(call FunctionCall) Value {
-	uriString := call.Argument(0).toString()
+	uriString := r.toStringValue(call.Argument(0))
 	return r._decode(uriString, &uriReservedHash)
 }
 
 func (r *Runtime) builtin_decodeURIComponent(call FunctionCall) Value {
-	uriString := call.Argument(0).toString()
+	uriString := r.toStringValue(call.Argument(0))
 	return r._decode(uriString, &emptyEscapeSet)
 }
 
 func (r *Runtime) builtin_encodeURI(call FunctionCall) Value {
-	uriString := call.Argument(0).toString()
+	uriString := r.toStringValue(call.Argument(0))
 	return r._encode(uriString, &uriReservedUnescapedHash)
 }
 
 func (r *Runtime) builtin_encodeURIComponent(call FunctionCall) Value {
-	uriString := call.Argument(0).toString()
+	uriString := r.toStringValue(call.Argument(0))
 	return r._encode(uriString, &uriUnescaped)
 }
 
 func (r *Runtime) builtin_escape(call FunctionCall) Value {
-	s := call.Argument(0).toString()
+	s := r.toStringValue(call.Argument(0))
 	l := s.Length()
 	// Size the result first, so that it is refused before it is allocated.
 	size := 0
@@ -289,7 +289,7 @@ func escapeUnescaped(r uint16) bool {
 }
 
 func (r *Runtime) builtin_unescape(call FunctionCall) Value {
-	s := call.Argument(0).toString()
+	s := r.toStringValue(call.Argument(0))
 	l := s.Length()
 	var asciiBuf []byte
 	var unicodeBuf []uint16

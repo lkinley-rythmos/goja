@@ -217,7 +217,7 @@ func (r *Runtime) arrayproto_join(call FunctionCall) Value {
 	l := int(toLength(o.self.getStr("length", nil)))
 	var sep String
 	if s := call.Argument(0); s != _undefined {
-		sep = s.toString()
+		sep = r.toStringValue(s)
 	} else {
 		sep = asciiString(",")
 	}
@@ -230,7 +230,7 @@ func (r *Runtime) arrayproto_join(call FunctionCall) Value {
 
 	element0 := o.self.getIdx(valueInt(0), nil)
 	if element0 != nil && element0 != _undefined && element0 != _null {
-		str := element0.toString()
+		str := r.toStringValue(element0)
 		r.growString(0, str.Length())
 		buf.WriteString(str)
 	}
@@ -243,7 +243,7 @@ func (r *Runtime) arrayproto_join(call FunctionCall) Value {
 		buf.WriteString(sep)
 		element := o.self.getIdx(valueInt(int64(i)), nil)
 		if element != nil && element != _undefined && element != _null {
-			str := element.toString()
+			str := r.toStringValue(element)
 			r.growString(buf.Len(), str.Length())
 			buf.WriteString(str)
 		}
@@ -281,9 +281,9 @@ func (r *Runtime) writeItemLocaleString(item Value, buf *StringBuilder) {
 	if item != nil && item != _undefined && item != _null {
 		if f, ok := r.getVStr(item, "toLocaleString").(*Object); ok {
 			if c, ok := f.self.assertCallable(); ok {
-				strVal := c(FunctionCall{
+				strVal := r.toStringValue(c(FunctionCall{
 					This: item,
-				}).toString()
+				}))
 				r.growString(buf.Len(), strVal.Length())
 				buf.WriteString(strVal)
 				return
@@ -436,6 +436,7 @@ func (r *Runtime) arrayproto_sort(call FunctionCall) Value {
 
 	if s != nil {
 		ctx := arraySortCtx{
+			r:       r,
 			obj:     s,
 			compare: compareFn,
 		}
@@ -455,6 +456,7 @@ func (r *Runtime) arrayproto_sort(call FunctionCall) Value {
 		}
 		ar := r.newArrayValues(a)
 		ctx := arraySortCtx{
+			r:       r,
 			obj:     ar.self,
 			compare: compareFn,
 		}
@@ -1512,6 +1514,7 @@ func (r *Runtime) arrayproto_toSorted(call FunctionCall) Value {
 
 	ar := r.newArrayCharged(a)
 	ctx := arraySortCtx{
+		r:       r,
 		obj:     ar.self,
 		compare: compareFn,
 	}
@@ -1935,6 +1938,7 @@ type sortable interface {
 }
 
 type arraySortCtx struct {
+	r       *Runtime
 	obj     sortable
 	compare func(FunctionCall) Value
 }
@@ -1980,7 +1984,7 @@ func (a *arraySortCtx) sortCompare(x, y Value) int {
 		}
 		return 0
 	}
-	return x.toString().CompareTo(y.toString())
+	return a.r.toStringValue(x).CompareTo(a.r.toStringValue(y))
 }
 
 // sort.Interface

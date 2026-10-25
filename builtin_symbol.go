@@ -20,7 +20,7 @@ var (
 func (r *Runtime) builtin_symbol(call FunctionCall) Value {
 	var desc String
 	if arg := call.Argument(0); !IsUndefined(arg) {
-		desc = arg.toString()
+		desc = r.toStringValue(arg)
 	}
 	return newSymbol(desc)
 }
@@ -60,7 +60,7 @@ func (r *Runtime) symbolproto_valueOf(call FunctionCall) Value {
 }
 
 func (r *Runtime) symbol_for(call FunctionCall) Value {
-	key := call.Argument(0).toString()
+	key := r.toStringValue(call.Argument(0))
 	keyStr := key.string()
 	if v := r.symbolRegistry[keyStr]; v != nil {
 		return v

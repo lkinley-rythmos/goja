@@ -13,7 +13,7 @@ import (
 const hex = "0123456789abcdef"
 
 func (r *Runtime) builtinJSON_parse(call FunctionCall) Value {
-	value := r.builtinJSON_parseSource(call.Argument(0).toString())
+	value := r.builtinJSON_parseSource(r.toStringValue(call.Argument(0)))
 
 	var reviver func(FunctionCall) Value
 
@@ -496,7 +496,7 @@ func (r *Runtime) builtinJSON_rawJSON(call FunctionCall) Value {
 			panic(r.newSyntaxError("\"" + arg.String() + "\" is not a valid JSON"))
 		}
 	case valueBool, valueInt, *valueBigInt, valueFloat, valueNull:
-		jsonString = dd.toString()
+		jsonString = r.toStringOf(dd)
 	case *Symbol:
 		panic(r.NewTypeError("Cannot convert a Symbol value to a string"))
 	default:

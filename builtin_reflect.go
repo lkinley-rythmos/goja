@@ -34,7 +34,7 @@ func (r *Runtime) builtin_reflect_construct(call FunctionCall) Value {
 
 func (r *Runtime) builtin_reflect_defineProperty(call FunctionCall) Value {
 	target := r.toObject(call.Argument(0), "Reflect.defineProperty called on non-object")
-	key := toPropertyKey(call.Argument(1))
+	key := r.toPropertyKey(call.Argument(1))
 	desc := r.toPropertyDescriptor(call.Argument(2))
 
 	return r.toBoolean(target.defineOwnProperty(key, desc, false))
@@ -42,14 +42,14 @@ func (r *Runtime) builtin_reflect_defineProperty(call FunctionCall) Value {
 
 func (r *Runtime) builtin_reflect_deleteProperty(call FunctionCall) Value {
 	target := r.toObject(call.Argument(0), "Reflect.deleteProperty called on non-object")
-	key := toPropertyKey(call.Argument(1))
+	key := r.toPropertyKey(call.Argument(1))
 
 	return r.toBoolean(target.delete(key, false))
 }
 
 func (r *Runtime) builtin_reflect_get(call FunctionCall) Value {
 	target := r.toObject(call.Argument(0), "Reflect.get called on non-object")
-	key := toPropertyKey(call.Argument(1))
+	key := r.toPropertyKey(call.Argument(1))
 	var receiver Value
 	if len(call.Arguments) > 2 {
 		receiver = call.Arguments[2]
@@ -59,7 +59,7 @@ func (r *Runtime) builtin_reflect_get(call FunctionCall) Value {
 
 func (r *Runtime) builtin_reflect_getOwnPropertyDescriptor(call FunctionCall) Value {
 	target := r.toObject(call.Argument(0), "Reflect.getOwnPropertyDescriptor called on non-object")
-	key := toPropertyKey(call.Argument(1))
+	key := r.toPropertyKey(call.Argument(1))
 	return r.valuePropToDescriptorObject(target.getOwnProp(key))
 }
 
@@ -74,7 +74,7 @@ func (r *Runtime) builtin_reflect_getPrototypeOf(call FunctionCall) Value {
 
 func (r *Runtime) builtin_reflect_has(call FunctionCall) Value {
 	target := r.toObject(call.Argument(0), "Reflect.has called on non-object")
-	key := toPropertyKey(call.Argument(1))
+	key := r.toPropertyKey(call.Argument(1))
 	return r.toBoolean(target.hasProperty(key))
 }
 

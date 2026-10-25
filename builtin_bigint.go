@@ -21,12 +21,17 @@ func (v *valueBigInt) ToInteger() int64 {
 	return 0
 }
 
+// toString, string and String write v with big.Int.Text, neither
+// interruptible nor charged (bigIntTextHost): they are for the host, as
+// Value.String called from Go outside a run. A script's conversions go
+// through the runtime (Runtime.toStringOf, toStringValue, toPropertyKey,
+// noSideEffectsToString: bigString).
 func (v *valueBigInt) toString() String {
-	return asciiString((*big.Int)(v).String())
+	return asciiString(bigIntTextHost(v))
 }
 
 func (v *valueBigInt) string() unistring.String {
-	return unistring.String(v.String())
+	return unistring.String(bigIntTextHost(v))
 }
 
 func (v *valueBigInt) ToString() Value {
@@ -34,6 +39,11 @@ func (v *valueBigInt) ToString() Value {
 }
 
 func (v *valueBigInt) String() string {
+	return bigIntTextHost(v)
+}
+
+// bigIntTextHost is v in decimal for the host (see toString).
+func bigIntTextHost(v *valueBigInt) string {
 	return (*big.Int)(v).String()
 }
 

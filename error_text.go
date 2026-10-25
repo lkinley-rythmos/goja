@@ -1,6 +1,7 @@
 package goja
 
 import (
+	"math/big"
 	"regexp"
 	"strings"
 	"unicode"
@@ -29,6 +30,8 @@ func (r *Runtime) noSideEffectsToString(v Value) string {
 		return v.descriptiveString().String()
 	case *Object:
 		return r.objectNoSideEffectsToString(v)
+	case *valueBigInt:
+		return r.bigString((*big.Int)(v), 10).String()
 	}
 	return v.String()
 }

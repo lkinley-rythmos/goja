@@ -55,7 +55,7 @@ func (r *Runtime) valuePropToDescriptorObject(desc Value) Value {
 
 func (r *Runtime) object_getOwnPropertyDescriptor(call FunctionCall) Value {
 	o := call.Argument(0).ToObject(r)
-	propName := toPropertyKey(call.Argument(1))
+	propName := r.toPropertyKey(call.Argument(1))
 	return r.valuePropToDescriptorObject(o.getOwnProp(propName))
 }
 
@@ -222,7 +222,7 @@ func (r *Runtime) object_create(call FunctionCall) Value {
 func (r *Runtime) object_defineProperty(call FunctionCall) (ret Value) {
 	if obj, ok := call.Argument(0).(*Object); ok {
 		descr := r.toPropertyDescriptor(call.Argument(2))
-		obj.defineOwnProperty(toPropertyKey(call.Argument(1)), descr, true)
+		obj.defineOwnProperty(r.toPropertyKey(call.Argument(1)), descr, true)
 		ret = call.Argument(0)
 	} else {
 		r.typeErrorResult(true, "Object.defineProperty called on non-object")
@@ -395,7 +395,7 @@ func (r *Runtime) object_values(call FunctionCall) Value {
 }
 
 func (r *Runtime) objectproto_hasOwnProperty(call FunctionCall) Value {
-	p := toPropertyKey(call.Argument(0))
+	p := r.toPropertyKey(call.Argument(0))
 	o := call.This.ToObject(r)
 	if o.hasOwnProperty(p) {
 		return valueTrue
@@ -421,7 +421,7 @@ func (r *Runtime) objectproto_isPrototypeOf(call FunctionCall) Value {
 }
 
 func (r *Runtime) objectproto_propertyIsEnumerable(call FunctionCall) Value {
-	p := toPropertyKey(call.Argument(0))
+	p := r.toPropertyKey(call.Argument(0))
 	o := call.This.ToObject(r)
 	pv := o.getOwnProp(p)
 	if pv == nil {
@@ -556,7 +556,7 @@ func (r *Runtime) object_fromEntries(call FunctionCall) Value {
 		itemObj := r.toEntryObject(nextValue)
 		k := itemObj.self.getIdx(i0, nil)
 		v := itemObj.self.getIdx(i1, nil)
-		key := toPropertyKey(k)
+		key := r.toPropertyKey(k)
 
 		createDataPropertyOrThrow(result, key, v)
 	})
@@ -567,7 +567,7 @@ func (r *Runtime) object_fromEntries(call FunctionCall) Value {
 func (r *Runtime) object_hasOwn(call FunctionCall) Value {
 	o := call.Argument(0)
 	obj := o.ToObject(r)
-	p := toPropertyKey(call.Argument(1))
+	p := r.toPropertyKey(call.Argument(1))
 
 	if obj.hasOwnProperty(p) {
 		return valueTrue

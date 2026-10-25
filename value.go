@@ -196,7 +196,7 @@ func propGetter(o Value, v Value, r *Runtime) *Object {
 			return obj
 		}
 	}
-	r.typeErrorResult(true, "Getter must be a function: %s", v.toString())
+	r.typeErrorResult(true, "Getter must be a function: %s", r.toStringOf(v))
 	return nil
 }
 
@@ -209,7 +209,7 @@ func propSetter(o Value, v Value, r *Runtime) *Object {
 			return obj
 		}
 	}
-	r.typeErrorResult(true, "Setter must be a function: %s", v.toString())
+	r.typeErrorResult(true, "Setter must be a function: %s", r.toStringOf(v))
 	return nil
 }
 
@@ -742,11 +742,11 @@ func (o *Object) ToInteger() int64 {
 }
 
 func (o *Object) toString() String {
-	return o.toPrimitiveString().toString()
+	return o.runtime.toStringOf(o.toPrimitiveString())
 }
 
 func (o *Object) string() unistring.String {
-	return o.toPrimitiveString().string()
+	return o.toString().string()
 }
 
 func (o *Object) ToString() Value {

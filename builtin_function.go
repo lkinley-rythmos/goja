@@ -23,7 +23,7 @@ func (r *Runtime) functionCtor(args []Value, proto *Object, async, generator boo
 	if len(args) > 1 {
 		ar := args[:len(args)-1]
 		for i, arg := range ar {
-			sb.WriteString(arg.toString())
+			sb.WriteString(r.toStringValue(arg))
 			if i < len(ar)-1 {
 				sb.WriteRune(',')
 			}
@@ -31,7 +31,7 @@ func (r *Runtime) functionCtor(args []Value, proto *Object, async, generator boo
 	}
 	sb.WriteString(asciiString("\n) {\n"))
 	if len(args) > 0 {
-		sb.WriteString(args[len(args)-1].toString())
+		sb.WriteString(r.toStringValue(args[len(args)-1]))
 	}
 	sb.WriteString(asciiString("\n})"))
 
