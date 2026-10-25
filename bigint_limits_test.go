@@ -2,6 +2,7 @@ package goja
 
 import (
 	"errors"
+	"math/big"
 	"runtime"
 	"testing"
 	"time"
@@ -170,5 +171,89 @@ func TestBigIntAllocationLimit(t *testing.T) {
 	}
 	if v.ToInteger() != 1001 {
 		t.Fatal(v)
+	}
+}
+
+// A large product is made in parts, with the interrupt checked between
+// them: 3n ** 100000000n took big.Int.Exp 21 s, none of it interruptible.
+func TestBigIntInterruptible(t *testing.T) {
+	for _, src := range []string{
+		"3n ** 100000000n",
+		"let x = 3n ** 30000000n; x * x",
+		"let x = 3n ** 30000000n; x * (x + 1n)",
+		"let x = 3n ** 30000000n; x * (x >> 25000000n)",
+	} {
+		t.Run(src, func(t *testing.T) {
+			r := New()
+			prg := MustCompile("", src, false)
+			// Let a run reach the long operation first.
+			delay := 300 * time.Millisecond
+			timer := time.AfterFunc(delay, func() { r.Interrupt("stop") })
+			defer timer.Stop()
+			start := time.Now()
+			_, err := r.RunProgram(prg)
+			took := time.Since(start)
+			var ie *InterruptedError
+			if !errors.As(err, &ie) {
+				t.Fatalf("got %v, want interrupted", err)
+			}
+			if took > delay+250*time.Millisecond {
+				t.Fatalf("interrupted after %v, %v late", took, took-delay)
+			}
+		})
+	}
+}
+
+// mulAbs makes the same product as big.Int.Mul.
+func TestBigIntMulAbs(t *testing.T) {
+	r := New()
+	rnd := func(words int, seed uint64) *big.Int {
+		w := make([]big.Word, words)
+		for i := range w {
+			seed = seed*6364136223846793005 + 1442695040888963407
+			w[i] = big.Word(seed)
+		}
+		w[0] = 0 // a zero word inside a part
+		if words > 3 {
+			w[words/2] = 0
+			w[words/2-1] = 0
+		}
+		w[words-1] |= 1
+		return new(big.Int).SetBits(w)
+	}
+	sizes := []int{1, 2, 3, 1000, 8191, 8192, 8193, 9000, 20000, 50001}
+	for i, a := range sizes {
+		for j, b := range sizes {
+			x, y := rnd(a, uint64(i)), rnd(b, uint64(100+j))
+			if got, want := r.mulAbs(x.Bits(), y.Bits()), new(big.Int).Mul(x, y); got.Cmp(want) != 0 {
+				t.Fatalf("%d x %d words: wrong product", a, b)
+			}
+		}
+		x := rnd(a, uint64(i))
+		if got, want := r.mulAbs(x.Bits(), x.Bits()), new(big.Int).Mul(x, x); got.Cmp(want) != 0 {
+			t.Fatalf("%d words squared: wrong product", a)
+		}
+	}
+}
+
+// Both ways bigExp makes a power give big.Int.Exp's.
+func TestBigIntExp(t *testing.T) {
+	r := New()
+	bases := []*big.Int{big.NewInt(3), big.NewInt(-3), big.NewInt(5), big.NewInt(-7), big.NewInt(12)}
+	b, _ := new(big.Int).SetString("18446744073709551617", 10) // 2^64 + 1
+	bases = append(bases, b, new(big.Int).Neg(b))
+	b, _ = new(big.Int).SetString("-1267650600228229401496703205375", 10) // -(2^100 - 1)
+	bases = append(bases, b, new(big.Int).Exp(big.NewInt(10), big.NewInt(50), nil))
+	exps := []int{2, 3, 4, 5, 6, 7, 8, 31, 32, 33, 100, 1000, 12345, 30001}
+	for _, x := range bases {
+		for _, n := range exps {
+			want := new(big.Int).Exp(x, big.NewInt(int64(n)), nil)
+			if got := r.bigExp(x, big.NewInt(int64(n))); got.Cmp(want) != 0 {
+				t.Fatalf("%v ** %d: got a different power", x, n)
+			}
+			if got := r.bigExpV8(x, n); got.Cmp(want) != 0 {
+				t.Fatalf("%v ** %d (V8's way): got a different power", x, n)
+			}
+		}
 	}
 }

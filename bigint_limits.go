@@ -109,7 +109,16 @@ func (r *Runtime) bigMul(x, y *big.Int) *big.Int {
 		return y
 	}
 	r.chargeBigInt(bigDigits(x) + bigDigits(y))
-	return new(big.Int).Mul(x, y)
+	return r.mulSigned(x, y)
+}
+
+// mulSigned is x * y, by mulAbs.
+func (r *Runtime) mulSigned(x, y *big.Int) *big.Int {
+	z := r.mulAbs(x.Bits(), y.Bits())
+	if x.Sign() != y.Sign() {
+		z.Neg(z)
+	}
+	return z
 }
 
 func (r *Runtime) bigQuo(x, y *big.Int) *big.Int {
@@ -259,8 +268,7 @@ func (r *Runtime) bigShiftRightAbs(x, y *big.Int) *big.Int {
 	return new(big.Int).Rsh(x, n)
 }
 
-// bigExp is x ** y, as V8's BigInt::Exponentiate computes it, so that it
-// throws where V8 does.
+// bigExp is x ** y, which throws where V8's BigInt::Exponentiate does.
 func (r *Runtime) bigExp(x, y *big.Int) *big.Int {
 	if y.Sign() < 0 {
 		panic(r.newError(r.getRangeError(), "Exponent must be positive"))
@@ -297,9 +305,30 @@ func (r *Runtime) bigExp(x, y *big.Int) *big.Int {
 		}
 		return z
 	}
-	if bigExpThrows(x, n) {
+	switch bigExpLengths(x, n) {
+	case bigExpThrows:
 		r.throwBigIntTooBig()
+	case bigExpUndecided:
+		return r.bigExpV8(x, n)
 	}
+	// V8 does not throw, so the powers are made the faster way, from the
+	// highest bit of n down, multiplying by x, which is short, rather than
+	// by the square before.
+	z := x
+	for i := bits.Len(uint(n)) - 2; i >= 0; i-- {
+		r.countAlloc(int64(2*bigDigits(z)) * (bigIntDigitBits / 8))
+		z = r.mulSigned(z, z)
+		if n>>i&1 != 0 {
+			r.countAlloc(int64(bigDigits(z)+bigDigits(x)) * (bigIntDigitBits / 8))
+			z = r.mulSigned(z, x)
+		}
+	}
+	return z
+}
+
+// bigExpV8 is |x| ** n made as V8 makes it, from the lowest bit of n up,
+// each product refused as V8 refuses it.
+func (r *Runtime) bigExpV8(x *big.Int, n int) *big.Int {
 	var z *big.Int
 	sq := x
 	if n&1 != 0 {
@@ -318,13 +347,19 @@ func (r *Runtime) bigExp(x, y *big.Int) *big.Int {
 	return z
 }
 
-// bigExpThrows reports whether V8 throws for |x| ** n, n > 1 and |x| > 2,
-// when one of the products of the loop in bigExp is longer than its limit,
-// as far as can be told from the lengths of the powers of x: those are
-// known within a bit from log2|x|, and a product the bounds cannot decide
-// is checked when it is made. Without it, a power past the limit computed
-// for minutes before it threw: 4n ** (2n ** 29n - 1n) takes V8 26 s.
-func bigExpThrows(x *big.Int, n int) bool {
+const (
+	bigExpFits = iota
+	bigExpThrows
+	bigExpUndecided
+)
+
+// bigExpLengths tells whether one of the products of V8's loop for
+// |x| ** n (bigExpV8; n > 1, |x| > 2) is longer than V8's limit, from the
+// lengths of the powers of x, which are known within a bit from log2|x|.
+// When those cannot tell, the products are checked as they are made.
+// Without it, a power past the limit was computed for minutes before it
+// threw: 4n ** (2n ** 29n - 1n) takes V8 26 s.
+func bigExpLengths(x *big.Int, n int) int {
 	bl := x.BitLen()
 	// log2|x| = scale + log2(top), with top the leading 64 bits of |x|. A
 	// power of two is exact; otherwise the error of k * log2|x| is far
@@ -336,35 +371,43 @@ func bigExpThrows(x *big.Int, n int) bool {
 	if x.TrailingZeroBits() == uint(bl-1) {
 		scale, log2Top, margin = bl-1, 0, 0
 	}
-	// minDigits is a lower bound on the digits of |x| ** k: its bits are
+	// digits bounds the digits of |x| ** k, whose bits are
 	// floor(k * log2|x|) + 1, k * scale exactly.
-	minDigits := func(k int) int {
-		return bitsToDigits(int64(k)*int64(scale) + int64(math.Floor(float64(k)*log2Top-margin)) + 1)
+	digits := func(k int, m float64) int {
+		return bitsToDigits(int64(k)*int64(scale) + int64(math.Floor(float64(k)*log2Top+m)) + 1)
 	}
-	throws := func(k1, k2 int) bool {
-		return minDigits(k1)+minDigits(k2) > bigIntMaxLength
+	result := bigExpFits
+	product := func(k1, k2 int) bool {
+		if digits(k1, -margin)+digits(k2, -margin) > bigIntMaxLength {
+			result = bigExpThrows
+			return true
+		}
+		if digits(k1, margin)+digits(k2, margin) > bigIntMaxLength {
+			result = bigExpUndecided
+		}
+		return false
 	}
 	sq, z := 1, 0
 	if n&1 != 0 {
 		z = 1
 	}
 	for n >>= 1; n != 0; n >>= 1 {
-		if throws(sq, sq) {
-			return true
+		if product(sq, sq) {
+			break
 		}
 		sq *= 2
 		if n&1 != 0 {
 			if z == 0 {
 				z = sq
 			} else {
-				if throws(z, sq) {
-					return true
+				if product(z, sq) {
+					break
 				}
 				z += sq
 			}
 		}
 	}
-	return false
+	return result
 }
 
 // bigAsUintN is BigInt.asUintN(n, x).
@@ -436,4 +479,70 @@ func bigLowBits(x *big.Int, n uint) *big.Int {
 		z[k-1] &= 1<<b - 1
 	}
 	return new(big.Int).SetBits(z)
+}
+
+// bigMulLeafProduct bounds the products mulAbs leaves to big.Int.Mul, which
+// cannot be interrupted, by the product of the operands' lengths in words:
+// two operands of 2^13 words take it about 8 ms on a recent laptop, one of
+// 2^24 words and one of 4 about as long.
+const bigMulLeafProduct = 1 << 26
+
+// mulAbs returns |x| * |y|, given their words. A large product is split into
+// smaller ones by Karatsuba's method, as big.Int.Mul splits it, but with the
+// pending interrupt checked between them: two operands of 2^22 words take
+// big.Int.Mul more than two minutes, during which the runtime could not be
+// interrupted.
+func (r *Runtime) mulAbs(x, y []big.Word) *big.Int {
+	if len(x) < len(y) {
+		x, y = y, x
+	}
+	if len(y) == 0 {
+		return new(big.Int)
+	}
+	square := len(x) == len(y) && &x[0] == &y[0]
+	if len(x)*len(y) <= bigMulLeafProduct {
+		a := new(big.Int).SetBits(x)
+		if square {
+			return new(big.Int).Mul(a, a)
+		}
+		return new(big.Int).Mul(a, new(big.Int).SetBits(y))
+	}
+	r.vm.checkInterrupt()
+	h := (len(x) + 1) / 2
+	shift := uint(h * bits.UintSize)
+	x0, x1 := natNorm(x[:h]), x[h:]
+	if len(y) <= h {
+		// x1 * y * B^h + x0 * y
+		z := r.mulAbs(x1, y)
+		z.Lsh(z, shift)
+		return z.Add(z, r.mulAbs(x0, y))
+	}
+	y0, y1 := x0, x1
+	if !square {
+		y0, y1 = natNorm(y[:h]), y[h:]
+	}
+	z2 := r.mulAbs(x1, y1)
+	z0 := r.mulAbs(x0, y0)
+	// z1 = (x0 + x1) * (y0 + y1) - z2 - z0
+	sx := new(big.Int).Add(new(big.Int).SetBits(x0), new(big.Int).SetBits(x1))
+	sy := sx
+	if !square {
+		sy = new(big.Int).Add(new(big.Int).SetBits(y0), new(big.Int).SetBits(y1))
+	}
+	z1 := r.mulAbs(sx.Bits(), sy.Bits())
+	z1.Sub(z1, z2)
+	z1.Sub(z1, z0)
+	z2.Lsh(z2, 2*shift)
+	z1.Lsh(z1, shift)
+	z2.Add(z2, z1)
+	return z2.Add(z2, z0)
+}
+
+// natNorm drops the high zero words of x.
+func natNorm(x []big.Word) []big.Word {
+	i := len(x)
+	for i > 0 && x[i-1] == 0 {
+		i--
+	}
+	return x[:i]
 }
