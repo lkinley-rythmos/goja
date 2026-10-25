@@ -5,6 +5,7 @@ import (
 	"hash/maphash"
 	"math"
 	"math/big"
+	"math/bits"
 	"reflect"
 	"strconv"
 	"sync"
@@ -139,7 +140,7 @@ func toBigInt(value Value) *valueBigInt {
 	case String:
 		bigInt, err := stringToBigInt(prim.toTrimmedUTF8())
 		if err != nil {
-			panic(syntaxError(fmt.Sprintf("Cannot convert %s to a BigInt", prim)))
+			panic(bigIntConversionError(prim))
 		}
 		return (*valueBigInt)(bigInt)
 	case valueBool:
@@ -181,43 +182,105 @@ func numberToBigInt(v Value) *valueBigInt {
 	}
 }
 
+// stringToBigInt is StringToBigInt (ECMA-262 7.1.14) of str, trimmed of
+// white space: an optionally signed decimal integer, with leading zeros if
+// any, or a 0x, 0o or 0b prefixed unsigned one, "" being 0n. A string of
+// more digits than V8 takes for a BigInt (bigdec.TooLong) is refused, before
+// it is converted, as one that is not a number is.
 func stringToBigInt(str string) (*big.Int, error) {
-	var bigint big.Int
-	n, err := stringToInt(str)
-	if err != nil {
-		switch {
-		case isRangeErr(err):
-			if z, ok := parseLongDecimal(str); ok {
-				return z, nil
-			}
-			bigint.SetString(str, 0)
-		case err == strconv.ErrSyntax:
-		default:
-			return nil, strconv.ErrSyntax
-		}
-	} else {
-		bigint.SetInt64(n)
-	}
-	return &bigint, nil
+	return stringToBigIntWith(str, nil)
 }
 
-// parseLongDecimal converts str, which strconv.ParseInt takes in base 10,
-// in less than the quadratic time of big.Int.SetString, when it is decimal
-// digits after an optional sign, the first of them not 0: one with a
-// leading 0 is left to big.Int.SetString in base 0, as before.
-func parseLongDecimal(str string) (*big.Int, bool) {
+// stringToBigIntWith is stringToBigInt, with r's interrupt checked while a
+// long decimal string is converted and the result charged before it is
+// made, if r is not nil.
+func stringToBigIntWith(str string, r *Runtime) (*big.Int, error) {
+	if str == "" {
+		if r != nil {
+			r.chargeBigIntDigits(0)
+		}
+		return new(big.Int), nil
+	}
+	if len(str) > 2 && str[0] == '0' {
+		base := 0
+		switch str[1] {
+		case 'x', 'X':
+			base = 16
+		case 'o', 'O':
+			base = 8
+		case 'b', 'B':
+			base = 2
+		}
+		if base != 0 {
+			digits := str[2:]
+			if !allDigits(digits, base) || bigdec.TooLong(digits, base) {
+				return nil, strconv.ErrSyntax
+			}
+			if r != nil {
+				r.chargeBigIntDigits(int64(bitsToDigits(int64(len(digits)) * int64(bits.TrailingZeros(uint(base))))))
+			}
+			z, _ := bigdec.ParsePow2(digits, base)
+			return z, nil
+		}
+	}
 	digits := str
-	if digits != "" && (digits[0] == '+' || digits[0] == '-') {
-		digits = digits[1:]
+	if str[0] == '+' || str[0] == '-' {
+		digits = str[1:]
 	}
-	if digits == "" || digits[0] == '0' {
-		return nil, false
+	if digits == "" || !allDigits(digits, 10) || bigdec.TooLong(digits, 10) {
+		return nil, strconv.ErrSyntax
 	}
-	z, ok := bigdec.Parse(digits)
-	if ok && str[0] == '-' {
+	if r != nil {
+		// log2(10) < 3.33 bits a digit.
+		r.chargeBigIntDigits(int64(bitsToDigits(int64(len(digits)) * 333 / 100)))
+	}
+	var z *big.Int
+	switch {
+	case len(digits) <= 18:
+		n, _ := strconv.ParseInt(digits, 10, 64)
+		z = big.NewInt(n)
+	case r == nil:
+		z, _ = bigdec.Parse(digits)
+	default:
+		z, _ = bigdec.ParseWith(digits, r.mulSigned, r.vm.checkInterrupt)
+	}
+	if str[0] == '-' {
 		z.Neg(z)
 	}
-	return z, ok
+	return z, nil
+}
+
+// allDigits reports whether s is digits in base (2, 8, 10 or 16) and
+// nothing else.
+func allDigits(s string, base int) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		var d int
+		switch {
+		case c >= '0' && c <= '9':
+			d = int(c - '0')
+		case c >= 'a' && c <= 'f':
+			d = int(c-'a') + 10
+		case c >= 'A' && c <= 'F':
+			d = int(c-'A') + 10
+		default:
+			return false
+		}
+		if d >= base {
+			return false
+		}
+	}
+	return true
+}
+
+// bigIntConversionError is the SyntaxError for a string that is not a
+// BigInt: V8 cuts its text at 1,000 code units.
+func bigIntConversionError(s String) syntaxError {
+	text := s.String()
+	if s.Length() > 1000 {
+		text = s.Substring(0, 1000).String() + "\u2026"
+	}
+	return syntaxError(fmt.Sprintf("Cannot convert %s to a BigInt", text))
 }
 
 func (r *Runtime) thisBigIntValue(value Value) Value {
@@ -314,6 +377,12 @@ func (r *Runtime) builtin_BigInt(call FunctionCall) Value {
 		switch v := call.Argument(0).(type) {
 		case *valueBigInt:
 			return v
+		case String:
+			z, err := stringToBigIntWith(v.toTrimmedUTF8(), r)
+			if err != nil {
+				panic(bigIntConversionError(v))
+			}
+			return (*valueBigInt)(z)
 		case valueInt, valueFloat, *Object:
 			b = numberToBigInt(v)
 		default:

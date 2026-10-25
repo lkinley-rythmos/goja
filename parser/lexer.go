@@ -1014,22 +1014,42 @@ func parseNumberLiteral(literal string) (value interface{}, err error) {
 			}
 		}
 		digits := literal[:len(literal)-1]
-		if unsigned := strings.TrimLeft(digits, "+-"); len(digits)-len(unsigned) <= 1 && unsigned != "" && unsigned[0] != '0' {
-			// Decimal, which big.Int.SetString converts in quadratic time.
-			bigInt, ok := bigdec.Parse(strings.ReplaceAll(unsigned, "_", ""))
-			if !ok {
+		unsigned := strings.TrimLeft(digits, "+-")
+		if len(digits)-len(unsigned) > 1 || unsigned == "" {
+			goto error
+		}
+		base := 10
+		if len(unsigned) > 2 && unsigned[0] == '0' {
+			switch unsigned[1] {
+			case 'x', 'X':
+				base = 16
+			case 'o', 'O':
+				base = 8
+			case 'b', 'B':
+				base = 2
+			default:
 				goto error
 			}
-			if digits[0] == '-' {
-				bigInt.Neg(bigInt)
-			}
-			return bigInt, nil
+			unsigned = unsigned[2:]
 		}
-		// Parse as big.Int
-		bigInt := new(big.Int)
-		_, ok := bigInt.SetString(digits, 0)
+		if bigdec.TooLong(unsigned, base) {
+			// V8 refuses it while it parses.
+			return nil, errors.New("Maximum BigInt size exceeded")
+		}
+		// big.Int.SetString converts decimal and octal digits in quadratic
+		// time.
+		var bigInt *big.Int
+		var ok bool
+		if unsigned = strings.ReplaceAll(unsigned, "_", ""); base == 10 {
+			bigInt, ok = bigdec.Parse(unsigned)
+		} else {
+			bigInt, ok = bigdec.ParsePow2(unsigned, base)
+		}
 		if !ok {
 			goto error
+		}
+		if digits[0] == '-' {
+			bigInt.Neg(bigInt)
 		}
 		return bigInt, nil
 	}
