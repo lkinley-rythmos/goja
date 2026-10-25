@@ -476,11 +476,32 @@ func (r *Runtime) getBigIntPrototype() *Object {
 	return ret
 }
 
-// looseEquals is x == y (IsLooselyEqual): Value.Equals, but a BigInt and a
-// string, as they are or once an object among them is converted to a
-// primitive as Equals converts it, are compared with the string converted by
-// r (Runtime.stringToBigInt).
-func (r *Runtime) looseEquals(x, y Value) bool {
+// bigIntStringPair reports whether x == y can compare a BigInt with a
+// string, as they are or once an object among them is a primitive: only
+// such a pair needs the runtime; any other compares as it did.
+func bigIntStringPair(x, y Value) bool {
+	switch x.(type) {
+	case *valueBigInt, *Object:
+		switch y.(type) {
+		case *valueBigInt, String, *Object:
+			return true
+		}
+	case String:
+		switch y.(type) {
+		case *valueBigInt, *Object:
+			return true
+		}
+	}
+	return false
+}
+
+// looseEqualsConverted is x == y (IsLooselyEqual) for a pair
+// bigIntStringPair reports: Value.Equals, but a BigInt and a string, as they
+// are or once an object among them is converted to a primitive as Equals
+// converts it, are compared with the string converted by r
+// (Runtime.stringToBigInt). The == and != instructions call it only for
+// such a pair.
+func (r *Runtime) looseEqualsConverted(x, y Value) bool {
 	for {
 		switch xv := x.(type) {
 		case *valueBigInt:

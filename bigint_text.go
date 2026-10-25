@@ -138,7 +138,12 @@ func (r *Runtime) bigString(x *big.Int, radix int) String {
 // toStringOf is v.toString(), with a BigInt written by bigString.
 func (r *Runtime) toStringOf(v Value) String {
 	if b, ok := v.(*valueBigInt); ok {
-		return r.bigString((*big.Int)(b), 10)
+		return r.bigIntString(b)
 	}
 	return v.toString()
+}
+
+// bigIntString is b in decimal by bigString.
+func (r *Runtime) bigIntString(b *valueBigInt) String {
+	return r.bigString((*big.Int)(b), 10)
 }

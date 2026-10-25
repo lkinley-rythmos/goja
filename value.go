@@ -742,11 +742,19 @@ func (o *Object) ToInteger() int64 {
 }
 
 func (o *Object) toString() String {
-	return o.runtime.toStringOf(o.toPrimitiveString())
+	p := o.toPrimitiveString()
+	if b, ok := p.(*valueBigInt); ok {
+		return o.runtime.bigIntString(b)
+	}
+	return p.toString()
 }
 
 func (o *Object) string() unistring.String {
-	return o.toString().string()
+	p := o.toPrimitiveString()
+	if b, ok := p.(*valueBigInt); ok {
+		return o.runtime.bigIntString(b).string()
+	}
+	return p.string()
 }
 
 func (o *Object) ToString() Value {

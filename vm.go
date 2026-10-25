@@ -1348,10 +1348,18 @@ func (_add) exec(vm *vm) {
 
 	if isLeftString || isRightString {
 		if !isLeftString {
-			leftString = vm.r.toStringOf(left)
+			if b, ok := left.(*valueBigInt); ok {
+				leftString = vm.r.bigIntString(b)
+			} else {
+				leftString = left.toString()
+			}
 		}
 		if !isRightString {
-			rightString = vm.r.toStringOf(right)
+			if b, ok := right.(*valueBigInt); ok {
+				rightString = vm.r.bigIntString(b)
+			} else {
+				rightString = right.toString()
+			}
 		}
 		ret = vm.r.concatString(leftString, rightString)
 	} else {
@@ -1405,7 +1413,11 @@ func (_addChain) exec(vm *vm) {
 	}
 	rightString, ok := right.(String)
 	if !ok {
-		rightString = vm.r.toStringOf(right)
+		if b, ok := right.(*valueBigInt); ok {
+			rightString = vm.r.bigIntString(b)
+		} else {
+			rightString = right.toString()
+		}
 	}
 	vm.stack[vm.sp-2] = vm.r.concatStringChained(left, rightString)
 	vm.sp--
@@ -1912,7 +1924,11 @@ type _toString struct{}
 
 func (_toString) exec(vm *vm) {
 	p := vm.sp - 1
-	vm.stack[p] = vm.r.toStringOf(vm.stack[p])
+	if b, ok := vm.stack[p].(*valueBigInt); ok {
+		vm.stack[p] = vm.r.bigIntString(b)
+	} else {
+		vm.stack[p] = vm.stack[p].toString()
+	}
 	vm.pc++
 }
 
@@ -4852,7 +4868,14 @@ type _op_eq struct{}
 var op_eq _op_eq
 
 func (_op_eq) exec(vm *vm) {
-	if vm.r.looseEquals(vm.stack[vm.sp-2], vm.stack[vm.sp-1]) {
+	x, y := vm.stack[vm.sp-2], vm.stack[vm.sp-1]
+	var eq bool
+	if bigIntStringPair(x, y) {
+		eq = vm.r.looseEqualsConverted(x, y)
+	} else {
+		eq = x.Equals(y)
+	}
+	if eq {
 		vm.stack[vm.sp-2] = valueTrue
 	} else {
 		vm.stack[vm.sp-2] = valueFalse
@@ -4866,7 +4889,14 @@ type _op_neq struct{}
 var op_neq _op_neq
 
 func (_op_neq) exec(vm *vm) {
-	if vm.r.looseEquals(vm.stack[vm.sp-2], vm.stack[vm.sp-1]) {
+	x, y := vm.stack[vm.sp-2], vm.stack[vm.sp-1]
+	var eq bool
+	if bigIntStringPair(x, y) {
+		eq = vm.r.looseEqualsConverted(x, y)
+	} else {
+		eq = x.Equals(y)
+	}
+	if eq {
 		vm.stack[vm.sp-2] = valueFalse
 	} else {
 		vm.stack[vm.sp-2] = valueTrue
@@ -4935,7 +4965,12 @@ func (_op_in) exec(vm *vm) {
 		panic(vm.r.newTypeErrorString("Cannot use 'in' operator to search for '" + vm.r.noSideEffectsToString(left) + "' in " + vm.r.noSideEffectsToString(vm.stack[vm.sp-1])))
 	}
 
-	if right.hasProperty(vm.r.toPropertyKey(left)) {
+	switch left.(type) {
+	case *Object, *valueBigInt:
+		// An integer or a string key keeps hasProperty's direct lookup.
+		left = vm.r.toPropertyKey(left)
+	}
+	if right.hasProperty(left) {
 		vm.stack[vm.sp-2] = valueTrue
 	} else {
 		vm.stack[vm.sp-2] = valueFalse

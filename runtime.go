@@ -2892,13 +2892,29 @@ func createDataPropertyOrThrow(o *Object, p Value, v Value) {
 // object, then a String or a *Symbol, with a BigInt written by bigString,
 // so that a script's property keys are interruptible and charged.
 func (r *Runtime) toPropertyKey(key Value) Value {
+	switch key.(type) {
+	case String, *Symbol:
+		return key
+	}
+	return r.toPropertyKeyConverted(key)
+}
+
+// toPropertyKeyConverted is toPropertyKey of a value that is not already a
+// key, out of line, so that toPropertyKey inlines as it did.
+func (r *Runtime) toPropertyKeyConverted(key Value) Value {
+	switch k := key.(type) {
+	case *Object:
+		key = k.toPrimitiveString()
+	case *valueBigInt:
+		return r.bigIntString(k)
+	default:
+		return key.ToString()
+	}
 	switch k := key.(type) {
 	case String, *Symbol:
 		return key
 	case *valueBigInt:
-		return r.bigString((*big.Int)(k), 10)
-	case *Object:
-		return r.toPropertyKey(k.toPrimitiveString())
+		return r.bigIntString(k)
 	}
 	return key.ToString()
 }
