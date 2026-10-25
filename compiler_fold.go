@@ -85,13 +85,6 @@ func foldOperandFits(v Value) bool {
 	return true
 }
 
-// foldsUnary reports whether a unary operation on a constant operand is
-// folded.
-func (c *compiler) foldsUnary(operand compiledExpr) bool {
-	v, ex := c.evalConst(operand)
-	return ex != nil || foldOperandFits(v)
-}
-
 // foldsBinary reports whether a binary operation on constant operands is
 // folded. When an operand throws, the operation throws what it throws,
 // which is folded.

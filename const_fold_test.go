@@ -210,3 +210,28 @@ func TestConstFoldUnaryChainLinear(t *testing.T) {
 		}
 	}
 }
+
+// A constant chain of !, ~ or typeof compiles about as fast as the same
+// chain on a variable, which is not folded: each level was evaluated on
+// its own (8,000 ! took 9.7 ms against 1.8 ms before the fold bounds), as
+// the bound of a chain is now taken from its bottom.
+func TestConstFoldUnaryChainCost(t *testing.T) {
+	best := func(src string) time.Duration {
+		d := time.Hour
+		for i := 0; i < 5; i++ {
+			start := time.Now()
+			if _, err := Compile("", src, false); err != nil {
+				t.Fatal(err)
+			}
+			d = min(d, time.Since(start))
+		}
+		return d
+	}
+	for _, op := range []string{"!", "~", "typeof "} {
+		folded := best("function f() { return " + strings.Repeat(op, 8000) + "1; }")
+		plain := best("function f(x) { return " + strings.Repeat(op, 8000) + "x; }")
+		if folded > 2*plain+slack(2*time.Millisecond) {
+			t.Fatalf("%q x 8000: %v, on a variable %v", op, folded, plain)
+		}
+	}
+}

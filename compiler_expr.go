@@ -165,6 +165,9 @@ type compiledUnaryExpr struct {
 	operand  compiledExpr
 	operator token.Token
 	postfix  bool
+	// foldBits bounds the bits of the BigInt the expression folds to (0
+	// if it cannot be one), once constant() has decided it is constant.
+	foldBits int
 }
 
 type compiledConditionalExpr struct {
@@ -2612,7 +2615,34 @@ func (c *compiler) runConst(expr compiledExpr) (Value, *Exception) {
 
 func (e *compiledUnaryExpr) constant() bool {
 	return e.decide(func() bool {
-		return e.operand.constant() && e.c.foldsUnary(e.operand)
+		if !e.operand.constant() {
+			return false
+		}
+		var bits int
+		if u, ok := e.operand.(*compiledUnaryExpr); ok {
+			// A chain of unary operators is bounded from the bottom up,
+			// without evaluating each level: !, typeof and void make no
+			// BigInt, and - and ~ one at most a bit longer than theirs.
+			bits = u.foldBits
+		} else {
+			v, ex := e.c.evalConst(e.operand)
+			if ex != nil {
+				return true
+			}
+			if !foldOperandFits(v) {
+				return false
+			}
+			if b, ok := v.(*valueBigInt); ok {
+				bits = (*big.Int)(b).BitLen()
+			}
+		}
+		if bits > maxFoldBigIntBits {
+			return false
+		}
+		if e.operator == token.MINUS || e.operator == token.BITWISE_NOT {
+			e.foldBits = bits + 1
+		}
+		return true
 	})
 }
 
@@ -2626,20 +2656,18 @@ func (e *compiledUnaryExpr) emitGetter(putOnStack bool) {
 
 	switch e.operator {
 	case token.NOT:
-		// emitExpr: a constant operand is emitted from its value, which
-		// constant() evaluated, not from its whole subtree again.
-		e.c.emitExpr(e.operand, true)
+		e.operand.emitGetter(true)
 		e.c.emit(not)
 		goto end
 	case token.BITWISE_NOT:
-		e.c.emitExpr(e.operand, true)
+		e.operand.emitGetter(true)
 		e.c.emit(bnot)
 		goto end
 	case token.TYPEOF:
 		if o, ok := e.operand.(compiledExprOrRef); ok {
 			o.emitGetterOrRef()
 		} else {
-			e.c.emitExpr(e.operand, true)
+			e.operand.emitGetter(true)
 		}
 		e.c.emit(typeof)
 		goto end
