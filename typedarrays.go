@@ -807,7 +807,7 @@ func toBigIntConverted(v Value) *valueBigInt {
 	case String:
 		z, err := stringToBigIntHost(v.toTrimmedUTF8())
 		if err != nil {
-			panic(bigIntConversionError(v))
+			panic(bigIntConversionErrorHost(v))
 		}
 		return (*valueBigInt)(z)
 	case valueBool:

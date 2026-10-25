@@ -172,3 +172,46 @@ func TestBigIntStepsInterruptible(t *testing.T) {
 		})
 	}
 }
+
+// Reading a string as a BigInt is done a block at a time, with the
+// interrupt checked between them: its trimming (a UTF-8 copy of all of a
+// string that is not ASCII), its validation and the conversion of digits in
+// base 2, 8 or 16 each read all of it in one step.
+func TestBigIntStringScansInterruptible(t *testing.T) {
+	skipHeavy(t)
+	r := New()
+	if _, err := r.RunString(`var hex = "0x" + "f".repeat(2 ** 27), uni = " " + "7".repeat(2 ** 26), emoji = "\u{1F9EA}".repeat(2 ** 25), oct = "0o" + "7".repeat(2 ** 27);`); err != nil {
+		t.Fatal(err)
+	}
+	for _, src := range []string{"BigInt(hex)", "BigInt(oct)", "BigInt(uni)", "BigInt(emoji)", "1n < uni", "emoji == 1n", "BigInt.asUintN(8, hex)"} {
+		t.Run(src, func(t *testing.T) {
+			prg := MustCompile("", src, false)
+			delay := 20 * time.Millisecond
+			timer := time.AfterFunc(delay, func() { r.Interrupt("stop") })
+			start := time.Now()
+			_, err := runWithin(t, r, src, 60*time.Second)
+			took := time.Since(start)
+			timer.Stop()
+			r.ClearInterrupt()
+			_ = prg
+			// A string that has a character no BigInt has is refused at once.
+			var ie *InterruptedError
+			if !errors.As(err, &ie) && !strings.Contains(src, "emoji") {
+				t.Fatalf("got %v, want interrupted", err)
+			}
+			if took > delay+bigIntStepSlack {
+				t.Fatalf("returned after %v", took)
+			}
+		})
+	}
+}
+
+// The text of a string that is not a BigInt is cut at 1,000 UTF-16 code
+// units, a surrogate pair split if it is there, and its code units kept as
+// they are: Node v18.20.3's messages ([length, the code units at 1014, 1015
+// and 15]).
+func TestBigIntConversionMessageUTF16(t *testing.T) {
+	testScript(`function m(s) { try { BigInt(s) } catch (e) { const t = e.message; return [e.name, t.length, t.charCodeAt(1014), t.charCodeAt(1015), t.charCodeAt(15)].join() } }
+	[m("1".repeat(999) + "\u{1F9EA}"), m("1".repeat(998) + "\u{1F9EA}x"), m(" " + "x".repeat(1000) + " "), m("\ud800" + "y".repeat(5))].join(";")`,
+		asciiString("SyntaxError,1028,55358,8230,49;SyntaxError,1028,56810,8230,49;SyntaxError,1028,120,8230,160;SyntaxError,33,NaN,NaN,55296"), t)
+}

@@ -4701,7 +4701,7 @@ func (r *Runtime) cmp(px, py Value) Value {
 		goto end
 	} else {
 		if px, ok := px.(*valueBigInt); ok && isPyString {
-			ny, err := r.stringToBigInt(ys.toTrimmedUTF8())
+			ny, err := r.stringToBigIntOf(ys)
 			if err != nil {
 				return _undefined
 			}
@@ -4709,7 +4709,7 @@ func (r *Runtime) cmp(px, py Value) Value {
 			goto end
 		}
 		if py, ok := py.(*valueBigInt); ok && isPxString {
-			nx, err := r.stringToBigInt(xs.toTrimmedUTF8())
+			nx, err := r.stringToBigIntOf(xs)
 			if err != nil {
 				return _undefined
 			}

@@ -8,7 +8,9 @@ import (
 	"math/bits"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
+	"unicode/utf8"
 	"unsafe"
 
 	"github.com/dop251/goja/internal/bigdec"
@@ -154,9 +156,9 @@ func (r *Runtime) toBigInt(value Value) *valueBigInt {
 		return prim
 	case String:
 		// Charged by stringToBigInt, before it is made.
-		bigInt, err := r.stringToBigInt(prim.toTrimmedUTF8())
+		bigInt, err := r.stringToBigIntOf(prim)
 		if err != nil {
-			panic(bigIntConversionError(prim))
+			panic(r.bigIntConversionError(prim))
 		}
 		return (*valueBigInt)(bigInt)
 	case valueBool:
@@ -227,6 +229,57 @@ func (r *Runtime) stringToBigInt(str string) (*big.Int, error) {
 	return stringToBigIntWith(str, r)
 }
 
+// stringToBigIntOf is stringToBigInt of s trimmed of white space
+// (bigIntSource).
+func (r *Runtime) stringToBigIntOf(s String) (*big.Int, error) {
+	src, ok := r.bigIntSource(s)
+	if !ok {
+		return nil, strconv.ErrSyntax
+	}
+	return r.stringToBigInt(src)
+}
+
+// bigIntSource is s trimmed of white space, as StringToBigInt reads it, or
+// false if what is left has a character that is not ASCII, which no BigInt
+// has. A long string is read a block at a time, with the interrupt checked
+// between them; toTrimmedUTF8 made a UTF-8 copy of the whole of a string
+// that is not ASCII first, uninterruptibly.
+func (r *Runtime) bigIntSource(s String) (string, bool) {
+	if a, ok := s.(asciiString); ok {
+		return a.toTrimmedUTF8(), true
+	}
+	i, j := 0, s.Length()
+	for i < j && isWhiteSpaceUnit(s.CharAt(i)) {
+		i++
+	}
+	for j > i && isWhiteSpaceUnit(s.CharAt(j-1)) {
+		j--
+	}
+	var b strings.Builder
+	for k := i; k < j; k++ {
+		if (k-i)%(1<<20) == 0 {
+			r.vm.checkInterrupt()
+			b.Grow(min(j-k, 1<<20))
+		}
+		c := s.CharAt(k)
+		if c >= utf8.RuneSelf {
+			return "", false
+		}
+		b.WriteByte(byte(c))
+	}
+	return b.String(), true
+}
+
+// isWhiteSpaceUnit reports whether c is ECMAScript WhiteSpace or a
+// LineTerminator (parser.WhitespaceChars).
+func isWhiteSpaceUnit(c uint16) bool {
+	switch c {
+	case ' ', '\f', '\n', '\r', '\t', '\v', 0x00a0, 0x1680, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff:
+		return true
+	}
+	return c >= 0x2000 && c <= 0x200a
+}
+
 // stringToBigIntHost is stringToBigInt for Value.Equals called by the host
 // outside a run, where there is neither an interrupt to check nor a counter
 // to charge: a script's == goes through Runtime.looseEquals, and its other
@@ -238,6 +291,10 @@ func stringToBigIntHost(str string) (*big.Int, error) {
 // stringToBigIntWith is the conversion of stringToBigInt and
 // stringToBigIntHost, with r nil for the latter.
 func stringToBigIntWith(str string, r *Runtime) (*big.Int, error) {
+	var check func()
+	if r != nil {
+		check = r.vm.checkInterrupt
+	}
 	if str == "" {
 		if r != nil {
 			r.chargeBigIntDigits(0)
@@ -256,13 +313,13 @@ func stringToBigIntWith(str string, r *Runtime) (*big.Int, error) {
 		}
 		if base != 0 {
 			digits := str[2:]
-			if !allDigits(digits, base) || bigdec.TooLong(digits, base) {
+			if !allDigits(digits, base, check) || bigdec.TooLongWith(digits, base, check) {
 				return nil, strconv.ErrSyntax
 			}
 			if r != nil {
 				r.chargeBigIntDigits(int64(bitsToDigits(int64(len(digits)) * int64(bits.TrailingZeros(uint(base))))))
 			}
-			z, _ := bigdec.ParsePow2(digits, base)
+			z, _ := bigdec.ParsePow2With(digits, base, check)
 			return z, nil
 		}
 	}
@@ -270,7 +327,7 @@ func stringToBigIntWith(str string, r *Runtime) (*big.Int, error) {
 	if str[0] == '+' || str[0] == '-' {
 		digits = str[1:]
 	}
-	if digits == "" || !allDigits(digits, 10) || bigdec.TooLong(digits, 10) {
+	if digits == "" || !allDigits(digits, 10, check) || bigdec.TooLongWith(digits, 10, check) {
 		return nil, strconv.ErrSyntax
 	}
 	if r != nil {
@@ -294,9 +351,12 @@ func stringToBigIntWith(str string, r *Runtime) (*big.Int, error) {
 }
 
 // allDigits reports whether s is digits in base (2, 8, 10 or 16) and
-// nothing else.
-func allDigits(s string, base int) bool {
+// nothing else, calling check (if not nil) between blocks of characters.
+func allDigits(s string, base int, check func()) bool {
 	for i := 0; i < len(s); i++ {
+		if check != nil && i%(1<<20) == 0 {
+			check()
+		}
 		c := s[i]
 		var d int
 		switch {
@@ -317,8 +377,21 @@ func allDigits(s string, base int) bool {
 }
 
 // bigIntConversionError is the SyntaxError for a string that is not a
-// BigInt: V8 cuts its text at 1,000 code units.
-func bigIntConversionError(s String) syntaxError {
+// BigInt, whose text V8 cuts at 1,000 UTF-16 code units, a surrogate pair
+// split if it is there, and which is made a String, so that the half kept
+// stays what it was.
+func (r *Runtime) bigIntConversionError(s String) *Object {
+	text := s
+	if s.Length() > 1000 {
+		text = s.Substring(0, 1000).Concat(newStringValue("\u2026"))
+	}
+	msg := asciiString("Cannot convert ").Concat(text).Concat(asciiString(" to a BigInt"))
+	return r.builtin_new(r.getSyntaxError(), []Value{msg})
+}
+
+// bigIntConversionErrorHost is bigIntConversionError without a runtime, for
+// toBigIntConverted.
+func bigIntConversionErrorHost(s String) syntaxError {
 	text := s.String()
 	if s.Length() > 1000 {
 		text = s.Substring(0, 1000).String() + "\u2026"
@@ -542,6 +615,6 @@ func (r *Runtime) looseEqualsConverted(x, y Value) bool {
 }
 
 func (r *Runtime) bigIntEqualsString(b *valueBigInt, s String) bool {
-	z, err := r.stringToBigInt(s.toTrimmedUTF8())
+	z, err := r.stringToBigIntOf(s)
 	return err == nil && z.Cmp((*big.Int)(b)) == 0
 }

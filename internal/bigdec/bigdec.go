@@ -34,6 +34,9 @@ func ParseWith(s string, mul func(x, y *big.Int) *big.Int, check func()) (*big.I
 		return nil, false
 	}
 	for i := 0; i < len(s); i++ {
+		if i%checkBlock == 0 {
+			check()
+		}
 		if s[i] < '0' || s[i] > '9' {
 			return nil, false
 		}
@@ -89,12 +92,25 @@ const v8MaxParts = 1 << 24
 
 var v8DigitsPerPart = map[int]int{2: 64, 8: 21, 10: 19, 16: 16}
 
+// checkBlock is how many characters a scan reads between calls of its
+// check: about 1 ms of them.
+const checkBlock = 1 << 20
+
 // TooLong reports whether V8 refuses digits, in base 2, 8, 10 or 16, as
 // too long for a BigInt. Separators ('_', in a literal) are not digits.
 func TooLong(digits string, base int) bool {
+	return TooLongWith(digits, base, nil)
+}
+
+// TooLongWith is TooLong, calling check (if not nil) between blocks of
+// characters, so that a caller can interrupt it.
+func TooLongWith(digits string, base int, check func()) bool {
 	n := 0
 	leading := true
 	for i := 0; i < len(digits); i++ {
+		if check != nil && i%checkBlock == 0 {
+			check()
+		}
 		switch c := digits[i]; {
 		case c == '_':
 		case leading && c == '0':
@@ -117,6 +133,12 @@ func tooManyDigits(n, base int) bool {
 // else, or false if it is not one, in time linear in its length:
 // big.Int.SetString takes time quadratic in it in base 8 (4M digits: 18 s).
 func ParsePow2(s string, base int) (*big.Int, bool) {
+	return ParsePow2With(s, base, nil)
+}
+
+// ParsePow2With is ParsePow2, calling check (if not nil) between blocks of
+// characters, so that a caller can interrupt it.
+func ParsePow2With(s string, base int, check func()) (*big.Int, bool) {
 	if s == "" {
 		return nil, false
 	}
@@ -124,6 +146,9 @@ func ParsePow2(s string, base int) (*big.Int, bool) {
 	words := make([]big.Word, (len(s)*shift+bits.UintSize-1)/bits.UintSize)
 	at := 0
 	for i := len(s) - 1; i >= 0; i-- {
+		if check != nil && i%checkBlock == 0 {
+			check()
+		}
 		d := digitValue(s[i])
 		if d >= base {
 			return nil, false

@@ -41,7 +41,7 @@ func TestParseLong(t *testing.T) {
 	z, ok := Parse(s)
 	took := time.Since(start)
 	t.Logf("2M digits: %v", took)
-	if took > 4*time.Second {
+	if bound := 4 * time.Second; took > bound && !raceDetectorEnabled {
 		t.Fatalf("took %v", took)
 	}
 	if !ok {
@@ -102,6 +102,9 @@ func TestTooLong(t *testing.T) {
 		}
 	}
 	// Leading zeros and separators are not counted.
+	if testing.Short() || raceDetectorEnabled {
+		t.Skip("makes strings of 256 MB")
+	}
 	ones := strings.Repeat("1", 268435456)
 	if TooLong("000"+ones, 16) || !TooLong(ones+"1", 16) || TooLong("1_000", 10) || TooLong("0_0_1", 10) {
 		t.Error("wrong count")
