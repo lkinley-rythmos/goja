@@ -79,9 +79,7 @@ func TestBigIntMaxSize(t *testing.T) {
 // the same sign, x * y, and some of the bitwise operators, to need more
 // digits than the result may have.
 func TestBigIntMaxSizeEdges(t *testing.T) {
-	if testing.Short() {
-		t.Skip("makes BigInts of 128 MB")
-	}
+	skipHeavy(t)
 	const SCRIPT = `
 	const X = 1n << (2n ** 30n - 1n);  // 2^24 digits
 	const A = X | (X - 1n);            // 2^24 digits, all ones
@@ -158,7 +156,7 @@ func TestBigIntAllocationLimit(t *testing.T) {
 			if !errors.As(err, &ie) || !errors.Is(err, ErrAllocationLimitExceeded) {
 				t.Fatalf("got %v, want the allocation limit", err)
 			}
-			if took > 500*time.Millisecond {
+			if took > slack(500*time.Millisecond) {
 				t.Fatalf("took %v", took)
 			}
 			if alloc := after.TotalAlloc - before.TotalAlloc; alloc > 8<<20 {
@@ -180,6 +178,7 @@ func TestBigIntAllocationLimit(t *testing.T) {
 // A large product is made in parts, with the interrupt checked between
 // them: 3n ** 100000000n took big.Int.Exp 21 s, none of it interruptible.
 func TestBigIntInterruptible(t *testing.T) {
+	skipHeavy(t)
 	for _, src := range []string{
 		"3n ** 100000000n",
 		"let x = 3n ** 30000000n; x * x",
@@ -200,7 +199,7 @@ func TestBigIntInterruptible(t *testing.T) {
 			if !errors.As(err, &ie) {
 				t.Fatalf("got %v, want interrupted", err)
 			}
-			if took > delay+250*time.Millisecond {
+			if took > delay+slack(250*time.Millisecond) {
 				t.Fatalf("interrupted after %v, %v late", took, took-delay)
 			}
 		})
@@ -209,6 +208,7 @@ func TestBigIntInterruptible(t *testing.T) {
 
 // mulAbs makes the same product as big.Int.Mul.
 func TestBigIntMulAbs(t *testing.T) {
+	skipHeavy(t)
 	r := New()
 	rnd := func(words int, seed uint64) *big.Int {
 		w := make([]big.Word, words)
@@ -241,6 +241,7 @@ func TestBigIntMulAbs(t *testing.T) {
 
 // Both ways bigExp makes a power give big.Int.Exp's.
 func TestBigIntExp(t *testing.T) {
+	skipHeavy(t)
 	r := New()
 	bases := []*big.Int{big.NewInt(3), big.NewInt(-3), big.NewInt(5), big.NewInt(-7), big.NewInt(12)}
 	b, _ := new(big.Int).SetString("18446744073709551617", 10) // 2^64 + 1
@@ -265,6 +266,7 @@ func TestBigIntExp(t *testing.T) {
 // number, so a long BigInt literal took the compile 5.4 s for 2M digits
 // (Node: 0.6 s), and BigInt() of a string of them as long.
 func TestBigIntDecimalConversionTime(t *testing.T) {
+	skipHeavy(t)
 	digits := strings.Repeat("7", 2000000)
 	// 7...7 mod 1000000007 for 2M sevens, computed with big.Int.
 	want := new(big.Int).Exp(big.NewInt(10), big.NewInt(2000000), nil)
@@ -290,7 +292,7 @@ func TestBigIntDecimalConversionTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if took := time.Since(start); took > 3*time.Second {
+	if took := time.Since(start); took > slack(3*time.Second) {
 		t.Fatalf("BigInt(s) took %v", took)
 	}
 	if (*big.Int)(v.(*valueBigInt)).Cmp(want) != 0 {
@@ -301,7 +303,7 @@ func TestBigIntDecimalConversionTime(t *testing.T) {
 		if v, err := r.RunString(src); err != nil || v != valueTrue {
 			t.Fatalf("%s: got %v, %v", src, v, err)
 		}
-		if took := time.Since(start); took > 4*time.Second {
+		if took := time.Since(start); took > slack(4*time.Second) {
 			t.Fatalf("%s took %v", src, took)
 		}
 	}

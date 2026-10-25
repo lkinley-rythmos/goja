@@ -13,6 +13,7 @@ import (
 // that a compile that does not finish fails the test instead of hanging it.
 func compileWithin(t *testing.T, src string, limit time.Duration, maxAlloc uint64) *Program {
 	t.Helper()
+	limit = slack(limit)
 	type result struct {
 		prg   *Program
 		err   error

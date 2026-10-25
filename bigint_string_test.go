@@ -110,6 +110,7 @@ BigInt("Infinity") => SyntaxError: Cannot convert Infinity to a BigInt
 // goroutine, so that a run that does not return fails the test).
 func runWithin(t *testing.T, r *Runtime, src string, limit time.Duration) (Value, error) {
 	t.Helper()
+	limit = slack(limit)
 	type result struct {
 		v   Value
 		err error
@@ -133,6 +134,7 @@ func runWithin(t *testing.T, r *Runtime, src string, limit time.Duration) (Value
 // a number, whose text it cuts at 1,000 code units; a comparison with it is
 // false. Node v18.20.3's results.
 func TestStringToBigIntMaxSize(t *testing.T) {
+	skipHeavy(t)
 	r := New()
 	if _, err := r.RunString(`
 	var dec = "1".repeat(318767105), hex = "0x" + "f".repeat(268435457), oct = "0o" + "7".repeat(352321537);
@@ -176,6 +178,7 @@ func TestStringToBigIntMaxSize(t *testing.T) {
 // Converting a long decimal string to a BigInt is made in parts, with the
 // interrupt checked between them.
 func TestStringToBigIntInterruptible(t *testing.T) {
+	skipHeavy(t)
 	r := New()
 	r.Set("s", strings.Repeat("7", 20000000))
 	delay := 300 * time.Millisecond
@@ -187,7 +190,7 @@ func TestStringToBigIntInterruptible(t *testing.T) {
 	if !errors.As(err, &ie) {
 		t.Fatalf("got %v, want interrupted", err)
 	}
-	if took := time.Since(start); took > delay+250*time.Millisecond {
+	if took := time.Since(start); took > delay+slack(250*time.Millisecond) {
 		t.Fatalf("interrupted after %v", took)
 	}
 }
@@ -196,6 +199,7 @@ func TestStringToBigIntInterruptible(t *testing.T) {
 // the runtime: interruptibly and charged (Runtime.looseEquals,
 // Runtime.cmp).
 func TestStringToBigIntComparisonsInterruptible(t *testing.T) {
+	skipHeavy(t)
 	for _, src := range []string{"s == 7n", "7n == s", "1n < s", "s > 1n", "s != 7n", "({valueOf() { return s }}) == 7n"} {
 		t.Run(src, func(t *testing.T) {
 			r := New()
@@ -209,7 +213,7 @@ func TestStringToBigIntComparisonsInterruptible(t *testing.T) {
 			if !errors.As(err, &ie) {
 				t.Fatalf("got %v, want interrupted", err)
 			}
-			if took := time.Since(start); took > delay+250*time.Millisecond {
+			if took := time.Since(start); took > delay+slack(250*time.Millisecond) {
 				t.Fatalf("interrupted after %v", took)
 			}
 
@@ -221,7 +225,7 @@ func TestStringToBigIntComparisonsInterruptible(t *testing.T) {
 			if !errors.Is(err, ErrAllocationLimitExceeded) {
 				t.Fatalf("got %v, want the allocation limit", err)
 			}
-			if took := time.Since(start); took > 500*time.Millisecond {
+			if took := time.Since(start); took > slack(500*time.Millisecond) {
 				t.Fatalf("took %v", took)
 			}
 		})

@@ -11,6 +11,7 @@ import (
 // bigText gives big.Int's strings, in every radix and for every way it
 // writes them.
 func TestBigIntText(t *testing.T) {
+	skipHeavy(t)
 	r := New()
 	for _, n := range []int{1, 2000, 2049, 5000, 12000} {
 		x := testBigRand(n, uint64(n), 1<<(bits.UintSize-2))
@@ -39,6 +40,7 @@ func TestBigIntText(t *testing.T) {
 // String::kMaxLength, estimated from its length in bits (for a radix that is
 // a power of two, with the sign counted twice); Node v18.20.3's results.
 func TestBigIntTextMaxLength(t *testing.T) {
+	skipHeavy(t)
 	const SCRIPT = `
 	function invalid(f, what) {
 		try { f(); } catch (e) {
@@ -64,6 +66,7 @@ func TestBigIntTextMaxLength(t *testing.T) {
 // between them, and its string is charged before it is made:
 // big.Int.Text took 8.4 s to write 3n ** 20000000n in decimal.
 func TestBigIntTextInterruptible(t *testing.T) {
+	skipHeavy(t)
 	for _, src := range []string{"String(x)", "x.toString()", "'' + x", "`${x}`", "x.toString(7)", "new String(x)", "x + ''"} {
 		t.Run(src, func(t *testing.T) {
 			r := New()
@@ -81,7 +84,7 @@ func TestBigIntTextInterruptible(t *testing.T) {
 			if !errors.As(err, &ie) {
 				t.Fatalf("got %v, want interrupted", err)
 			}
-			if took > delay+250*time.Millisecond {
+			if took > delay+slack(250*time.Millisecond) {
 				t.Fatalf("interrupted after %v, %v late", took, took-delay)
 			}
 		})
@@ -96,7 +99,7 @@ func TestBigIntTextInterruptible(t *testing.T) {
 	if !errors.Is(err, ErrAllocationLimitExceeded) {
 		t.Fatalf("got %v, want the allocation limit", err)
 	}
-	if took := time.Since(start); took > 100*time.Millisecond {
+	if took := time.Since(start); took > slack(100*time.Millisecond) {
 		t.Fatalf("took %v", took)
 	}
 	_ = big.NewInt
@@ -109,6 +112,7 @@ func TestBigIntTextInterruptible(t *testing.T) {
 // each is interrupted within milliseconds, and refused by a small
 // allocation limit at once.
 func TestBigIntTextConversionsRouted(t *testing.T) {
+	skipHeavy(t)
 	const setup = "var x = (1n << (2n ** 30n - 1n)) - 12345n, o = {};"
 	for _, c := range []struct {
 		src     string
@@ -149,7 +153,7 @@ func TestBigIntTextConversionsRouted(t *testing.T) {
 			if !errors.As(err, &ie) {
 				t.Fatalf("got %v, want interrupted", err)
 			}
-			if took > delay+c.latency {
+			if took > delay+slack(c.latency) {
 				t.Fatalf("interrupted %v late", took-delay)
 			}
 
@@ -163,7 +167,7 @@ func TestBigIntTextConversionsRouted(t *testing.T) {
 			if !errors.Is(err, ErrAllocationLimitExceeded) {
 				t.Fatalf("got %v, want the allocation limit", err)
 			}
-			if took := time.Since(start); took > 500*time.Millisecond {
+			if took := time.Since(start); took > slack(500*time.Millisecond) {
 				t.Fatalf("took %v", took)
 			}
 		})
@@ -178,6 +182,7 @@ func TestBigIntTextConversionsRouted(t *testing.T) {
 // An object key whose ToPrimitive (hint string) is a BigInt is written by
 // bigString too: through toString, Symbol.toPrimitive, or valueOf.
 func TestBigIntTextObjectKeys(t *testing.T) {
+	skipHeavy(t)
 	const setup = "var x = (1n << (2n ** 30n - 1n)) - 12345n, o = {};" +
 		"var kt = {toString() { return x }}, kp = {[Symbol.toPrimitive]() { return x }}, kv = {toString: null, valueOf() { return x }};"
 	for _, src := range []string{"o[kt]", "kt in o", "o[kp]", "kp in o", "o[kv]", "kv in o", "delete o[kt]", "o.hasOwnProperty(kt)", "o.propertyIsEnumerable(kt)", "Reflect.has(o, kt)", "({[kt]: 1})"} {
@@ -196,7 +201,7 @@ func TestBigIntTextObjectKeys(t *testing.T) {
 			if !errors.As(err, &ie) {
 				t.Fatalf("got %v, want interrupted", err)
 			}
-			if took > delay+30*time.Millisecond {
+			if took > delay+slack(30*time.Millisecond) {
 				t.Fatalf("interrupted %v late", took-delay)
 			}
 

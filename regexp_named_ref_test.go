@@ -29,7 +29,7 @@ func TestRegexpNamedReferencesLinear(t *testing.T) {
 		if err != nil {
 			t.Fatalf("flags %q: %v", flags, err)
 		}
-		if took > time.Second {
+		if took > slack(time.Second) {
 			t.Fatalf("flags %q: took %v", flags, took)
 		}
 	}
@@ -66,7 +66,7 @@ func TestRegexpCaptureScanLinear(t *testing.T) {
 			r.Set("p", p)
 			start := time.Now()
 			_, err := r.RunString(`new RegExp(p, "` + flags + `")`)
-			if took := time.Since(start); took > time.Second {
+			if took := time.Since(start); took > slack(time.Second) {
 				t.Fatalf("%.12q %q: took %v", p, flags, took)
 			}
 			if err == nil || !strings.HasSuffix(strings.SplitN(err.Error(), " at ", 2)[0], "/: Invalid capture group name") {
