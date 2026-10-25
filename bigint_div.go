@@ -20,16 +20,16 @@ import (
 // time.
 
 // divIsLeaf reports whether big.Int.QuoRem divides a number of qw + n - 1
-// words by one of n in about 10 ms at most. Below 100 words, big.Int
+// words by one of n in about 10 ms at most. Below 128 words, big.Int
 // divides by schoolbook, about 15 ns per word of the divisor and word of
-// the quotient; above, recursively, about 5 ms for two numbers of 2^13 and
-// 2^12 words, but slowly when the quotient is short and the divisor long
-// (1.9 s for one word by 2^24).
+// the quotient; above, recursively, at about (n + 1024) ns per word of the
+// quotient (a quotient of 131,072 words by 128 took 118 ms), and slowly
+// whenever the divisor is long (1.9 s for one word by 2^24).
 func divIsLeaf(qw, n int) bool {
 	if n < 128 {
 		return qw <= (1<<19)/(n+16)
 	}
-	return n <= 1<<13 && qw <= (1<<24)/n
+	return n <= 1<<13 && qw <= (1<<23)/(n+1024)
 }
 
 // recipLeafWords is the length up to which recipAbs divides directly
@@ -38,6 +38,20 @@ const recipLeafWords = 1 << 12
 
 // divAbs returns |x| / |y| and |x| % |y|, y non-zero.
 func (r *Runtime) divAbs(x, y *big.Int) (q, m *big.Int) {
+	return r.divAbsQ(x, y, true)
+}
+
+// remAbs is |x| % |y|, y non-zero, without the quotient where it is made a
+// block at a time (it took 128 MB, zeroed in one step, for a remainder of a
+// number of 2^24 words).
+func (r *Runtime) remAbs(x, y *big.Int) *big.Int {
+	_, m := r.divAbsQ(x, y, false)
+	return m
+}
+
+// divAbsQ is divAbs, its quotient left nil when wantQ is not set and the
+// division is made a block at a time.
+func (r *Runtime) divAbsQ(x, y *big.Int, wantQ bool) (q, m *big.Int) {
 	a := new(big.Int).SetBits(x.Bits())
 	b := new(big.Int).SetBits(y.Bits())
 	if a.Cmp(b) < 0 {
@@ -53,9 +67,9 @@ func (r *Runtime) divAbs(x, y *big.Int) (q, m *big.Int) {
 		return r.divShortQuotient(a, b, qw)
 	}
 	if k := divLeafQuotientWords(n); k > 0 {
-		return r.divChunked(a, b, k)
+		return r.divChunked(a, b, k, wantQ)
 	}
-	return r.divLongQuotient(a, b)
+	return r.divLongQuotient(a, b, wantQ)
 }
 
 // divLeafQuotientWords is how many words of quotient a division by n words
@@ -66,7 +80,7 @@ func divLeafQuotientWords(n int) int {
 	case n < 128:
 		return (1<<19)/(n+16) - 1
 	case n <= 1<<13:
-		return (1<<24)/n - 1
+		return (1<<23)/(n+1024) - 1
 	}
 	return 0
 }
@@ -75,10 +89,13 @@ func divLeafQuotientWords(n int) int {
 // each block one step of big.Int.QuoRem: dividing a long number by a short
 // one block by block from the divisor's reciprocal took 4.7 s for 2^24
 // words by one.
-func (r *Runtime) divChunked(a, b *big.Int, k int) (q, m *big.Int) {
+func (r *Runtime) divChunked(a, b *big.Int, k int, wantQ bool) (q, m *big.Int) {
 	aw := a.Bits()
 	blocks := (len(aw) + k - 1) / k
-	qw := make([]big.Word, blocks*k)
+	var qw []big.Word
+	if wantQ {
+		qw = make([]big.Word, blocks*k)
+	}
 	m = new(big.Int)
 	shift := uint(k * bits.UintSize)
 	for i := blocks - 1; i >= 0; i-- {
@@ -87,7 +104,12 @@ func (r *Runtime) divChunked(a, b *big.Int, k int) (q, m *big.Int) {
 		t.Add(t, new(big.Int).SetBits(natNorm(aw[i*k:min((i+1)*k, len(aw))])))
 		qi := new(big.Int)
 		qi, m = qi.QuoRem(t, b, new(big.Int))
-		copy(qw[i*k:(i+1)*k], qi.Bits())
+		if wantQ {
+			copy(qw[i*k:(i+1)*k], qi.Bits())
+		}
+	}
+	if !wantQ {
+		return nil, m
 	}
 	return new(big.Int).SetBits(natNorm(qw)), m
 }
@@ -122,7 +144,7 @@ func (r *Runtime) divCorrect(q, m, b *big.Int) *big.Int {
 // of n words (b's length) at a time, each block of the quotient
 // floor(t * inv / B^(2n)) for t the remainder so far followed by the block
 // and inv = floor(B^(2n) / b), which is at most 2 less than t / b.
-func (r *Runtime) divLongQuotient(a, b *big.Int) (q, m *big.Int) {
+func (r *Runtime) divLongQuotient(a, b *big.Int, wantQ bool) (q, m *big.Int) {
 	s := uint(bits.LeadingZeros(uint(b.Bits()[len(b.Bits())-1])))
 	if s != 0 {
 		a = new(big.Int).Lsh(a, s)
@@ -132,7 +154,10 @@ func (r *Runtime) divLongQuotient(a, b *big.Int) (q, m *big.Int) {
 	inv := r.recipAbs(b)
 	aw := a.Bits()
 	blocks := (len(aw) + n - 1) / n
-	qw := make([]big.Word, blocks*n)
+	var qw []big.Word
+	if wantQ {
+		qw = make([]big.Word, blocks*n)
+	}
 	m = new(big.Int)
 	blockShift := uint(n * bits.UintSize)
 	for i := blocks - 1; i >= 0; i-- {
@@ -144,9 +169,13 @@ func (r *Runtime) divLongQuotient(a, b *big.Int) (q, m *big.Int) {
 		qi.Rsh(qi, 2*blockShift)
 		m = t.Sub(t, r.mulAbs(qi.Bits(), b.Bits()))
 		m = r.divCorrect(qi, m, b)
-		copy(qw[i*n:(i+1)*n], qi.Bits())
+		if wantQ {
+			copy(qw[i*n:(i+1)*n], qi.Bits())
+		}
 	}
-	q = new(big.Int).SetBits(natNorm(qw))
+	if wantQ {
+		q = new(big.Int).SetBits(natNorm(qw))
+	}
 	if s != 0 {
 		m.Rsh(m, s)
 	}

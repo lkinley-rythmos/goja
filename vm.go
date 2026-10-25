@@ -4745,7 +4745,7 @@ func (r *Runtime) cmp(px, py Value) Value {
 				nx, _ := nx.Int(nil)
 				ret = nx.Cmp((*big.Int)(ny)) < 0
 			} else {
-				ret = nx.Cmp(new(big.Float).SetInt((*big.Int)(ny))) < 0
+				ret = bigFloatCmp(nx, (*big.Int)(ny)) < 0
 			}
 			goto end
 		}
@@ -4766,7 +4766,7 @@ func (r *Runtime) cmp(px, py Value) Value {
 				ny, _ := ny.Int(nil)
 				ret = (*big.Int)(nx).Cmp(ny) < 0
 			} else {
-				ret = new(big.Float).SetInt((*big.Int)(nx)).Cmp(ny) < 0
+				ret = bigFloatCmp(ny, (*big.Int)(nx)) > 0
 			}
 			goto end
 		case *valueBigInt:

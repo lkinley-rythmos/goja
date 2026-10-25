@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"math/bits"
 	"reflect"
 	"strconv"
 	"unsafe"
@@ -613,16 +614,25 @@ func (a *bigInt64Array) get(idx int) Value {
 }
 
 func toBigInt64(v Value) *big.Int {
-	n := (*big.Int)(toBigIntConverted(v))
+	return big.NewInt(int64(bigIntLow64((*big.Int)(toBigIntConverted(v)))))
+}
 
-	twoTo64 := new(big.Int).Lsh(big.NewInt(1), 64)
-	twoTo63 := new(big.Int).Lsh(big.NewInt(1), 63)
-
-	int64bit := new(big.Int).Mod(n, twoTo64)
-	if int64bit.Cmp(twoTo63) >= 0 {
-		return int64bit.Sub(int64bit, twoTo64)
+// bigIntLow64 is x mod 2^64, the low 64 bits of x in two's complement,
+// taken from its lowest words at once: big.Int.Mod of a BigInt near V8's
+// limit took 0.4 s, without an interrupt check.
+func bigIntLow64(x *big.Int) uint64 {
+	w := x.Bits()
+	var u uint64
+	if len(w) > 0 {
+		u = uint64(w[0])
 	}
-	return int64bit
+	if bits.UintSize == 32 && len(w) > 1 {
+		u |= uint64(w[1]) << 32
+	}
+	if x.Sign() < 0 {
+		u = -u
+	}
+	return u
 }
 
 func (a *bigInt64Array) set(idx int, value Value) {
@@ -677,8 +687,7 @@ func (a *bigUint64Array) get(idx int) Value {
 }
 
 func toBigUint64(v Value) *big.Int {
-	n := (*big.Int)(toBigIntConverted(v))
-	return new(big.Int).Mod(n, new(big.Int).Lsh(big.NewInt(1), 64))
+	return new(big.Int).SetUint64(bigIntLow64((*big.Int)(toBigIntConverted(v))))
 }
 
 func (a *bigUint64Array) set(idx int, value Value) {
@@ -724,7 +733,7 @@ func (a *typedArrayObject) _getIdx(idx int) Value {
 		if !a.viewedArrayBuf.ensureNotDetached(false) {
 			return nil
 		}
-		return a.typedArray.get(idx + a.offset)
+		return a.elem(idx + a.offset)
 	}
 	return nil
 }
@@ -817,6 +826,16 @@ func (a *typedArrayObject) elementValue(v Value) Value {
 	switch a.typedArray.(type) {
 	case *bigInt64Array, *bigUint64Array:
 		return a.val.runtime.toBigInt(v)
+	}
+	return v
+}
+
+// elem is the element at idx (an index in the buffer), a BigInt one charged
+// to the allocation counter as the runtime's other new BigInts are.
+func (a *typedArrayObject) elem(idx int) Value {
+	v := a.typedArray.get(idx)
+	if b, ok := v.(*valueBigInt); ok {
+		a.val.runtime.chargeBigIntDigits(int64(bigDigits((*big.Int)(b))))
 	}
 	return v
 }

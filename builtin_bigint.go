@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strconv"
 	"sync"
+	"unsafe"
 
 	"github.com/dop251/goja/internal/bigdec"
 	"github.com/dop251/goja/unistring"
@@ -128,7 +129,11 @@ func (v *valueBigInt) hash(hash *maphash.Hash) uint64 {
 		sign = 0x00
 	}
 	_ = hash.WriteByte(sign)
-	_, _ = hash.Write((*big.Int)(v).Bytes())
+	// The words themselves, not a copy of them (Bytes): a BigInt near V8's
+	// limit was copied, 128 MB, uncharged, at each Map or Set operation.
+	if w := (*big.Int)(v).Bits(); len(w) > 0 {
+		_, _ = hash.Write(unsafe.Slice((*byte)(unsafe.Pointer(&w[0])), len(w)*bits.UintSize/8))
+	}
 	h := hash.Sum64()
 	hash.Reset()
 	return h
@@ -148,15 +153,16 @@ func (r *Runtime) toBigInt(value Value) *valueBigInt {
 	case *valueBigInt:
 		return prim
 	case String:
+		// Charged by stringToBigInt, before it is made.
 		bigInt, err := r.stringToBigInt(prim.toTrimmedUTF8())
 		if err != nil {
 			panic(bigIntConversionError(prim))
 		}
 		return (*valueBigInt)(bigInt)
 	case valueBool:
-		return (*valueBigInt)(big.NewInt(prim.ToInteger()))
+		return r.newBigInt(big.NewInt(prim.ToInteger()))
 	case *Symbol:
-		panic(typeError("Cannot convert Symbol to a BigInt"))
+		panic(typeError(fmt.Sprintf("Cannot convert %s to a BigInt", prim.descriptiveString())))
 	case *Object:
 		return r.toBigInt(prim.toPrimitiveNumber())
 	default:
@@ -164,32 +170,49 @@ func (r *Runtime) toBigInt(value Value) *valueBigInt {
 	}
 }
 
+// numberToBigInt is BigInt(v): ToPrimitive with hint number, then
+// NumberToBigInt for a number and ToBigInt for anything else, a string
+// included (an object's string was converted through Number).
 func (r *Runtime) numberToBigInt(v Value) *valueBigInt {
-	switch v := toNumeric(v).(type) {
-	case *valueBigInt:
-		return v
+	if o, ok := v.(*Object); ok {
+		v = o.toPrimitiveNumber()
+	}
+	switch v := v.(type) {
 	case valueInt:
-		return (*valueBigInt)(big.NewInt(v.ToInteger()))
+		return r.newBigInt(big.NewInt(v.ToInteger()))
 	case valueFloat:
 		if IsInfinity(v) || math.IsNaN(float64(v)) {
 			panic(rangeError(fmt.Sprintf("The number %s cannot be converted to a BigInt because it is not an integer", v)))
 		}
 		if f := big.NewFloat(float64(v)); f.IsInt() {
 			n, _ := f.Int(nil)
-			return (*valueBigInt)(n)
+			return r.newBigInt(n)
 		}
 		panic(rangeError(fmt.Sprintf("The number %s cannot be converted to a BigInt because it is not an integer", v)))
-	case *Object:
-		prim := v.toPrimitiveNumber()
-		switch prim.(type) {
-		case valueInt, valueFloat:
-			return r.numberToBigInt(prim)
-		default:
-			return r.toBigInt(prim)
-		}
-	default:
-		panic(newTypeError("Cannot convert %s to a BigInt", v))
 	}
+	return r.toBigInt(v)
+}
+
+// bigFloatCmp is f.Cmp(y), f a number that is not NaN, without copying y
+// into a big.Float when y is longer than any finite number: a number of
+// at most 1,024 bits compares below a positive y and above a negative one.
+func bigFloatCmp(f *big.Float, y *big.Int) int {
+	if f.IsInf() {
+		return f.Sign()
+	}
+	if y.BitLen() > 1100 {
+		return -y.Sign()
+	}
+	return f.Cmp(new(big.Float).SetInt(y))
+}
+
+// newBigInt is z as a BigInt value, charged to the allocation counter (its
+// digits and its header): for the small BigInts made from a boolean, a
+// number or 64 bits, the ones an operation makes being charged before they
+// are made (chargeBigInt).
+func (r *Runtime) newBigInt(z *big.Int) *valueBigInt {
+	r.chargeBigIntDigits(int64(bigDigits(z)))
+	return (*valueBigInt)(z)
 }
 
 // stringToBigInt is StringToBigInt (ECMA-262 7.1.14) of str, trimmed of
@@ -395,22 +418,9 @@ func createBigIntTemplate() *objectTemplate {
 
 func (r *Runtime) builtin_BigInt(call FunctionCall) Value {
 	if len(call.Arguments) > 0 {
-		var b *valueBigInt
-		switch v := call.Argument(0).(type) {
-		case *valueBigInt:
-			return v
-		case String:
-			return r.toBigInt(v)
-		case valueInt, valueFloat, *Object:
-			b = r.numberToBigInt(v)
-		default:
-			b = r.toBigInt(v)
-		}
-		r.chargeBigIntDigits(int64(bigDigits((*big.Int)(b))))
-		return b
+		return r.numberToBigInt(call.Arguments[0])
 	}
-	r.chargeBigIntDigits(0)
-	return (*valueBigInt)(big.NewInt(0))
+	return r.newBigInt(new(big.Int))
 }
 
 func (r *Runtime) builtin_newBigInt(args []Value, newTarget *Object) *Object {
@@ -421,7 +431,7 @@ func (r *Runtime) builtin_newBigInt(args []Value, newTarget *Object) *Object {
 	if len(args) > 0 {
 		v = r.numberToBigInt(args[0])
 	} else {
-		v = (*valueBigInt)(big.NewInt(0))
+		v = r.newBigInt(new(big.Int))
 	}
 	return r.newPrimitiveObject(v, newTarget, classObject)
 }

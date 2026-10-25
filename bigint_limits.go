@@ -133,6 +133,7 @@ func (r *Runtime) bigQuo(x, y *big.Int) *big.Int {
 		panic(r.newError(r.getRangeError(), "Division by zero"))
 	}
 	if x.CmpAbs(y) < 0 {
+		r.chargeBigInt(0)
 		return new(big.Int)
 	}
 	r.chargeBigInt(bigDigits(x) - bigDigits(y) + 1)
@@ -152,7 +153,7 @@ func (r *Runtime) bigRem(x, y *big.Int) *big.Int {
 		return x
 	}
 	r.chargeBigInt(bigDigits(y))
-	_, m := r.divAbs(x, y)
+	m := r.remAbs(x, y)
 	if x.Sign() < 0 {
 		m.Neg(m)
 	}
@@ -191,7 +192,25 @@ func (r *Runtime) bigNot(x *big.Int) *big.Int {
 	} else {
 		r.chargeBigInt(bigDigits(x))
 	}
-	return new(big.Int).Not(x)
+	if len(x.Bits()) <= bigBitwiseLeafWords {
+		return new(big.Int).Not(x)
+	}
+	// ~x = -(x + 1) and ~-m = m - 1, a block at a time.
+	if x.Sign() < 0 {
+		return new(big.Int).SetBits(r.natDec(x.Bits()))
+	}
+	z := r.natInc(r.natCopy(x.Bits()))
+	return new(big.Int).Neg(new(big.Int).SetBits(z))
+}
+
+// natCopy is a copy of x, made a block at a time.
+func (r *Runtime) natCopy(x []big.Word) []big.Word {
+	z := make([]big.Word, len(x), len(x)+1)
+	for i := 0; i < len(x); i += bigBlockWords {
+		r.vm.checkInterrupt()
+		copy(z[i:], x[i:min(i+bigBlockWords, len(x))])
+	}
+	return z
 }
 
 // The lengths V8 gives the results of the bitwise operators, which work on
@@ -213,7 +232,7 @@ func (r *Runtime) bigAnd(x, y *big.Int) *big.Int {
 	default:
 		r.chargeBigInt(lx)
 	}
-	return new(big.Int).And(x, y)
+	return r.bigBitwise(x, y, '&')
 }
 
 func (r *Runtime) bigOr(x, y *big.Int) *big.Int {
@@ -228,7 +247,7 @@ func (r *Runtime) bigOr(x, y *big.Int) *big.Int {
 	default:
 		r.chargeBigInt(ly)
 	}
-	return new(big.Int).Or(x, y)
+	return r.bigBitwise(x, y, '|')
 }
 
 func (r *Runtime) bigXor(x, y *big.Int) *big.Int {
@@ -237,7 +256,7 @@ func (r *Runtime) bigXor(x, y *big.Int) *big.Int {
 		n++
 	}
 	r.chargeBigInt(n)
-	return new(big.Int).Xor(x, y)
+	return r.bigBitwise(x, y, '^')
 }
 
 // bigShift is x << y, or x >> y when right is set: V8's BigInt::LeftShift
@@ -275,8 +294,10 @@ func (r *Runtime) bigShiftRightAbs(x, y *big.Int) *big.Int {
 	if !ok || n >= uint(x.BitLen()) {
 		// What V8 calls RightShiftByMaximum.
 		if x.Sign() < 0 {
+			r.chargeBigInt(1)
 			return big.NewInt(-1)
 		}
+		r.chargeBigInt(0)
 		return new(big.Int)
 	}
 	r.chargeBigInt(bitsToDigits(int64(x.BitLen()) - int64(n) + 1))
@@ -289,6 +310,7 @@ func (r *Runtime) bigExp(x, y *big.Int) *big.Int {
 		panic(r.newError(r.getRangeError(), "Exponent must be positive"))
 	}
 	if y.Sign() == 0 {
+		r.chargeBigInt(1)
 		return big.NewInt(1)
 	}
 	if x.Sign() == 0 {
@@ -297,6 +319,7 @@ func (r *Runtime) bigExp(x, y *big.Int) *big.Int {
 	if x.CmpAbs(big.NewInt(1)) == 0 {
 		// (-1n) ** y is 1n for an even y.
 		if x.Sign() < 0 && y.Bit(0) == 0 {
+			r.chargeBigInt(1)
 			return big.NewInt(1)
 		}
 		return x
@@ -425,12 +448,15 @@ func bigExpLengths(x *big.Int, n int) int {
 	return result
 }
 
-// bigAsUintN is BigInt.asUintN(n, x).
+// bigAsUintN is BigInt.asUintN(n, x). The result is made a block of words
+// at a time, with the interrupt checked between them (bigLowWords,
+// bigNegModPow2), and charged as long as it is made, before.
 func (r *Runtime) bigAsUintN(n int64, x *big.Int) *big.Int {
 	if x.Sign() == 0 {
 		return x
 	}
 	if n == 0 {
+		r.chargeBigInt(0)
 		return new(big.Int)
 	}
 	if x.Sign() < 0 {
@@ -438,24 +464,27 @@ func (r *Runtime) bigAsUintN(n int64, x *big.Int) *big.Int {
 		if n > bigIntMaxLengthBits {
 			r.throwBigIntTooBig()
 		}
-		t := bigLowBits(x, uint(n))
-		if t.Sign() == 0 {
-			return t
+		if x.TrailingZeroBits() >= uint(n) {
+			// |x| mod 2^n is 0.
+			r.chargeBigInt(0)
+			return new(big.Int)
 		}
 		r.chargeBigInt(bitsToDigits(n))
-		m := new(big.Int).Lsh(big.NewInt(1), uint(n))
-		return m.Sub(m, t)
+		w := r.bigLowWords(x, uint(n))
+		r.bigNegModPow2(w, uint(n))
+		return new(big.Int).SetBits(natNorm(w))
 	}
 	if int64(x.BitLen()) <= n {
 		return x
 	}
 	r.chargeBigInt(bitsToDigits(n))
-	return bigLowBits(x, uint(n))
+	return new(big.Int).SetBits(natNorm(r.bigLowWords(x, uint(n))))
 }
 
-// bigAsIntN is BigInt.asIntN(n, x).
+// bigAsIntN is BigInt.asIntN(n, x), made and charged as bigAsUintN.
 func (r *Runtime) bigAsIntN(n int64, x *big.Int) *big.Int {
 	if n == 0 {
+		r.chargeBigInt(0)
 		return new(big.Int)
 	}
 	if x.Sign() == 0 {
@@ -466,34 +495,69 @@ func (r *Runtime) bigAsIntN(n int64, x *big.Int) *big.Int {
 	if bl < n || bl == n && x.Sign() < 0 && x.TrailingZeroBits() == uint(n-1) {
 		return x
 	}
-	// Here n <= bits(x), so neither result is longer than x.
+	// Here n <= bits(x), so the result is no longer than x.
 	r.chargeBigInt(bitsToDigits(n))
-	z := bigLowBits(x, uint(n))
-	if x.Sign() < 0 {
-		// The low n bits of x in two's complement.
-		if z.Sign() != 0 {
-			m := new(big.Int).Lsh(big.NewInt(1), uint(n))
-			z.Sub(m, z)
+	w := r.bigLowWords(x, uint(n)) // t = |x| mod 2^n
+	t := new(big.Int).SetBits(natNorm(w))
+	if x.Sign() >= 0 {
+		// t, or t - 2^n = -(2^n - t) when bit n - 1 is set.
+		if t.Bit(int(n-1)) == 0 {
+			return t
 		}
+		r.bigNegModPow2(w, uint(n))
+		return new(big.Int).Neg(new(big.Int).SetBits(natNorm(w)))
 	}
-	if z.Bit(int(n-1)) != 0 {
-		z.Sub(z, new(big.Int).Lsh(big.NewInt(1), uint(n)))
+	// x mod 2^n is u = 2^n - t (t != 0), and the result u, or u - 2^n = -t
+	// when bit n - 1 of u is set, that is when t <= 2^(n-1).
+	if t.Sign() == 0 {
+		return t
 	}
-	return z
+	if tl := int64(t.BitLen()); tl < n || tl == n && t.TrailingZeroBits() == uint(n-1) {
+		return t.Neg(t)
+	}
+	r.bigNegModPow2(w, uint(n))
+	return new(big.Int).SetBits(natNorm(w))
 }
 
-// bigLowBits returns |x| mod 2^n, the low n bits of |x|.
-func bigLowBits(x *big.Int, n uint) *big.Int {
-	if n >= uint(x.BitLen()) {
-		return new(big.Int).Abs(x)
-	}
+// bigBlockWords is how many words the linear steps that check the
+// interrupt between blocks handle in one (2^20: about 1 ms).
+const bigBlockWords = 1 << 20
+
+// bigLowWords returns the low n bits of |x| in words: as many as n bits
+// take, copied a block at a time, with the interrupt checked between them.
+func (r *Runtime) bigLowWords(x *big.Int, n uint) []big.Word {
 	k := (int(n) + bits.UintSize - 1) / bits.UintSize
-	z := make([]big.Word, k)
-	copy(z, x.Bits())
-	if b := n % bits.UintSize; b != 0 {
-		z[k-1] &= 1<<b - 1
+	w := make([]big.Word, k)
+	src := x.Bits()
+	src = src[:min(len(src), k)]
+	for i := 0; i < len(src); i += bigBlockWords {
+		r.vm.checkInterrupt()
+		copy(w[i:], src[i:min(i+bigBlockWords, len(src))])
 	}
-	return new(big.Int).SetBits(z)
+	if b := n % bits.UintSize; b != 0 {
+		w[k-1] &= 1<<b - 1
+	}
+	return w
+}
+
+// bigNegModPow2 sets w, the low n bits of a number t != 0, to 2^n - t:
+// t's complement in n bits, plus one, a block at a time.
+func (r *Runtime) bigNegModPow2(w []big.Word, n uint) {
+	for i := 0; i < len(w); i += bigBlockWords {
+		r.vm.checkInterrupt()
+		for j := i; j < min(i+bigBlockWords, len(w)); j++ {
+			w[j] = ^w[j]
+		}
+	}
+	if b := n % bits.UintSize; b != 0 {
+		w[len(w)-1] &= 1<<b - 1
+	}
+	for i := range w {
+		w[i]++
+		if w[i] != 0 {
+			break
+		}
+	}
 }
 
 // bigMulLeafProduct bounds the products mulAbs leaves to big.Int.Mul, which
@@ -567,4 +631,126 @@ func natNorm(x []big.Word) []big.Word {
 		i--
 	}
 	return x[:i]
+}
+
+// bigBitwiseLeafWords is the length up to which a bitwise operation is left
+// to big.Int; past it, the operation is made a block of words at a time
+// (bigBitwise): big.Int.Or of two negative numbers of 2^24 words took
+// 0.13 s.
+const bigBitwiseLeafWords = 1 << 16
+
+// bigBitwise is x & y, x | y or x ^ y (op), in two's complement, as
+// big.Int computes them, a block of words at a time, with the interrupt
+// checked between them. A negative number -m is ~(m - 1) in two's
+// complement.
+func (r *Runtime) bigBitwise(x, y *big.Int, op byte) *big.Int {
+	if max(len(x.Bits()), len(y.Bits())) <= bigBitwiseLeafWords {
+		switch op {
+		case '&':
+			return new(big.Int).And(x, y)
+		case '|':
+			return new(big.Int).Or(x, y)
+		}
+		return new(big.Int).Xor(x, y)
+	}
+	if x.Sign() < 0 && y.Sign() >= 0 {
+		x, y = y, x
+	}
+	xa, ya := x.Bits(), y.Bits()
+	nx, ny := x.Sign() < 0, y.Sign() < 0
+	var z []big.Word
+	neg := false
+	switch {
+	case !nx && !ny:
+		z = r.natBitwise(xa, ya, op)
+	case nx && ny:
+		x1, y1 := r.natDec(xa), r.natDec(ya)
+		switch op {
+		case '&':
+			// -(((|x|-1) | (|y|-1)) + 1)
+			z, neg = r.natInc(r.natBitwise(x1, y1, '|')), true
+		case '|':
+			// -(((|x|-1) & (|y|-1)) + 1)
+			z, neg = r.natInc(r.natBitwise(x1, y1, '&')), true
+		default:
+			// (|x|-1) ^ (|y|-1)
+			z = r.natBitwise(x1, y1, '^')
+		}
+	default:
+		// x >= 0, y < 0.
+		y1 := r.natDec(ya)
+		switch op {
+		case '&':
+			// x &^ (|y|-1)
+			z = r.natBitwise(xa, y1, 'n')
+		case '|':
+			// -(((|y|-1) &^ x) + 1)
+			z, neg = r.natInc(r.natBitwise(y1, xa, 'n')), true
+		default:
+			// -((x ^ (|y|-1)) + 1)
+			z, neg = r.natInc(r.natBitwise(xa, y1, '^')), true
+		}
+	}
+	res := new(big.Int).SetBits(natNorm(z))
+	if neg {
+		res.Neg(res)
+	}
+	return res
+}
+
+// natBitwise is x op y for magnitudes: & | ^, or 'n' for x &^ y.
+func (r *Runtime) natBitwise(x, y []big.Word, op byte) []big.Word {
+	n := max(len(x), len(y))
+	if op == '&' {
+		n = min(len(x), len(y))
+	} else if op == 'n' {
+		n = len(x)
+	}
+	z := make([]big.Word, n)
+	for i := 0; i < n; i += bigBlockWords {
+		r.vm.checkInterrupt()
+		for j := i; j < min(i+bigBlockWords, n); j++ {
+			var a, b big.Word
+			if j < len(x) {
+				a = x[j]
+			}
+			if j < len(y) {
+				b = y[j]
+			}
+			switch op {
+			case '&':
+				z[j] = a & b
+			case '|':
+				z[j] = a | b
+			case '^':
+				z[j] = a ^ b
+			default:
+				z[j] = a &^ b
+			}
+		}
+	}
+	return z
+}
+
+// natDec is x - 1 for a magnitude x > 0, copied a block at a time.
+func (r *Runtime) natDec(x []big.Word) []big.Word {
+	z := r.natCopy(x)
+	for i := range z {
+		z[i]--
+		if z[i] != ^big.Word(0) {
+			break
+		}
+	}
+	return natNorm(z)
+}
+
+// natInc is z + 1 for a magnitude z, in place when there is room.
+func (r *Runtime) natInc(z []big.Word) []big.Word {
+	for i := range z {
+		z[i]++
+		if z[i] != 0 {
+			return z
+		}
+	}
+	return append(z, 1)
 }

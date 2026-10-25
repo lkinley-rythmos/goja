@@ -39,8 +39,8 @@ func (ctx *typedArraySortCtx) Less(i, j int) bool {
 	}
 	offset := ctx.ta.offset
 	if ctx.compare != nil {
-		x := ctx.ta.typedArray.get(offset + i)
-		y := ctx.ta.typedArray.get(offset + j)
+		x := ctx.ta.elem(offset + i)
+		y := ctx.ta.elem(offset + j)
 		res := ctx.compare(FunctionCall{
 			This:      _undefined,
 			Arguments: []Value{x, y},
@@ -299,14 +299,14 @@ func (r *Runtime) dataViewProto_getUint32(call FunctionCall) Value {
 
 func (r *Runtime) dataViewProto_getBigInt64(call FunctionCall) Value {
 	if dv, ok := r.toObject(call.This).self.(*dataViewObject); ok {
-		return (*valueBigInt)(dv.viewedArrayBuf.getBigInt64(dv.getIdxAndByteOrder(r.toIndex(call.Argument(0).ToNumber()), call.Argument(1), 8)))
+		return r.newBigInt(dv.viewedArrayBuf.getBigInt64(dv.getIdxAndByteOrder(r.toIndex(call.Argument(0).ToNumber()), call.Argument(1), 8)))
 	}
 	panic(r.NewTypeError("Method DataView.prototype.getBigInt64 called on incompatible receiver %s", r.noSideEffectsToString(call.This)))
 }
 
 func (r *Runtime) dataViewProto_getBigUint64(call FunctionCall) Value {
 	if dv, ok := r.toObject(call.This).self.(*dataViewObject); ok {
-		return (*valueBigInt)(dv.viewedArrayBuf.getBigUint64(dv.getIdxAndByteOrder(r.toIndex(call.Argument(0).ToNumber()), call.Argument(1), 8)))
+		return r.newBigInt(dv.viewedArrayBuf.getBigUint64(dv.getIdxAndByteOrder(r.toIndex(call.Argument(0).ToNumber()), call.Argument(1), 8)))
 	}
 	panic(r.NewTypeError("Method DataView.prototype.getBigUint64 called on incompatible receiver %s", r.noSideEffectsToString(call.This)))
 }
@@ -501,7 +501,7 @@ func (r *Runtime) typedArrayProto_every(call FunctionCall) Value {
 		}
 		for k := 0; k < ta.length; k++ {
 			if ta.isValidIntegerIndex(k) {
-				fc.Arguments[0] = ta.typedArray.get(ta.offset + k)
+				fc.Arguments[0] = ta.elem(ta.offset + k)
 			} else {
 				fc.Arguments[0] = _undefined
 			}
@@ -553,7 +553,7 @@ func (r *Runtime) typedArrayProto_filter(call FunctionCall) Value {
 		rawVal := make([]byte, ta.elemSize)
 		for k := 0; k < ta.length; k++ {
 			if ta.isValidIntegerIndex(k) {
-				fc.Arguments[0] = ta.typedArray.get(ta.offset + k)
+				fc.Arguments[0] = ta.elem(ta.offset + k)
 				i := (ta.offset + k) * ta.elemSize
 				copy(rawVal, ta.viewedArrayBuf.data[i:])
 			} else {
@@ -578,7 +578,7 @@ func (r *Runtime) typedArrayProto_filter(call FunctionCall) Value {
 			ret := r.typedArrayCreate(c, intToValue(int64(captured)))
 			keptTa := kept.self.(*typedArrayObject)
 			for i := 0; i < captured; i++ {
-				ret.typedArray.set(ret.offset+i, keptTa.typedArray.get(keptTa.offset+i))
+				ret.typedArray.set(ret.offset+i, keptTa.elem(keptTa.offset+i))
 			}
 			return ret.val
 		}
@@ -597,7 +597,7 @@ func (r *Runtime) typedArrayProto_find(call FunctionCall) Value {
 		for k := 0; k < ta.length; k++ {
 			var val Value
 			if ta.isValidIntegerIndex(k) {
-				val = ta.typedArray.get(ta.offset + k)
+				val = ta.elem(ta.offset + k)
 			}
 			fc.Arguments[0] = val
 			fc.Arguments[1] = intToValue(int64(k))
@@ -620,7 +620,7 @@ func (r *Runtime) typedArrayProto_findIndex(call FunctionCall) Value {
 		}
 		for k := 0; k < ta.length; k++ {
 			if ta.isValidIntegerIndex(k) {
-				fc.Arguments[0] = ta.typedArray.get(ta.offset + k)
+				fc.Arguments[0] = ta.elem(ta.offset + k)
 			} else {
 				fc.Arguments[0] = _undefined
 			}
@@ -645,7 +645,7 @@ func (r *Runtime) typedArrayProto_findLast(call FunctionCall) Value {
 		for k := ta.length - 1; k >= 0; k-- {
 			var val Value
 			if ta.isValidIntegerIndex(k) {
-				val = ta.typedArray.get(ta.offset + k)
+				val = ta.elem(ta.offset + k)
 			}
 			fc.Arguments[0] = val
 			fc.Arguments[1] = intToValue(int64(k))
@@ -668,7 +668,7 @@ func (r *Runtime) typedArrayProto_findLastIndex(call FunctionCall) Value {
 		}
 		for k := ta.length - 1; k >= 0; k-- {
 			if ta.isValidIntegerIndex(k) {
-				fc.Arguments[0] = ta.typedArray.get(ta.offset + k)
+				fc.Arguments[0] = ta.elem(ta.offset + k)
 			} else {
 				fc.Arguments[0] = _undefined
 			}
@@ -693,7 +693,7 @@ func (r *Runtime) typedArrayProto_forEach(call FunctionCall) Value {
 		for k := 0; k < ta.length; k++ {
 			var val Value
 			if ta.isValidIntegerIndex(k) {
-				val = ta.typedArray.get(ta.offset + k)
+				val = ta.elem(ta.offset + k)
 			}
 			fc.Arguments[0] = val
 			fc.Arguments[1] = intToValue(int64(k))
@@ -757,7 +757,7 @@ func (r *Runtime) typedArrayProto_at(call FunctionCall) Value {
 			return _undefined
 		}
 		if ta.viewedArrayBuf.ensureNotDetached(false) {
-			return ta.typedArray.get(ta.offset + int(idx))
+			return ta.elem(ta.offset + int(idx))
 		}
 		return _undefined
 	}
@@ -819,7 +819,7 @@ func (r *Runtime) typedArrayProto_join(call FunctionCall) Value {
 
 		var element0 Value
 		if ta.isValidIntegerIndex(0) {
-			element0 = ta.typedArray.get(ta.offset + 0)
+			element0 = ta.elem(ta.offset + 0)
 		}
 		if element0 != nil && element0 != _undefined && element0 != _null {
 			buf.WriteString(r.toStringValue(element0))
@@ -828,7 +828,7 @@ func (r *Runtime) typedArrayProto_join(call FunctionCall) Value {
 		for i := 1; i < l; i++ {
 			buf.WriteString(sep)
 			if ta.isValidIntegerIndex(i) {
-				element := ta.typedArray.get(ta.offset + i)
+				element := ta.elem(ta.offset + i)
 				if element != nil && element != _undefined && element != _null {
 					buf.WriteString(r.toStringValue(element))
 				}
@@ -903,7 +903,7 @@ func (r *Runtime) typedArrayProto_map(call FunctionCall) Value {
 		dst := r.typedArraySpeciesCreate(ta, []Value{intToValue(int64(ta.length))})
 		for i := 0; i < ta.length; i++ {
 			if ta.isValidIntegerIndex(i) {
-				fc.Arguments[0] = ta.typedArray.get(ta.offset + i)
+				fc.Arguments[0] = ta.elem(ta.offset + i)
 			} else {
 				fc.Arguments[0] = _undefined
 			}
@@ -928,7 +928,7 @@ func (r *Runtime) typedArrayProto_reduce(call FunctionCall) Value {
 			fc.Arguments[0] = call.Argument(1)
 		} else {
 			if ta.length > 0 {
-				fc.Arguments[0] = ta.typedArray.get(ta.offset + 0)
+				fc.Arguments[0] = ta.elem(ta.offset + 0)
 				k = 1
 			}
 		}
@@ -937,7 +937,7 @@ func (r *Runtime) typedArrayProto_reduce(call FunctionCall) Value {
 		}
 		for ; k < ta.length; k++ {
 			if ta.isValidIntegerIndex(k) {
-				fc.Arguments[1] = ta.typedArray.get(ta.offset + k)
+				fc.Arguments[1] = ta.elem(ta.offset + k)
 			} else {
 				fc.Arguments[1] = _undefined
 			}
@@ -963,7 +963,7 @@ func (r *Runtime) typedArrayProto_reduceRight(call FunctionCall) Value {
 			fc.Arguments[0] = call.Argument(1)
 		} else {
 			if k >= 0 {
-				fc.Arguments[0] = ta.typedArray.get(ta.offset + k)
+				fc.Arguments[0] = ta.elem(ta.offset + k)
 				k--
 			}
 		}
@@ -972,7 +972,7 @@ func (r *Runtime) typedArrayProto_reduceRight(call FunctionCall) Value {
 		}
 		for ; k >= 0; k-- {
 			if ta.isValidIntegerIndex(k) {
-				fc.Arguments[1] = ta.typedArray.get(ta.offset + k)
+				fc.Arguments[1] = ta.elem(ta.offset + k)
 			} else {
 				fc.Arguments[1] = _undefined
 			}
@@ -1028,11 +1028,11 @@ func (r *Runtime) typedArrayProto_set(call FunctionCall) Value {
 				if ta.elemSize == src.elemSize {
 					if curDst <= curSrc || curDst >= endSrc {
 						for i := 0; i < srcLen; i++ {
-							ta.typedArray.set(dstOffset+i, src.typedArray.get(srcOffset+i))
+							ta.typedArray.set(dstOffset+i, src.elem(srcOffset+i))
 						}
 					} else {
 						for i := srcLen - 1; i >= 0; i-- {
-							ta.typedArray.set(dstOffset+i, src.typedArray.get(srcOffset+i))
+							ta.typedArray.set(dstOffset+i, src.elem(srcOffset+i))
 						}
 					}
 				} else {
@@ -1044,17 +1044,17 @@ func (r *Runtime) typedArrayProto_set(call FunctionCall) Value {
 					}
 					if ta.elemSize < src.elemSize {
 						for i := x; i < srcLen; i++ {
-							ta.typedArray.set(dstOffset+i, src.typedArray.get(srcOffset+i))
+							ta.typedArray.set(dstOffset+i, src.elem(srcOffset+i))
 						}
 						for i := x - 1; i >= 0; i-- {
-							ta.typedArray.set(dstOffset+i, src.typedArray.get(srcOffset+i))
+							ta.typedArray.set(dstOffset+i, src.elem(srcOffset+i))
 						}
 					} else {
 						for i := 0; i < x; i++ {
-							ta.typedArray.set(dstOffset+i, src.typedArray.get(srcOffset+i))
+							ta.typedArray.set(dstOffset+i, src.elem(srcOffset+i))
 						}
 						for i := srcLen - 1; i >= x; i-- {
-							ta.typedArray.set(dstOffset+i, src.typedArray.get(srcOffset+i))
+							ta.typedArray.set(dstOffset+i, src.elem(srcOffset+i))
 						}
 					}
 				}
@@ -1117,7 +1117,7 @@ func (r *Runtime) typedArrayProto_slice(call FunctionCall) Value {
 		} else {
 			for i := 0; i < count; i++ {
 				ta.viewedArrayBuf.ensureNotDetached(true)
-				dst.typedArray.set(dst.offset+i, ta.typedArray.get(ta.offset+start+i))
+				dst.typedArray.set(dst.offset+i, ta.elem(ta.offset+start+i))
 			}
 		}
 		return dst.val
@@ -1135,7 +1135,7 @@ func (r *Runtime) typedArrayProto_some(call FunctionCall) Value {
 		}
 		for k := 0; k < ta.length; k++ {
 			if ta.isValidIntegerIndex(k) {
-				fc.Arguments[0] = ta.typedArray.get(ta.offset + k)
+				fc.Arguments[0] = ta.elem(ta.offset + k)
 			} else {
 				fc.Arguments[0] = _undefined
 			}
@@ -1198,7 +1198,7 @@ func (r *Runtime) typedArrayProto_toLocaleString(call FunctionCall) Value {
 			if i > 0 {
 				buf.WriteRune(',')
 			}
-			item := ta.typedArray.get(ta.offset + i)
+			item := ta.elem(ta.offset + i)
 			r.writeItemLocaleString(item, &buf)
 		}
 		return buf.String()
@@ -1272,7 +1272,7 @@ func (r *Runtime) typedArrayProto_toReversed(call FunctionCall) Value {
 
 	for k := 0; k < length; k++ {
 		from := length - k - 1
-		fromValue := ta.typedArray.get(ta.offset + from)
+		fromValue := ta.elem(ta.offset + from)
 		a.typedArray.set(k, fromValue)
 	}
 
@@ -1508,7 +1508,7 @@ func (r *Runtime) _newTypedArrayFromTypedArray(src *typedArrayObject, newTarget 
 	}
 	dst.length = l
 	for i := 0; i < l; i++ {
-		dst.typedArray.set(i, src.typedArray.get(src.offset+i))
+		dst.typedArray.set(i, src.elem(src.offset+i))
 	}
 	return dst.val
 }
