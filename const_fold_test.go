@@ -181,3 +181,31 @@ func TestConstFoldSkippedSameResult(t *testing.T) {
 	`
 	testScript(SCRIPT, _undefined, t)
 }
+
+// A chain of !, ~ or typeof on a constant compiles in time linear in its
+// length: each was folded from the constant below it, which was emitted
+// again from the bottom at every level (8,000 ! took 4.1 s).
+func TestConstFoldUnaryChainLinear(t *testing.T) {
+	for _, op := range []string{"!", "~", "typeof ", "- ", "void "} {
+		src := "function f() { return " + strings.Repeat(op, 8000) + "1; } f()"
+		prg := compileWithin(t, src, 500*time.Millisecond, 256<<20)
+		v, err := New().RunProgram(prg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var want Value
+		switch op {
+		case "!":
+			want = valueTrue
+		case "~", "- ":
+			want = intToValue(1)
+		case "typeof ":
+			want = asciiString("string")
+		case "void ":
+			want = _undefined
+		}
+		if !v.SameAs(want) {
+			t.Fatalf("%q x 8000: got %v, want %v", op, v, want)
+		}
+	}
+}

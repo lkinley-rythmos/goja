@@ -15,9 +15,14 @@ import (
 type foldMemo struct {
 	decided, isConst bool
 
-	evaluated bool
-	val       Value
-	ex        *Exception
+	// The value, while it is remembered; small, as every unary, binary
+	// and logical expression has one.
+	value *foldValue
+}
+
+type foldValue struct {
+	val Value
+	ex  *Exception
 }
 
 func (m *foldMemo) memo() *foldMemo {
@@ -52,7 +57,7 @@ func memoOf(expr compiledExpr) *foldMemo {
 // be evaluated again, to the same value.
 func (c *compiler) releaseConst(expr compiledExpr) {
 	if m := memoOf(expr); m != nil {
-		m.evaluated, m.val, m.ex = false, nil, nil
+		m.value = nil
 	}
 }
 

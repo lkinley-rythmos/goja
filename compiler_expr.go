@@ -2563,12 +2563,12 @@ func (c *compiler) evalConst(expr compiledExpr) (Value, *Exception) {
 		return expr.val, nil
 	}
 	m := memoOf(expr)
-	if m != nil && m.evaluated {
-		return m.val, m.ex
+	if m != nil && m.value != nil {
+		return m.value.val, m.value.ex
 	}
 	v, ex := c.runConst(expr)
 	if m != nil {
-		m.evaluated, m.val, m.ex = true, v, ex
+		m.value = &foldValue{v, ex}
 	}
 	return v, ex
 }
@@ -2626,18 +2626,20 @@ func (e *compiledUnaryExpr) emitGetter(putOnStack bool) {
 
 	switch e.operator {
 	case token.NOT:
-		e.operand.emitGetter(true)
+		// emitExpr: a constant operand is emitted from its value, which
+		// constant() evaluated, not from its whole subtree again.
+		e.c.emitExpr(e.operand, true)
 		e.c.emit(not)
 		goto end
 	case token.BITWISE_NOT:
-		e.operand.emitGetter(true)
+		e.c.emitExpr(e.operand, true)
 		e.c.emit(bnot)
 		goto end
 	case token.TYPEOF:
 		if o, ok := e.operand.(compiledExprOrRef); ok {
 			o.emitGetterOrRef()
 		} else {
-			e.operand.emitGetter(true)
+			e.c.emitExpr(e.operand, true)
 		}
 		e.c.emit(typeof)
 		goto end
