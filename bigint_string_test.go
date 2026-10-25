@@ -191,3 +191,43 @@ func TestStringToBigIntInterruptible(t *testing.T) {
 		t.Fatalf("interrupted after %v", took)
 	}
 }
+
+// A script's == and < with a BigInt and a string convert the string through
+// the runtime: interruptibly and charged (Runtime.looseEquals,
+// Runtime.cmp).
+func TestStringToBigIntComparisonsInterruptible(t *testing.T) {
+	for _, src := range []string{"s == 7n", "7n == s", "1n < s", "s > 1n", "s != 7n", "({valueOf() { return s }}) == 7n"} {
+		t.Run(src, func(t *testing.T) {
+			r := New()
+			r.Set("s", strings.Repeat("7", 20000000))
+			delay := 300 * time.Millisecond
+			timer := time.AfterFunc(delay, func() { r.Interrupt("stop") })
+			defer timer.Stop()
+			start := time.Now()
+			_, err := runWithin(t, r, src, 60*time.Second)
+			var ie *InterruptedError
+			if !errors.As(err, &ie) {
+				t.Fatalf("got %v, want interrupted", err)
+			}
+			if took := time.Since(start); took > delay+250*time.Millisecond {
+				t.Fatalf("interrupted after %v", took)
+			}
+
+			r = New()
+			r.Set("s", strings.Repeat("7", 20000000))
+			r.SetAllocationLimit(1 << 20)
+			start = time.Now()
+			_, err = runWithin(t, r, src, 60*time.Second)
+			if !errors.Is(err, ErrAllocationLimitExceeded) {
+				t.Fatalf("got %v, want the allocation limit", err)
+			}
+			if took := time.Since(start); took > 500*time.Millisecond {
+				t.Fatalf("took %v", took)
+			}
+		})
+	}
+	// Strings with white space other than ASCII compare as Node v18.20.3
+	// compares them.
+	testScript(`[12n == "\u00a012", "\u00a012" == 12n, 12n == "\u2003 12\ufeff", ({valueOf(){return "12"}}) == 12n, 12n == {toString(){return "12"}}, 12n < "\u00a013", new String("12") == 12n].join()`,
+		asciiString("true,true,true,true,true,true,true"), t)
+}

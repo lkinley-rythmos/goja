@@ -77,7 +77,7 @@ func (v *valueBigInt) Equals(other Value) bool {
 		}
 		return false
 	case String:
-		bigInt, err := stringToBigInt(o.toTrimmedUTF8())
+		bigInt, err := stringToBigIntHost(o.toTrimmedUTF8())
 		if err != nil {
 			return false
 		}
@@ -124,7 +124,7 @@ func (v *valueBigInt) hash(hash *maphash.Hash) uint64 {
 	return h
 }
 
-func toBigInt(value Value) *valueBigInt {
+func (r *Runtime) toBigInt(value Value) *valueBigInt {
 	// Undefined	Throw a TypeError exception.
 	// Null			Throw a TypeError exception.
 	// Boolean		Return 1n if prim is true and 0n if prim is false.
@@ -138,7 +138,7 @@ func toBigInt(value Value) *valueBigInt {
 	case *valueBigInt:
 		return prim
 	case String:
-		bigInt, err := stringToBigInt(prim.toTrimmedUTF8())
+		bigInt, err := r.stringToBigInt(prim.toTrimmedUTF8())
 		if err != nil {
 			panic(bigIntConversionError(prim))
 		}
@@ -148,13 +148,13 @@ func toBigInt(value Value) *valueBigInt {
 	case *Symbol:
 		panic(typeError("Cannot convert Symbol to a BigInt"))
 	case *Object:
-		return toBigInt(prim.toPrimitiveNumber())
+		return r.toBigInt(prim.toPrimitiveNumber())
 	default:
 		panic(typeError(fmt.Sprintf("Cannot convert %s to a BigInt", prim)))
 	}
 }
 
-func numberToBigInt(v Value) *valueBigInt {
+func (r *Runtime) numberToBigInt(v Value) *valueBigInt {
 	switch v := toNumeric(v).(type) {
 	case *valueBigInt:
 		return v
@@ -173,9 +173,9 @@ func numberToBigInt(v Value) *valueBigInt {
 		prim := v.toPrimitiveNumber()
 		switch prim.(type) {
 		case valueInt, valueFloat:
-			return numberToBigInt(prim)
+			return r.numberToBigInt(prim)
 		default:
-			return toBigInt(prim)
+			return r.toBigInt(prim)
 		}
 	default:
 		panic(newTypeError("Cannot convert %s to a BigInt", v))
@@ -186,14 +186,24 @@ func numberToBigInt(v Value) *valueBigInt {
 // white space: an optionally signed decimal integer, with leading zeros if
 // any, or a 0x, 0o or 0b prefixed unsigned one, "" being 0n. A string of
 // more digits than V8 takes for a BigInt (bigdec.TooLong) is refused, before
-// it is converted, as one that is not a number is.
-func stringToBigInt(str string) (*big.Int, error) {
+// it is converted, as one that is not a number is. A long decimal string is
+// converted with r's interrupt checked between the parts, and the result
+// is charged before it is made. Every conversion a script makes goes
+// through it.
+func (r *Runtime) stringToBigInt(str string) (*big.Int, error) {
+	return stringToBigIntWith(str, r)
+}
+
+// stringToBigIntHost is stringToBigInt for Value.Equals called by the host
+// outside a run, where there is neither an interrupt to check nor a counter
+// to charge: a script's == goes through Runtime.looseEquals, and its other
+// conversions through Runtime.stringToBigInt.
+func stringToBigIntHost(str string) (*big.Int, error) {
 	return stringToBigIntWith(str, nil)
 }
 
-// stringToBigIntWith is stringToBigInt, with r's interrupt checked while a
-// long decimal string is converted and the result charged before it is
-// made, if r is not nil.
+// stringToBigIntWith is the conversion of stringToBigInt and
+// stringToBigIntHost, with r nil for the latter.
 func stringToBigIntWith(str string, r *Runtime) (*big.Int, error) {
 	if str == "" {
 		if r != nil {
@@ -323,13 +333,13 @@ func (r *Runtime) bigintproto_toString(call FunctionCall) Value {
 
 func (r *Runtime) bigint_asIntN(call FunctionCall) Value {
 	bits := r.bigIntBitsIndex(call.Argument(0))
-	bigint := toBigInt(call.Argument(1))
+	bigint := r.toBigInt(call.Argument(1))
 	return (*valueBigInt)(r.bigAsIntN(bits, (*big.Int)(bigint)))
 }
 
 func (r *Runtime) bigint_asUintN(call FunctionCall) Value {
 	bits := r.bigIntBitsIndex(call.Argument(0))
-	bigint := toBigInt(call.Argument(1))
+	bigint := r.toBigInt(call.Argument(1))
 	return (*valueBigInt)(r.bigAsUintN(bits, (*big.Int)(bigint)))
 }
 
@@ -380,15 +390,11 @@ func (r *Runtime) builtin_BigInt(call FunctionCall) Value {
 		case *valueBigInt:
 			return v
 		case String:
-			z, err := stringToBigIntWith(v.toTrimmedUTF8(), r)
-			if err != nil {
-				panic(bigIntConversionError(v))
-			}
-			return (*valueBigInt)(z)
+			return r.toBigInt(v)
 		case valueInt, valueFloat, *Object:
-			b = numberToBigInt(v)
+			b = r.numberToBigInt(v)
 		default:
-			b = toBigInt(v)
+			b = r.toBigInt(v)
 		}
 		r.chargeBigIntDigits(int64(bigDigits((*big.Int)(b))))
 		return b
@@ -403,7 +409,7 @@ func (r *Runtime) builtin_newBigInt(args []Value, newTarget *Object) *Object {
 	}
 	var v Value
 	if len(args) > 0 {
-		v = numberToBigInt(args[0])
+		v = r.numberToBigInt(args[0])
 	} else {
 		v = (*valueBigInt)(big.NewInt(0))
 	}
@@ -458,4 +464,43 @@ func (r *Runtime) getBigIntPrototype() *Object {
 		o.class = classObject
 	}
 	return ret
+}
+
+// looseEquals is x == y (IsLooselyEqual): Value.Equals, but a BigInt and a
+// string, as they are or once an object among them is converted to a
+// primitive as Equals converts it, are compared with the string converted by
+// r (Runtime.stringToBigInt).
+func (r *Runtime) looseEquals(x, y Value) bool {
+	for {
+		switch xv := x.(type) {
+		case *valueBigInt:
+			switch yv := y.(type) {
+			case String:
+				return r.bigIntEqualsString(xv, yv)
+			case *Object:
+				y = yv.toPrimitiveNumber()
+				continue
+			}
+		case String:
+			switch yv := y.(type) {
+			case *valueBigInt:
+				return r.bigIntEqualsString(yv, xv)
+			case *Object:
+				y = yv.toPrimitive()
+				continue
+			}
+		case *Object:
+			switch y.(type) {
+			case *valueBigInt, String:
+				x = xv.toPrimitive()
+				continue
+			}
+		}
+		return x.Equals(y)
+	}
+}
+
+func (r *Runtime) bigIntEqualsString(b *valueBigInt, s String) bool {
+	z, err := r.stringToBigInt(s.toTrimmedUTF8())
+	return err == nil && z.Cmp((*big.Int)(b)) == 0
 }

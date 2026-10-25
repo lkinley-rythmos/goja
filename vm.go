@@ -4673,7 +4673,9 @@ func toPrimitive(v Value) Value {
 	return v
 }
 
-func cmp(px, py Value) Value {
+// cmp is IsLessThan(px, py) for primitives; a string compared with a BigInt
+// is converted by r (Runtime.stringToBigInt).
+func (r *Runtime) cmp(px, py Value) Value {
 	var ret bool
 	xs, isPxString := px.(String)
 	ys, isPyString := py.(String)
@@ -4683,7 +4685,7 @@ func cmp(px, py Value) Value {
 		goto end
 	} else {
 		if px, ok := px.(*valueBigInt); ok && isPyString {
-			ny, err := stringToBigInt(ys.toTrimmedUTF8())
+			ny, err := r.stringToBigInt(ys.toTrimmedUTF8())
 			if err != nil {
 				return _undefined
 			}
@@ -4691,7 +4693,7 @@ func cmp(px, py Value) Value {
 			goto end
 		}
 		if py, ok := py.(*valueBigInt); ok && isPxString {
-			nx, err := stringToBigInt(xs.toTrimmedUTF8())
+			nx, err := r.stringToBigInt(xs.toTrimmedUTF8())
 			if err != nil {
 				return _undefined
 			}
@@ -4779,7 +4781,7 @@ func (_op_lt) exec(vm *vm) {
 	left := toPrimitiveNumber(vm.stack[vm.sp-2])
 	right := toPrimitiveNumber(vm.stack[vm.sp-1])
 
-	r := cmp(left, right)
+	r := vm.r.cmp(left, right)
 	if r == _undefined {
 		vm.stack[vm.sp-2] = valueFalse
 	} else {
@@ -4797,7 +4799,7 @@ func (_op_lte) exec(vm *vm) {
 	left := toPrimitiveNumber(vm.stack[vm.sp-2])
 	right := toPrimitiveNumber(vm.stack[vm.sp-1])
 
-	r := cmp(right, left)
+	r := vm.r.cmp(right, left)
 	if r == _undefined || r == valueTrue {
 		vm.stack[vm.sp-2] = valueFalse
 	} else {
@@ -4816,7 +4818,7 @@ func (_op_gt) exec(vm *vm) {
 	left := toPrimitiveNumber(vm.stack[vm.sp-2])
 	right := toPrimitiveNumber(vm.stack[vm.sp-1])
 
-	r := cmp(right, left)
+	r := vm.r.cmp(right, left)
 	if r == _undefined {
 		vm.stack[vm.sp-2] = valueFalse
 	} else {
@@ -4834,7 +4836,7 @@ func (_op_gte) exec(vm *vm) {
 	left := toPrimitiveNumber(vm.stack[vm.sp-2])
 	right := toPrimitiveNumber(vm.stack[vm.sp-1])
 
-	r := cmp(left, right)
+	r := vm.r.cmp(left, right)
 	if r == _undefined || r == valueTrue {
 		vm.stack[vm.sp-2] = valueFalse
 	} else {
@@ -4850,7 +4852,7 @@ type _op_eq struct{}
 var op_eq _op_eq
 
 func (_op_eq) exec(vm *vm) {
-	if vm.stack[vm.sp-2].Equals(vm.stack[vm.sp-1]) {
+	if vm.r.looseEquals(vm.stack[vm.sp-2], vm.stack[vm.sp-1]) {
 		vm.stack[vm.sp-2] = valueTrue
 	} else {
 		vm.stack[vm.sp-2] = valueFalse
@@ -4864,7 +4866,7 @@ type _op_neq struct{}
 var op_neq _op_neq
 
 func (_op_neq) exec(vm *vm) {
-	if vm.stack[vm.sp-2].Equals(vm.stack[vm.sp-1]) {
+	if vm.r.looseEquals(vm.stack[vm.sp-2], vm.stack[vm.sp-1]) {
 		vm.stack[vm.sp-2] = valueFalse
 	} else {
 		vm.stack[vm.sp-2] = valueTrue

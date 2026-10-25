@@ -1,6 +1,7 @@
 package goja
 
 import (
+	"fmt"
 	"math"
 	"math/big"
 	"reflect"
@@ -612,7 +613,7 @@ func (a *bigInt64Array) get(idx int) Value {
 }
 
 func toBigInt64(v Value) *big.Int {
-	n := (*big.Int)(toBigInt(v))
+	n := (*big.Int)(toBigIntConverted(v))
 
 	twoTo64 := new(big.Int).Lsh(big.NewInt(1), 64)
 	twoTo63 := new(big.Int).Lsh(big.NewInt(1), 63)
@@ -676,7 +677,7 @@ func (a *bigUint64Array) get(idx int) Value {
 }
 
 func toBigUint64(v Value) *big.Int {
-	n := (*big.Int)(toBigInt(v))
+	n := (*big.Int)(toBigIntConverted(v))
 	return new(big.Int).Mod(n, new(big.Int).Lsh(big.NewInt(1), 64))
 }
 
@@ -785,10 +786,45 @@ func (a *typedArrayObject) isValidIntegerIndex(idx int) bool {
 	return false
 }
 
+// toBigIntConverted is the BigInt v, which the callers of a BigInt typed
+// array's set and toRaw convert first (typedArrayObject.elementValue,
+// Runtime.toBigInt); a value that is not a BigInt still converts, a string
+// by stringToBigIntHost, so that a caller that forgets is wrong only in
+// that it is neither interruptible nor charged.
+func toBigIntConverted(v Value) *valueBigInt {
+	switch v := v.(type) {
+	case *valueBigInt:
+		return v
+	case String:
+		z, err := stringToBigIntHost(v.toTrimmedUTF8())
+		if err != nil {
+			panic(bigIntConversionError(v))
+		}
+		return (*valueBigInt)(z)
+	case valueBool:
+		return (*valueBigInt)(big.NewInt(v.ToInteger()))
+	case *Symbol:
+		panic(typeError("Cannot convert Symbol to a BigInt"))
+	case *Object:
+		return toBigIntConverted(v.toPrimitiveNumber())
+	}
+	panic(typeError(fmt.Sprintf("Cannot convert %s to a BigInt", v)))
+}
+
+// elementValue is v for the array's set and toRaw: a BigInt array's
+// converted by the runtime (Runtime.toBigInt), any other's as it is.
+func (a *typedArrayObject) elementValue(v Value) Value {
+	switch a.typedArray.(type) {
+	case *bigInt64Array, *bigUint64Array:
+		return a.val.runtime.toBigInt(v)
+	}
+	return v
+}
+
 func (a *typedArrayObject) _putIdx(idx int, v Value) {
 	switch a.typedArray.(type) {
 	case *bigInt64Array, *bigUint64Array:
-		v = toBigInt(v)
+		v = a.val.runtime.toBigInt(v)
 	default:
 		v = v.ToNumber()
 	}

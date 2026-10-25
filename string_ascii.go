@@ -277,7 +277,7 @@ func (s asciiString) Equals(other Value) bool {
 	}
 
 	if o, ok := other.(*valueBigInt); ok {
-		bigInt, err := stringToBigInt(s.toTrimmedUTF8())
+		bigInt, err := stringToBigIntHost(s.toTrimmedUTF8())
 		if err != nil {
 			return false
 		}

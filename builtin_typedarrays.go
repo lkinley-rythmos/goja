@@ -402,7 +402,7 @@ func (r *Runtime) dataViewProto_setUint32(call FunctionCall) Value {
 func (r *Runtime) dataViewProto_setBigInt64(call FunctionCall) Value {
 	if dv, ok := r.toObject(call.This).self.(*dataViewObject); ok {
 		idxVal := r.toIndex(call.Argument(0))
-		val := toBigInt64(call.Argument(1))
+		val := toBigInt64(r.toBigInt(call.Argument(1)))
 		idx, bo := dv.getIdxAndByteOrder(idxVal, call.Argument(2), 8)
 		dv.viewedArrayBuf.setBigInt64(idx, val, bo)
 		return _undefined
@@ -413,7 +413,7 @@ func (r *Runtime) dataViewProto_setBigInt64(call FunctionCall) Value {
 func (r *Runtime) dataViewProto_setBigUint64(call FunctionCall) Value {
 	if dv, ok := r.toObject(call.This).self.(*dataViewObject); ok {
 		idxVal := r.toIndex(call.Argument(0))
-		val := toBigUint64(call.Argument(1))
+		val := toBigUint64(r.toBigInt(call.Argument(1)))
 		idx, bo := dv.getIdxAndByteOrder(idxVal, call.Argument(2), 8)
 		dv.viewedArrayBuf.setBigUint64(idx, val, bo)
 		return _undefined
@@ -528,7 +528,7 @@ func (r *Runtime) typedArrayProto_fill(call FunctionCall) Value {
 			relEnd = l
 		}
 		final := toIntStrict(relToIdx(relEnd, l))
-		value := ta.typedArray.toRaw(call.Argument(0))
+		value := ta.typedArray.toRaw(ta.elementValue(call.Argument(0)))
 		ta.viewedArrayBuf.ensureNotDetached(true)
 		for ; k < final; k++ {
 			ta.typedArray.setRaw(ta.offset+k, value)
@@ -908,7 +908,7 @@ func (r *Runtime) typedArrayProto_map(call FunctionCall) Value {
 				fc.Arguments[0] = _undefined
 			}
 			fc.Arguments[1] = intToValue(int64(i))
-			dst.typedArray.set(dst.offset+i, callbackFn(fc))
+			dst.typedArray.set(dst.offset+i, dst.elementValue(callbackFn(fc)))
 		}
 		return dst.val
 	}
@@ -1068,7 +1068,7 @@ func (r *Runtime) typedArrayProto_set(call FunctionCall) Value {
 			for i := 0; i < srcLen; i++ {
 				val := nilSafe(srcObj.self.getIdx(valueInt(i), nil))
 				if ta.isValidIntegerIndex(targetOffset + i) {
-					ta.typedArray.set(ta.offset+targetOffset+i, val)
+					ta.typedArray.set(ta.offset+targetOffset+i, ta.elementValue(val))
 				}
 			}
 		}
@@ -1244,7 +1244,7 @@ func (r *Runtime) typedArrayProto_with(call FunctionCall) Value {
 	var numericValue Value
 	switch ta.typedArray.(type) {
 	case *bigInt64Array, *bigUint64Array:
-		numericValue = toBigInt(call.Argument(1))
+		numericValue = r.toBigInt(call.Argument(1))
 	default:
 		numericValue = call.Argument(1).ToNumber()
 	}
@@ -1331,7 +1331,7 @@ func (r *Runtime) typedArray_from(call FunctionCall) Value {
 		ta := r.typedArrayCreate(c, intToValue(int64(len(values))))
 		if mapFc == nil {
 			for idx, val := range values {
-				ta.typedArray.set(idx, val)
+				ta.typedArray.set(idx, ta.elementValue(val))
 			}
 		} else {
 			fc := FunctionCall{
@@ -1350,7 +1350,7 @@ func (r *Runtime) typedArray_from(call FunctionCall) Value {
 	ta := r.typedArrayCreate(c, intToValue(int64(length)))
 	if mapFc == nil {
 		for i := 0; i < length; i++ {
-			ta.typedArray.set(i, nilSafe(source.self.getIdx(valueInt(i), nil)))
+			ta.typedArray.set(i, ta.elementValue(nilSafe(source.self.getIdx(valueInt(i), nil))))
 		}
 	} else {
 		fc := FunctionCall{
@@ -1360,7 +1360,7 @@ func (r *Runtime) typedArray_from(call FunctionCall) Value {
 		for i := 0; i < length; i++ {
 			idx := valueInt(i)
 			fc.Arguments[0], fc.Arguments[1] = source.self.getIdx(idx, nil), idx
-			ta.typedArray.set(i, mapFc(fc))
+			ta.typedArray.set(i, ta.elementValue(mapFc(fc)))
 		}
 	}
 	return ta.val
@@ -1369,7 +1369,7 @@ func (r *Runtime) typedArray_from(call FunctionCall) Value {
 func (r *Runtime) typedArray_of(call FunctionCall) Value {
 	ta := r.typedArrayCreate(r.toObject(call.This), intToValue(int64(len(call.Arguments))))
 	for i, val := range call.Arguments {
-		ta.typedArray.set(i, val)
+		ta.typedArray.set(i, ta.elementValue(val))
 	}
 	return ta.val
 }
@@ -1417,7 +1417,7 @@ func (r *Runtime) typedArrayFrom(ctor, items *Object, mapFn, thisValue Value, ta
 		ta := r.allocateTypedArray(ctor, len(values), taCtor, proto)
 		if mapFc == nil {
 			for idx, val := range values {
-				ta.typedArray.set(idx, val)
+				ta.typedArray.set(idx, ta.elementValue(val))
 			}
 		} else {
 			fc := FunctionCall{
@@ -1427,7 +1427,7 @@ func (r *Runtime) typedArrayFrom(ctor, items *Object, mapFn, thisValue Value, ta
 			for idx, val := range values {
 				fc.Arguments[0], fc.Arguments[1] = val, intToValue(int64(idx))
 				val = mapFc(fc)
-				ta.typedArray.set(idx, val)
+				ta.typedArray.set(idx, ta.elementValue(val))
 			}
 		}
 		return ta.val
@@ -1436,7 +1436,7 @@ func (r *Runtime) typedArrayFrom(ctor, items *Object, mapFn, thisValue Value, ta
 	ta := r.allocateTypedArray(ctor, length, taCtor, proto)
 	if mapFc == nil {
 		for i := 0; i < length; i++ {
-			ta.typedArray.set(i, nilSafe(items.self.getIdx(valueInt(i), nil)))
+			ta.typedArray.set(i, ta.elementValue(nilSafe(items.self.getIdx(valueInt(i), nil))))
 		}
 	} else {
 		fc := FunctionCall{
@@ -1446,7 +1446,7 @@ func (r *Runtime) typedArrayFrom(ctor, items *Object, mapFn, thisValue Value, ta
 		for i := 0; i < length; i++ {
 			idx := valueInt(i)
 			fc.Arguments[0], fc.Arguments[1] = items.self.getIdx(idx, nil), idx
-			ta.typedArray.set(i, mapFc(fc))
+			ta.typedArray.set(i, ta.elementValue(mapFc(fc)))
 		}
 	}
 	return ta.val
