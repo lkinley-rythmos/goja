@@ -44,7 +44,8 @@ type allocCounter struct {
 // limit in estimated bytes; bytes <= 0 disables the limit (counting
 // continues). The counter covers ordinary objects, arrays and their storage
 // as it grows, ArrayBuffers and typed arrays, strings created by the +
-// operator and JSON.parse, and the value stack's growth, and nothing else,
+// operator and JSON.parse, BigInts made by the operators and by
+// BigInt.asIntN and asUintN, and the value stack's growth, and nothing else,
 // so it is an estimate meant to stop runaway scripts, not an exact
 // accounting.
 //

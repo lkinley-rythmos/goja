@@ -141,3 +141,43 @@ func TestConstFoldStringAndUnaryBounded(t *testing.T) {
 	compileWithin(t, `function f() { return 1n < "`+digits+`"; }`, time.Second, 64<<20)
 	compileWithin(t, `function f() { return 1n == "`+digits+`"; }`, time.Second, 64<<20)
 }
+
+// Folding must not change a result: what is left to run time gives the
+// value, or throws the error, that the folded constant would have.
+func TestConstFoldSkippedSameResult(t *testing.T) {
+	const SCRIPT = `
+	function check(got, want, what) {
+		if (got !== want) throw new Error(what + ": got " + got + ", want " + want);
+	}
+	check((2n ** 2000n).toString(16), "1" + "0".repeat(500), "2n ** 2000n");
+	check(((3n || x) ** 700n) % 1000003n, 3n ** 700n % 1000003n, "short-circuit base");
+	check(((2n ** 1000n) * (2n ** 1000n)) >> 1999n, 2n, "product");
+	check((1n << 5000n) >> 4999n, 2n, "shift");
+	check((-1n) >> -3000n === -(1n << 3000n), true, "negative right shift");
+	check(typeof (2n ** 5000n), "bigint", "typeof");
+	check(!(2n ** 5000n), false, "not");
+	check(-(2n ** 5000n) < 0n, true, "negate");
+	check(~(2n ** 5000n) === -(2n ** 5000n) - 1n, true, "bitwise not");
+	check("" + (2n ** 5000n) === (2n ** 5000n).toString(), true, "to string");
+	check(((2n ** 5000n) ? "t" : "f"), "t", "test");
+	check(({[2n ** 1100n]: 1})[(2n ** 1100n).toString()], 1, "computed key");
+	check("x".repeat(2000) + "y" === "x".repeat(2000) + "y", true, "string");
+	var thrown;
+	try { (2n ** 2000n) + 1; } catch (e) { thrown = e; }
+	check(thrown instanceof TypeError, true, "mixed types");
+	check(thrown.message, "Cannot mix BigInt and other types, use explicit conversions", "mixed types message");
+	thrown = undefined;
+	try { (2n ** 2000n) / 0n; } catch (e) { thrown = e; }
+	check(thrown instanceof RangeError && thrown.message, "Division by zero", "division by zero");
+	thrown = undefined;
+	try { (2n ** 2000n) ** -1n; } catch (e) { thrown = e; }
+	check(thrown instanceof RangeError && thrown.message, "Exponent must be positive", "negative exponent");
+	thrown = undefined;
+	try { 1n << 100000000000n; } catch (e) { thrown = e; }
+	check(thrown instanceof RangeError && thrown.message, "Maximum BigInt size exceeded", "too big");
+	thrown = undefined;
+	try { 3n ** 100000000000n; } catch (e) { thrown = e; }
+	check(thrown instanceof RangeError && thrown.message, "Maximum BigInt size exceeded", "too big power");
+	`
+	testScript(SCRIPT, _undefined, t)
+}

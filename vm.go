@@ -1367,7 +1367,7 @@ func (_add) exec(vm *vm) {
 			}
 		case *valueBigInt:
 			if right, ok := right.(*valueBigInt); ok {
-				ret = (*valueBigInt)(new(big.Int).Add((*big.Int)(left), (*big.Int)(right)))
+				ret = (*valueBigInt)(vm.r.bigAdd((*big.Int)(left), (*big.Int)(right)))
 			} else {
 				panic(errMixBigIntType)
 			}
@@ -1440,7 +1440,7 @@ func (_sub) exec(vm *vm) {
 		}
 	case *valueBigInt:
 		if right, ok := right.(*valueBigInt); ok {
-			result = (*valueBigInt)(new(big.Int).Sub((*big.Int)(left), (*big.Int)(right)))
+			result = (*valueBigInt)(vm.r.bigSub((*big.Int)(left), (*big.Int)(right)))
 			goto end
 		}
 		panic(errMixBigIntType)
@@ -1486,7 +1486,7 @@ func (_mul) exec(vm *vm) {
 		}
 	case *valueBigInt:
 		if right, ok := right.(*valueBigInt); ok {
-			result = (*valueBigInt)(new(big.Int).Mul((*big.Int)(left), (*big.Int)(right)))
+			result = (*valueBigInt)(vm.r.bigMul((*big.Int)(left), (*big.Int)(right)))
 			goto end
 		}
 		panic(errMixBigIntType)
@@ -1515,10 +1515,7 @@ func (_exp) exec(vm *vm) {
 	var result Value
 	if x, ok := x.(*valueBigInt); ok {
 		if y, ok := y.(*valueBigInt); ok {
-			if (*big.Int)(y).Cmp(big.NewInt(0)) < 0 {
-				panic(vm.r.newError(vm.r.getRangeError(), "exponent must be positive"))
-			}
-			result = (*valueBigInt)(new(big.Int).Exp((*big.Int)(x), (*big.Int)(y), nil))
+			result = (*valueBigInt)(vm.r.bigExp((*big.Int)(x), (*big.Int)(y)))
 			goto end
 		}
 		panic(errMixBigIntType)
@@ -1547,15 +1544,7 @@ func (_div) exec(vm *vm) {
 
 	if left, ok := leftValue.(*valueBigInt); ok {
 		if right, ok := rightValue.(*valueBigInt); ok {
-			if (*big.Int)(right).Cmp(big.NewInt(0)) == 0 {
-				panic(vm.r.newError(vm.r.getRangeError(), "Division by zero"))
-			}
-			if (*big.Int)(left).CmpAbs((*big.Int)(right)) < 0 {
-				result = (*valueBigInt)(big.NewInt(0))
-			} else {
-				i, _ := new(big.Int).QuoRem((*big.Int)(left), (*big.Int)(right), big.NewInt(0))
-				result = (*valueBigInt)(i)
-			}
+			result = (*valueBigInt)(vm.r.bigQuo((*big.Int)(left), (*big.Int)(right)))
 			goto end
 		}
 		panic(errMixBigIntType)
@@ -1647,16 +1636,7 @@ func (_mod) exec(vm *vm) {
 		}
 	case *valueBigInt:
 		if right, ok := right.(*valueBigInt); ok {
-			switch {
-			case (*big.Int)(right).Cmp(big.NewInt(0)) == 0:
-				panic(vm.r.newError(vm.r.getRangeError(), "Division by zero"))
-			case (*big.Int)(left).Cmp(big.NewInt(0)) < 0:
-				abs := new(big.Int).Abs((*big.Int)(left))
-				v := new(big.Int).Mod(abs, (*big.Int)(right))
-				result = (*valueBigInt)(v.Neg(v))
-			default:
-				result = (*valueBigInt)(new(big.Int).Mod((*big.Int)(left), (*big.Int)(right)))
-			}
+			result = (*valueBigInt)(vm.r.bigRem((*big.Int)(left), (*big.Int)(right)))
 			goto end
 		}
 		panic(errMixBigIntType)
@@ -1680,7 +1660,7 @@ func (_neg) exec(vm *vm) {
 
 	switch n := toNumeric(operand).(type) {
 	case *valueBigInt:
-		result = (*valueBigInt)(new(big.Int).Neg((*big.Int)(n)))
+		result = (*valueBigInt)(vm.r.bigNeg((*big.Int)(n)))
 	case valueInt:
 		if n == 0 {
 			result = _negativeZero
@@ -1717,7 +1697,7 @@ func (_inc) exec(vm *vm) {
 
 	switch n := v.(type) {
 	case *valueBigInt:
-		v = (*valueBigInt)(new(big.Int).Add((*big.Int)(n), big.NewInt(1)))
+		v = (*valueBigInt)(vm.r.bigInc((*big.Int)(n)))
 	case valueInt:
 		v = intToValue(int64(n + 1))
 	default:
@@ -1737,7 +1717,7 @@ func (_dec) exec(vm *vm) {
 
 	switch n := v.(type) {
 	case *valueBigInt:
-		v = (*valueBigInt)(new(big.Int).Sub((*big.Int)(n), big.NewInt(1)))
+		v = (*valueBigInt)(vm.r.bigDec((*big.Int)(n)))
 	case valueInt:
 		v = intToValue(int64(n - 1))
 	default:
@@ -1759,7 +1739,7 @@ func (_and) exec(vm *vm) {
 
 	if left, ok := left.(*valueBigInt); ok {
 		if right, ok := right.(*valueBigInt); ok {
-			result = (*valueBigInt)(new(big.Int).And((*big.Int)(left), (*big.Int)(right)))
+			result = (*valueBigInt)(vm.r.bigAnd((*big.Int)(left), (*big.Int)(right)))
 			goto end
 		}
 		panic(errMixBigIntType)
@@ -1785,7 +1765,7 @@ func (_or) exec(vm *vm) {
 
 	if left, ok := left.(*valueBigInt); ok {
 		if right, ok := right.(*valueBigInt); ok {
-			result = (*valueBigInt)(new(big.Int).Or((*big.Int)(left), (*big.Int)(right)))
+			result = (*valueBigInt)(vm.r.bigOr((*big.Int)(left), (*big.Int)(right)))
 			goto end
 		}
 		panic(errMixBigIntType)
@@ -1811,7 +1791,7 @@ func (_xor) exec(vm *vm) {
 
 	if left, ok := left.(*valueBigInt); ok {
 		if right, ok := right.(*valueBigInt); ok {
-			result = (*valueBigInt)(new(big.Int).Xor((*big.Int)(left), (*big.Int)(right)))
+			result = (*valueBigInt)(vm.r.bigXor((*big.Int)(left), (*big.Int)(right)))
 			goto end
 		}
 		panic(errMixBigIntType)
@@ -1834,7 +1814,7 @@ func (_bnot) exec(vm *vm) {
 	v := vm.stack[vm.sp-1]
 	switch n := toNumeric(v).(type) {
 	case *valueBigInt:
-		v = (*valueBigInt)(new(big.Int).Not((*big.Int)(n)))
+		v = (*valueBigInt)(vm.r.bigNot((*big.Int)(n)))
 	default:
 		v = intToValue(int64(^toInt32(n)))
 	}
@@ -1853,12 +1833,7 @@ func (_sal) exec(vm *vm) {
 
 	if left, ok := left.(*valueBigInt); ok {
 		if right, ok := right.(*valueBigInt); ok {
-			n := uint((*big.Int)(right).Uint64())
-			if (*big.Int)(right).Sign() < 0 {
-				result = (*valueBigInt)(new(big.Int).Rsh((*big.Int)(left), n))
-			} else {
-				result = (*valueBigInt)(new(big.Int).Lsh((*big.Int)(left), n))
-			}
+			result = (*valueBigInt)(vm.r.bigShift((*big.Int)(left), (*big.Int)(right), false))
 			goto end
 		}
 		panic(errMixBigIntType)
@@ -1884,12 +1859,7 @@ func (_sar) exec(vm *vm) {
 
 	if left, ok := left.(*valueBigInt); ok {
 		if right, ok := right.(*valueBigInt); ok {
-			n := uint((*big.Int)(right).Uint64())
-			if (*big.Int)(right).Sign() < 0 {
-				result = (*valueBigInt)(new(big.Int).Lsh((*big.Int)(left), n))
-			} else {
-				result = (*valueBigInt)(new(big.Int).Rsh((*big.Int)(left), n))
-			}
+			result = (*valueBigInt)(vm.r.bigShift((*big.Int)(left), (*big.Int)(right), true))
 			goto end
 		}
 		panic(errMixBigIntType)

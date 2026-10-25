@@ -244,14 +244,7 @@ func (r *Runtime) bigint_asIntN(call FunctionCall) Value {
 		panic(r.NewTypeError("Invalid value: not (convertible to) a safe integer"))
 	}
 	bigint := toBigInt(call.Argument(1))
-
-	twoToBits := new(big.Int).Lsh(big.NewInt(1), uint(bits))
-	mod := new(big.Int).Mod((*big.Int)(bigint), twoToBits)
-	if bits > 0 && mod.Cmp(new(big.Int).Lsh(big.NewInt(1), uint(bits-1))) >= 0 {
-		return (*valueBigInt)(mod.Sub(mod, twoToBits))
-	} else {
-		return (*valueBigInt)(mod)
-	}
+	return (*valueBigInt)(r.bigAsIntN(int64(bits), (*big.Int)(bigint)))
 }
 
 func (r *Runtime) bigint_asUintN(call FunctionCall) Value {
@@ -262,9 +255,8 @@ func (r *Runtime) bigint_asUintN(call FunctionCall) Value {
 	if bits < 0 {
 		panic(r.NewTypeError("Invalid value: not (convertible to) a safe integer"))
 	}
-	bigint := (*big.Int)(toBigInt(call.Argument(1)))
-	ret := new(big.Int).Mod(bigint, new(big.Int).Lsh(big.NewInt(1), uint(bits)))
-	return (*valueBigInt)(ret)
+	bigint := toBigInt(call.Argument(1))
+	return (*valueBigInt)(r.bigAsUintN(int64(bits), (*big.Int)(bigint)))
 }
 
 var bigintTemplate *objectTemplate
