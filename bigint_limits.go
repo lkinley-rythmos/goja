@@ -136,7 +136,11 @@ func (r *Runtime) bigQuo(x, y *big.Int) *big.Int {
 		return new(big.Int)
 	}
 	r.chargeBigInt(bigDigits(x) - bigDigits(y) + 1)
-	return new(big.Int).Quo(x, y)
+	q, _ := r.divAbs(x, y)
+	if x.Sign() != y.Sign() {
+		q.Neg(q)
+	}
+	return q
 }
 
 // bigRem is x % y: the remainder has the sign of the dividend.
@@ -148,7 +152,11 @@ func (r *Runtime) bigRem(x, y *big.Int) *big.Int {
 		return x
 	}
 	r.chargeBigInt(bigDigits(y))
-	return new(big.Int).Rem(x, y)
+	_, m := r.divAbs(x, y)
+	if x.Sign() < 0 {
+		m.Neg(m)
+	}
+	return m
 }
 
 func (r *Runtime) bigNeg(x *big.Int) *big.Int {
