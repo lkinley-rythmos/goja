@@ -2611,7 +2611,9 @@ func (c *compiler) runConst(expr compiledExpr) (Value, *Exception) {
 }
 
 func (e *compiledUnaryExpr) constant() bool {
-	return e.decide(e.operand.constant)
+	return e.decide(func() bool {
+		return e.operand.constant() && e.c.foldsUnary(e.operand)
+	})
 }
 
 func (e *compiledUnaryExpr) emitGetter(putOnStack bool) {
@@ -2856,7 +2858,7 @@ func (e *compiledLogicalAnd) emitGetter(putOnStack bool) {
 
 func (e *compiledBinaryExpr) constant() bool {
 	return e.decide(func() bool {
-		return e.left.constant() && e.right.constant()
+		return e.left.constant() && e.right.constant() && e.c.foldsBinary(e.operator, e.left, e.right)
 	})
 }
 
