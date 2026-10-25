@@ -1348,10 +1348,10 @@ func (_add) exec(vm *vm) {
 
 	if isLeftString || isRightString {
 		if !isLeftString {
-			leftString = left.toString()
+			leftString = vm.r.toStringOf(left)
 		}
 		if !isRightString {
-			rightString = right.toString()
+			rightString = vm.r.toStringOf(right)
 		}
 		ret = vm.r.concatString(leftString, rightString)
 	} else {
@@ -1405,7 +1405,7 @@ func (_addChain) exec(vm *vm) {
 	}
 	rightString, ok := right.(String)
 	if !ok {
-		rightString = right.toString()
+		rightString = vm.r.toStringOf(right)
 	}
 	vm.stack[vm.sp-2] = vm.r.concatStringChained(left, rightString)
 	vm.sp--
@@ -1912,7 +1912,7 @@ type _toString struct{}
 
 func (_toString) exec(vm *vm) {
 	p := vm.sp - 1
-	vm.stack[p] = vm.stack[p].toString()
+	vm.stack[p] = vm.r.toStringOf(vm.stack[p])
 	vm.pc++
 }
 

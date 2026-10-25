@@ -255,7 +255,7 @@ func (r *Runtime) bigintproto_toString(call FunctionCall) Value {
 		}
 	}
 
-	return asciiString(x.Text(radixMV))
+	return r.bigString(x, radixMV)
 }
 
 func (r *Runtime) bigint_asIntN(call FunctionCall) Value {

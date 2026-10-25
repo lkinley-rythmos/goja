@@ -37,6 +37,9 @@ func toString(arg Value) String {
 
 func (r *Runtime) builtin_String(call FunctionCall) Value {
 	if len(call.Arguments) > 0 {
+		if b, ok := call.Arguments[0].(*valueBigInt); ok {
+			return r.toStringOf(b)
+		}
 		return toString(call.Arguments[0])
 	} else {
 		return stringEmpty
@@ -62,7 +65,11 @@ func (r *Runtime) _newString(s String, proto *Object) *Object {
 func (r *Runtime) builtin_newString(args []Value, proto *Object) *Object {
 	var s String
 	if len(args) > 0 {
-		s = toStringValue(args[0])
+		if b, ok := args[0].(*valueBigInt); ok {
+			s = r.toStringOf(b)
+		} else {
+			s = toStringValue(args[0])
+		}
 	} else {
 		s = stringEmpty
 	}
