@@ -109,6 +109,11 @@ type compiler struct {
 	evalVM *vm // VM used to evaluate constant expressions
 	ctxVM  *vm // VM in which an eval() code is compiled
 
+	// evalDepth counts the constant evaluations in progress (runConst):
+	// the code emitted for them is run and dropped, so the literal strings
+	// it loads, the results of the folds inside, are not interned.
+	evalDepth int
+
 	codeScratchpad []instruction
 
 	stringCache map[unistring.String]Value
@@ -471,6 +476,10 @@ func (c *compiler) popScope() {
 }
 
 func (c *compiler) emitLiteralString(s String) {
+	if c.evalDepth > 0 {
+		c.emit(loadVal{s})
+		return
+	}
 	key := s.string()
 	if c.stringCache == nil {
 		c.stringCache = make(map[unistring.String]Value)

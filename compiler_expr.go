@@ -161,6 +161,7 @@ type compiledSequenceExpr struct {
 
 type compiledUnaryExpr struct {
 	baseCompiledExpr
+	foldMemo
 	operand  compiledExpr
 	operator token.Token
 	postfix  bool
@@ -173,21 +174,25 @@ type compiledConditionalExpr struct {
 
 type compiledLogicalOr struct {
 	baseCompiledExpr
+	foldMemo
 	left, right compiledExpr
 }
 
 type compiledCoalesce struct {
 	baseCompiledExpr
+	foldMemo
 	left, right compiledExpr
 }
 
 type compiledLogicalAnd struct {
 	baseCompiledExpr
+	foldMemo
 	left, right compiledExpr
 }
 
 type compiledBinaryExpr struct {
 	baseCompiledExpr
+	foldMemo
 	left, right compiledExpr
 	operator    token.Token
 }
@@ -2548,12 +2553,31 @@ func (c *compiler) emitConst(expr compiledExpr, putOnStack bool) {
 	} else {
 		c.emitThrow(ex.val)
 	}
+	c.releaseConst(expr)
 }
 
+// evalConst returns the value of a constant expression, or the exception
+// evaluating it throws. An expression is evaluated once (see foldMemo).
 func (c *compiler) evalConst(expr compiledExpr) (Value, *Exception) {
 	if expr, ok := expr.(*compiledLiteral); ok {
 		return expr.val, nil
 	}
+	m := memoOf(expr)
+	if m != nil && m.evaluated {
+		return m.val, m.ex
+	}
+	v, ex := c.runConst(expr)
+	if m != nil {
+		m.evaluated, m.val, m.ex = true, v, ex
+	}
+	return v, ex
+}
+
+// runConst evaluates a constant expression on the compiler's own VM: its
+// code is emitted, run, and dropped.
+func (c *compiler) runConst(expr compiledExpr) (Value, *Exception) {
+	c.evalDepth++
+	defer func() { c.evalDepth-- }()
 	if c.evalVM == nil {
 		c.evalVM = New().vm
 	}
@@ -2587,7 +2611,7 @@ func (c *compiler) evalConst(expr compiledExpr) (Value, *Exception) {
 }
 
 func (e *compiledUnaryExpr) constant() bool {
-	return e.operand.constant()
+	return e.decide(e.operand.constant)
 }
 
 func (e *compiledUnaryExpr) emitGetter(putOnStack bool) {
@@ -2696,23 +2720,27 @@ func (c *compiler) compileConditionalExpression(v *ast.ConditionalExpression) co
 }
 
 func (e *compiledLogicalOr) constant() bool {
-	if e.left.constant() {
-		if v, ex := e.c.evalConst(e.left); ex == nil {
-			if v.ToBoolean() {
+	return e.decide(func() bool {
+		if e.left.constant() {
+			if v, ex := e.c.evalConst(e.left); ex == nil {
+				if v.ToBoolean() {
+					return true
+				}
+				return e.right.constant()
+			} else {
 				return true
 			}
-			return e.right.constant()
-		} else {
-			return true
 		}
-	}
 
-	return false
+		return false
+	})
 }
 
 func (e *compiledLogicalOr) emitGetter(putOnStack bool) {
 	if e.left.constant() {
-		if v, ex := e.c.evalConst(e.left); ex == nil {
+		v, ex := e.c.evalConst(e.left)
+		e.c.releaseConst(e.left)
+		if ex == nil {
 			if !v.ToBoolean() {
 				e.c.emitExpr(e.right, putOnStack)
 			} else {
@@ -2737,23 +2765,27 @@ func (e *compiledLogicalOr) emitGetter(putOnStack bool) {
 }
 
 func (e *compiledCoalesce) constant() bool {
-	if e.left.constant() {
-		if v, ex := e.c.evalConst(e.left); ex == nil {
-			if v != _null && v != _undefined {
+	return e.decide(func() bool {
+		if e.left.constant() {
+			if v, ex := e.c.evalConst(e.left); ex == nil {
+				if v != _null && v != _undefined {
+					return true
+				}
+				return e.right.constant()
+			} else {
 				return true
 			}
-			return e.right.constant()
-		} else {
-			return true
 		}
-	}
 
-	return false
+		return false
+	})
 }
 
 func (e *compiledCoalesce) emitGetter(putOnStack bool) {
 	if e.left.constant() {
-		if v, ex := e.c.evalConst(e.left); ex == nil {
+		v, ex := e.c.evalConst(e.left)
+		e.c.releaseConst(e.left)
+		if ex == nil {
 			if v == _undefined || v == _null {
 				e.c.emitExpr(e.right, putOnStack)
 			} else {
@@ -2778,25 +2810,29 @@ func (e *compiledCoalesce) emitGetter(putOnStack bool) {
 }
 
 func (e *compiledLogicalAnd) constant() bool {
-	if e.left.constant() {
-		if v, ex := e.c.evalConst(e.left); ex == nil {
-			if !v.ToBoolean() {
-				return true
+	return e.decide(func() bool {
+		if e.left.constant() {
+			if v, ex := e.c.evalConst(e.left); ex == nil {
+				if !v.ToBoolean() {
+					return true
+				} else {
+					return e.right.constant()
+				}
 			} else {
-				return e.right.constant()
+				return true
 			}
-		} else {
-			return true
 		}
-	}
 
-	return false
+		return false
+	})
 }
 
 func (e *compiledLogicalAnd) emitGetter(putOnStack bool) {
 	var j int
 	if e.left.constant() {
-		if v, ex := e.c.evalConst(e.left); ex == nil {
+		v, ex := e.c.evalConst(e.left)
+		e.c.releaseConst(e.left)
+		if ex == nil {
 			if !v.ToBoolean() {
 				e.c.emitLiteralValue(v)
 			} else {
@@ -2819,7 +2855,9 @@ func (e *compiledLogicalAnd) emitGetter(putOnStack bool) {
 }
 
 func (e *compiledBinaryExpr) constant() bool {
-	return e.left.constant() && e.right.constant()
+	return e.decide(func() bool {
+		return e.left.constant() && e.right.constant()
+	})
 }
 
 func (e *compiledBinaryExpr) emitGetter(putOnStack bool) {
