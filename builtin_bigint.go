@@ -322,27 +322,29 @@ func (r *Runtime) bigintproto_toString(call FunctionCall) Value {
 }
 
 func (r *Runtime) bigint_asIntN(call FunctionCall) Value {
-	if len(call.Arguments) < 2 {
-		panic(r.NewTypeError("Cannot convert undefined to a BigInt"))
-	}
-	bits := r.toIndex(call.Argument(0).ToNumber())
-	if bits < 0 {
-		panic(r.NewTypeError("Invalid value: not (convertible to) a safe integer"))
-	}
+	bits := r.bigIntBitsIndex(call.Argument(0))
 	bigint := toBigInt(call.Argument(1))
-	return (*valueBigInt)(r.bigAsIntN(int64(bits), (*big.Int)(bigint)))
+	return (*valueBigInt)(r.bigAsIntN(bits, (*big.Int)(bigint)))
 }
 
 func (r *Runtime) bigint_asUintN(call FunctionCall) Value {
-	if len(call.Arguments) < 2 {
-		panic(r.NewTypeError("Cannot convert undefined to a BigInt"))
-	}
-	bits := r.toIndex(call.Argument(0).ToNumber())
-	if bits < 0 {
-		panic(r.NewTypeError("Invalid value: not (convertible to) a safe integer"))
-	}
+	bits := r.bigIntBitsIndex(call.Argument(0))
 	bigint := toBigInt(call.Argument(1))
-	return (*valueBigInt)(r.bigAsUintN(int64(bits), (*big.Int)(bigint)))
+	return (*valueBigInt)(r.bigAsUintN(bits, (*big.Int)(bigint)))
+}
+
+// bigIntBitsIndex is ToIndex(v) for BigInt.asIntN and asUintN, with V8's
+// message for a value out of its range, before the BigInt is converted.
+func (r *Runtime) bigIntBitsIndex(v Value) int64 {
+	f := v.ToNumber().ToFloat()
+	if math.IsNaN(f) {
+		return 0
+	}
+	f = math.Trunc(f)
+	if f < 0 || f > maxInt-1 {
+		panic(r.newError(r.getRangeError(), "Invalid value: not (convertible to) a safe integer"))
+	}
+	return int64(f)
 }
 
 var bigintTemplate *objectTemplate
