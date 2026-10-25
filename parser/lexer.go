@@ -12,6 +12,7 @@ import (
 	"golang.org/x/text/unicode/rangetable"
 
 	"github.com/dop251/goja/file"
+	"github.com/dop251/goja/internal/bigdec"
 	"github.com/dop251/goja/token"
 	"github.com/dop251/goja/unistring"
 )
@@ -1012,9 +1013,21 @@ func parseNumberLiteral(literal string) (value interface{}, err error) {
 				goto error
 			}
 		}
+		digits := literal[:len(literal)-1]
+		if unsigned := strings.TrimLeft(digits, "+-"); len(digits)-len(unsigned) <= 1 && unsigned != "" && unsigned[0] != '0' {
+			// Decimal, which big.Int.SetString converts in quadratic time.
+			bigInt, ok := bigdec.Parse(strings.ReplaceAll(unsigned, "_", ""))
+			if !ok {
+				goto error
+			}
+			if digits[0] == '-' {
+				bigInt.Neg(bigInt)
+			}
+			return bigInt, nil
+		}
 		// Parse as big.Int
 		bigInt := new(big.Int)
-		_, ok := bigInt.SetString(literal[:len(literal)-1], 0)
+		_, ok := bigInt.SetString(digits, 0)
 		if !ok {
 			goto error
 		}

@@ -5,6 +5,7 @@ import (
 	"math"
 	"math/big"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -255,6 +256,52 @@ func TestBigIntExp(t *testing.T) {
 			if got := r.bigExpV8(x, n); got.Cmp(want) != 0 {
 				t.Fatalf("%v ** %d (V8's way): got a different power", x, n)
 			}
+		}
+	}
+}
+
+// big.Int.SetString converts decimal digits in time quadratic in their
+// number, so a long BigInt literal took the compile 5.4 s for 2M digits
+// (Node: 0.6 s), and BigInt() of a string of them as long.
+func TestBigIntDecimalConversionTime(t *testing.T) {
+	digits := strings.Repeat("7", 2000000)
+	// 7...7 mod 1000000007 for 2M sevens, computed with big.Int.
+	want := new(big.Int).Exp(big.NewInt(10), big.NewInt(2000000), nil)
+	want.Sub(want, big.NewInt(1)).Mul(want, big.NewInt(7)).Quo(want, big.NewInt(9))
+	want.Rem(want, big.NewInt(1000000007))
+
+	prg := compileWithin(t, "var x = "+digits+"n; x % 1000000007n", 3*time.Second, 256<<20)
+	v, err := New().RunProgram(prg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.(*valueBigInt) == nil || (*big.Int)(v.(*valueBigInt)).Cmp(want) != 0 {
+		t.Fatalf("literal: got %v, want %v", v, want)
+	}
+	// With separators.
+	sep := strings.Repeat("7_777", 400000)
+	compileWithin(t, "var x = "+sep+"n;", 3*time.Second, 256<<20)
+
+	r := New()
+	r.Set("s", digits)
+	start := time.Now()
+	v, err = r.RunString("BigInt(s) % 1000000007n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(start); took > 3*time.Second {
+		t.Fatalf("BigInt(s) took %v", took)
+	}
+	if (*big.Int)(v.(*valueBigInt)).Cmp(want) != 0 {
+		t.Fatalf("BigInt(s): got %v, want %v", v, want)
+	}
+	for _, src := range []string{`BigInt("-" + s) % 1000000007n === -(BigInt(s) % 1000000007n)`, `BigInt("+" + s) === BigInt(s)`, `BigInt("  " + s + "\n") === BigInt(s)`, `1n < s`, `BigInt(s) == s`} {
+		start := time.Now()
+		if v, err := r.RunString(src); err != nil || v != valueTrue {
+			t.Fatalf("%s: got %v, %v", src, v, err)
+		}
+		if took := time.Since(start); took > 4*time.Second {
+			t.Fatalf("%s took %v", src, took)
 		}
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/dop251/goja/internal/bigdec"
 	"github.com/dop251/goja/unistring"
 )
 
@@ -186,6 +187,9 @@ func stringToBigInt(str string) (*big.Int, error) {
 	if err != nil {
 		switch {
 		case isRangeErr(err):
+			if z, ok := parseLongDecimal(str); ok {
+				return z, nil
+			}
 			bigint.SetString(str, 0)
 		case err == strconv.ErrSyntax:
 		default:
@@ -195,6 +199,25 @@ func stringToBigInt(str string) (*big.Int, error) {
 		bigint.SetInt64(n)
 	}
 	return &bigint, nil
+}
+
+// parseLongDecimal converts str, which strconv.ParseInt takes in base 10,
+// in less than the quadratic time of big.Int.SetString, when it is decimal
+// digits after an optional sign, the first of them not 0: one with a
+// leading 0 is left to big.Int.SetString in base 0, as before.
+func parseLongDecimal(str string) (*big.Int, bool) {
+	digits := str
+	if digits != "" && (digits[0] == '+' || digits[0] == '-') {
+		digits = digits[1:]
+	}
+	if digits == "" || digits[0] == '0' {
+		return nil, false
+	}
+	z, ok := bigdec.Parse(digits)
+	if ok && str[0] == '-' {
+		z.Neg(z)
+	}
+	return z, ok
 }
 
 func (r *Runtime) thisBigIntValue(value Value) Value {
