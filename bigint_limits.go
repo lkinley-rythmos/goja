@@ -13,8 +13,9 @@ import (
 // it before it makes its result, from the lengths of its operands, by the
 // rule V8 uses for that operation, which for some is an upper bound (x + y
 // with x and y of the same sign is taken to need one digit more than the
-// longer of them). The digits of the result are then charged to the
-// allocation counter (SetAllocationLimit), also before the result is made.
+// longer of them). The result is then charged to the allocation counter
+// (SetAllocationLimit), its digits and its header (allocSizeBigInt), also
+// before it is made.
 const (
 	bigIntMaxLengthBits = 1 << 30
 	bigIntDigitBits     = 64
@@ -46,7 +47,13 @@ func (r *Runtime) chargeBigInt(n int) {
 	if n > bigIntMaxLength {
 		r.throwBigIntTooBig()
 	}
-	r.countAlloc(int64(n) * (bigIntDigitBits / 8))
+	r.chargeBigIntDigits(int64(n))
+}
+
+// chargeBigIntDigits charges a BigInt of n digits, as other values are
+// charged, however small: its digits and its header.
+func (r *Runtime) chargeBigIntDigits(n int64) {
+	r.countAlloc(n*(bigIntDigitBits/8) + allocSizeBigInt)
 }
 
 // chargeBigIntMagnitudeUp is chargeBigInt for a result whose magnitude is
@@ -316,10 +323,10 @@ func (r *Runtime) bigExp(x, y *big.Int) *big.Int {
 	// by the square before.
 	z := x
 	for i := bits.Len(uint(n)) - 2; i >= 0; i-- {
-		r.countAlloc(2 * int64(bigDigits(z)) * (bigIntDigitBits / 8))
+		r.chargeBigIntDigits(2 * int64(bigDigits(z)))
 		z = r.mulSigned(z, z)
 		if n>>i&1 != 0 {
-			r.countAlloc((int64(bigDigits(z)) + int64(bigDigits(x))) * (bigIntDigitBits / 8))
+			r.chargeBigIntDigits(int64(bigDigits(z)) + int64(bigDigits(x)))
 			z = r.mulSigned(z, x)
 		}
 	}

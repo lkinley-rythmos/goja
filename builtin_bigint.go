@@ -310,13 +310,19 @@ func createBigIntTemplate() *objectTemplate {
 
 func (r *Runtime) builtin_BigInt(call FunctionCall) Value {
 	if len(call.Arguments) > 0 {
+		var b *valueBigInt
 		switch v := call.Argument(0).(type) {
-		case *valueBigInt, valueInt, valueFloat, *Object:
-			return numberToBigInt(v)
+		case *valueBigInt:
+			return v
+		case valueInt, valueFloat, *Object:
+			b = numberToBigInt(v)
 		default:
-			return toBigInt(v)
+			b = toBigInt(v)
 		}
+		r.chargeBigIntDigits(int64(bigDigits((*big.Int)(b))))
+		return b
 	}
+	r.chargeBigIntDigits(0)
 	return (*valueBigInt)(big.NewInt(0))
 }
 

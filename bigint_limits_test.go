@@ -5,6 +5,7 @@ import (
 	"math"
 	"math/big"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -326,5 +327,53 @@ func TestBigIntMulIsLeaf(t *testing.T) {
 		if got := mulIsLeaf(c.m, c.n); got != c.want {
 			t.Errorf("mulIsLeaf(%d, %d) = %v, want %v", c.m, c.n, got, c.want)
 		}
+	}
+}
+
+// Every BigInt result is charged, however small, its digits and its
+// header: a script that keeps many small BigInts in an array stops at a
+// limit the same array of numbers stays under.
+func TestBigIntSmallResultsCharged(t *testing.T) {
+	const n = 100000
+	used := func(src string) int64 {
+		r := New()
+		r.SetAllocationLimit(0)
+		if _, err := r.RunString(src); err != nil {
+			t.Fatal(err)
+		}
+		return r.AllocatedBytes()
+	}
+	numbers := used("const a = []; for (let i = 0; i < " + strconv.Itoa(n) + "; i++) a.push(i * 3);")
+	bigints := used("const a = []; for (let i = 0n; i < " + strconv.Itoa(n) + "n; i++) a.push(i * 3n);")
+	// i++ and i * 3n each make a BigInt of one digit and a header.
+	if min := numbers + 2*n*(8+allocSizeBigInt); bigints < min {
+		t.Fatalf("BigInts charged %d bytes, numbers %d: want at least %d", bigints, numbers, min)
+	}
+	limit := (numbers + bigints) / 2
+	for _, c := range []struct {
+		src  string
+		trip bool
+	}{
+		{"const a = []; for (let i = 0; i < " + strconv.Itoa(n) + "; i++) a.push(i * 3);", false},
+		{"const a = []; for (let i = 0n; i < " + strconv.Itoa(n) + "n; i++) a.push(i * 3n);", true},
+	} {
+		r := New()
+		r.SetAllocationLimit(limit)
+		_, err := r.RunString(c.src)
+		if tripped := errors.Is(err, ErrAllocationLimitExceeded); tripped != c.trip || err != nil && !tripped {
+			t.Fatalf("%s under %d: got %v", c.src, limit, err)
+		}
+	}
+}
+
+// BigInt() is charged as the operators are.
+func TestBigIntConversionCharged(t *testing.T) {
+	r := New()
+	r.SetAllocationLimit(0)
+	if _, err := r.RunString(`for (let i = 0; i < 1000; i++) { BigInt(i); BigInt("12345"); BigInt(true); }`); err != nil {
+		t.Fatal(err)
+	}
+	if b := r.AllocatedBytes(); b < 3000*allocSizeBigInt+2999*8 {
+		t.Fatalf("charged %d bytes", b)
 	}
 }
