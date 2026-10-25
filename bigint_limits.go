@@ -316,10 +316,10 @@ func (r *Runtime) bigExp(x, y *big.Int) *big.Int {
 	// by the square before.
 	z := x
 	for i := bits.Len(uint(n)) - 2; i >= 0; i-- {
-		r.countAlloc(int64(2*bigDigits(z)) * (bigIntDigitBits / 8))
+		r.countAlloc(2 * int64(bigDigits(z)) * (bigIntDigitBits / 8))
 		z = r.mulSigned(z, z)
 		if n>>i&1 != 0 {
-			r.countAlloc(int64(bigDigits(z)+bigDigits(x)) * (bigIntDigitBits / 8))
+			r.countAlloc((int64(bigDigits(z)) + int64(bigDigits(x))) * (bigIntDigitBits / 8))
 			z = r.mulSigned(z, x)
 		}
 	}
@@ -500,7 +500,7 @@ func (r *Runtime) mulAbs(x, y []big.Word) *big.Int {
 		return new(big.Int)
 	}
 	square := len(x) == len(y) && &x[0] == &y[0]
-	if len(x)*len(y) <= bigMulLeafProduct {
+	if mulIsLeaf(len(x), len(y)) {
 		a := new(big.Int).SetBits(x)
 		if square {
 			return new(big.Int).Mul(a, a)
@@ -509,7 +509,7 @@ func (r *Runtime) mulAbs(x, y []big.Word) *big.Int {
 	}
 	r.vm.checkInterrupt()
 	h := (len(x) + 1) / 2
-	shift := uint(h * bits.UintSize)
+	shift := uint(h) * bits.UintSize
 	x0, x1 := natNorm(x[:h]), x[h:]
 	if len(y) <= h {
 		// x1 * y * B^h + x0 * y
@@ -536,6 +536,13 @@ func (r *Runtime) mulAbs(x, y []big.Word) *big.Int {
 	z1.Lsh(z1, shift)
 	z2.Add(z2, z1)
 	return z2.Add(z2, z0)
+}
+
+// mulIsLeaf reports whether operands of m and n words make a product
+// mulAbs leaves to big.Int.Mul: m * n <= bigMulLeafProduct, written so that
+// m * n cannot overflow an int on a 32-bit platform.
+func mulIsLeaf(m, n int) bool {
+	return m == 0 || n <= bigMulLeafProduct/m
 }
 
 // natNorm drops the high zero words of x.

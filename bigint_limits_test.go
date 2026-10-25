@@ -2,6 +2,7 @@ package goja
 
 import (
 	"errors"
+	"math"
 	"math/big"
 	"runtime"
 	"testing"
@@ -254,6 +255,29 @@ func TestBigIntExp(t *testing.T) {
 			if got := r.bigExpV8(x, n); got.Cmp(want) != 0 {
 				t.Fatalf("%v ** %d (V8's way): got a different power", x, n)
 			}
+		}
+	}
+}
+
+// mulIsLeaf compares without overflowing at any lengths.
+func TestBigIntMulIsLeaf(t *testing.T) {
+	for _, c := range []struct {
+		m, n int
+		want bool
+	}{
+		{0, math.MaxInt, true},
+		{1, bigMulLeafProduct, true},
+		{1, bigMulLeafProduct + 1, false},
+		{1 << 13, 1 << 13, true},
+		{1<<13 + 1, 1 << 13, false},
+		{1 << 16, 1 << 16, false}, // 2^32: 0 in a 32-bit int
+		{math.MaxInt32, math.MaxInt32, false},
+		{math.MaxInt, 2, false},
+		{math.MaxInt, math.MaxInt, false},
+		{2, math.MaxInt, false},
+	} {
+		if got := mulIsLeaf(c.m, c.n); got != c.want {
+			t.Errorf("mulIsLeaf(%d, %d) = %v, want %v", c.m, c.n, got, c.want)
 		}
 	}
 }
