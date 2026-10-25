@@ -94,6 +94,11 @@ type _RegExp_parser struct {
 	captureCount    int
 	captureNames    []string
 	namesSeen       map[string]bool
+
+	// The names of captureNames, for looking up a named reference's: a
+	// pattern may have many groups and many references.
+	captureNameSet map[string]bool
+
 	// The capturing groups being scanned, and how many have opened.
 	openNums       map[int]bool    // by number
 	openNames      map[string]bool // by name
@@ -828,6 +833,21 @@ func decodeGroupName(s string) (string, bool) {
 	return string(runes), true
 }
 
+// groupNameSourceEnd returns where the bytes from i that a group name's
+// source may have (ASCII identifier characters, the backslash and braces of
+// an escape, and any non-ASCII byte) end.
+func groupNameSourceEnd(s string, i int) int {
+	for ; i < len(s); i++ {
+		switch c := s[i]; {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
+			c == '_', c == '$', c == '\\', c == '{', c == '}', c >= 0x80:
+		default:
+			return i
+		}
+	}
+	return i
+}
+
 // scanCaptures counts the capturing groups of the whole pattern and collects
 // their names, for validating backreferences with the u flag.
 func (self *_RegExp_parser) scanCaptures() {
@@ -836,6 +856,10 @@ func (self *_RegExp_parser) scanCaptures() {
 	}
 	self.capturesScanned = true
 	inClass := false
+	// The next '>' at or after the last name's start (self.length for
+	// none), found once for all the names before it: each name looking for
+	// its own made (?<a(?<a(?<a...> quadratic (80,000 groups: 2 minutes).
+	closeAt := -1
 	for i := 0; i < self.length; i++ {
 		switch self.str[i] {
 		case '\\':
@@ -851,9 +875,25 @@ func (self *_RegExp_parser) scanCaptures() {
 			if i+1 < self.length && self.str[i+1] == '?' {
 				if i+3 < self.length && self.str[i+2] == '<' && self.str[i+3] != '=' && self.str[i+3] != '!' {
 					self.captureCount++
-					if end := strings.IndexByte(self.str[i+3:], '>'); end >= 0 {
-						name, _ := decodeGroupName(self.str[i+3 : i+3+end])
+					if closeAt < i+3 {
+						closeAt = self.length
+						if end := strings.IndexByte(self.str[i+3:], '>'); end >= 0 {
+							closeAt = i + 3 + end
+						}
+					}
+					if closeAt < self.length {
+						// A name with a character no name has is not
+						// decoded (decodeGroupName refuses it): so each
+						// name decoded ends before the next group opens.
+						name := ""
+						if groupNameSourceEnd(self.str, i+3) == closeAt {
+							name, _ = decodeGroupName(self.str[i+3 : closeAt])
+						}
 						self.captureNames = append(self.captureNames, name)
+						if self.captureNameSet == nil {
+							self.captureNameSet = make(map[string]bool)
+						}
+						self.captureNameSet[name] = true
 					}
 				}
 				break
@@ -1675,13 +1715,7 @@ func (self *_RegExp_parser) scanUnicodeNamedReference(inClass bool) {
 		return
 	}
 	self.scanCaptures()
-	found := false
-	for _, n := range self.captureNames {
-		if n == name {
-			found = true
-			break
-		}
-	}
+	found := self.captureNameSet[name]
 	if !found && self.deferred == "" {
 		self.deferred = "Invalid named capture referenced"
 	}
