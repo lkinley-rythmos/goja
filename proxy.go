@@ -627,7 +627,7 @@ func (p *proxyObject) proxyGetChecks(targetProp, trapResult Value, name fmt.Stri
 	if targetDesc, ok := targetProp.(*valueProperty); ok {
 		if !targetDesc.accessor {
 			if !targetDesc.writable && !targetDesc.configurable && !trapResult.SameAs(targetDesc.value) {
-				panic(p.val.runtime.NewTypeError("'get' on proxy: property '%s' is a read-only and non-configurable data property on the proxy target but the proxy did not return its actual value (expected '%s' but got '%s')", name.String(), nilSafe(targetDesc.value), ret))
+				panic(p.val.runtime.NewTypeError("'get' on proxy: property '%s' is a read-only and non-configurable data property on the proxy target but the proxy did not return its actual value (expected '%s' but got '%s')", name.String(), p.val.runtime.valueText(nilSafe(targetDesc.value)), ret))
 			}
 		} else {
 			if !targetDesc.configurable && targetDesc.getterFunc == nil && trapResult != _undefined {

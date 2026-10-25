@@ -187,7 +187,7 @@ type generatorObject struct {
 }
 
 func (f *nativeFuncObject) source() String {
-	return newStringValue(fmt.Sprintf("function %s() { [native code] }", nilSafe(f.getStr("name", nil)).toString()))
+	return newStringValue(fmt.Sprintf("function %s() { [native code] }", f.val.runtime.toStringValue(nilSafe(f.getStr("name", nil)))))
 }
 
 func (f *nativeFuncObject) export(*objectExportCtx) interface{} {

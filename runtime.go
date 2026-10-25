@@ -2831,7 +2831,7 @@ func (r *Runtime) toObject(v Value, args ...interface{}) *Object {
 		if v == nil {
 			s = "undefined"
 		} else {
-			s = v.String()
+			s = r.valueText(v)
 		}
 		panic(r.NewTypeError("Value is not an object: %s", s))
 	}

@@ -143,6 +143,15 @@ func (r *Runtime) toStringOf(v Value) String {
 	return v.toString()
 }
 
+// valueText is v.String(), as the messages and names that take a value's
+// text in Go take it, but a BigInt written by bigString.
+func (r *Runtime) valueText(v Value) string {
+	if b, ok := v.(*valueBigInt); ok {
+		return r.bigIntString(b).String()
+	}
+	return v.String()
+}
+
 // bigIntString is b in decimal by bigString.
 func (r *Runtime) bigIntString(b *valueBigInt) String {
 	return r.bigString((*big.Int)(b), 10)

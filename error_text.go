@@ -114,6 +114,8 @@ func dataPropertyString(o *Object, name unistring.String, def string) string {
 		return v.String()
 	case *Object, *Symbol:
 		return def
+	case *valueBigInt:
+		return o.runtime.bigIntString(v).String()
 	default:
 		return v.String()
 	}

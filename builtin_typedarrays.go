@@ -1484,9 +1484,9 @@ func (r *Runtime) _newTypedArrayFromArrayBuffer(ab *arrayBufferObject, args []Va
 }
 
 func checkTypedArrayMixBigInt(src, dst *Object) {
-	srcType := src.self.getStr("name", nil).String()
+	srcType := src.runtime.valueText(src.self.getStr("name", nil))
 	if strings.HasPrefix(srcType, "Big") {
-		if !strings.HasPrefix(dst.self.getStr("name", nil).String(), "Big") {
+		if !strings.HasPrefix(dst.runtime.valueText(dst.self.getStr("name", nil)), "Big") {
 			panic(errMixBigIntType)
 		}
 	}

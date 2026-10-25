@@ -77,7 +77,7 @@ func (r *Runtime) symbol_keyfor(call FunctionCall) Value {
 	arg := call.Argument(0)
 	sym, ok := arg.(*Symbol)
 	if !ok {
-		panic(r.NewTypeError("%s is not a symbol", arg.String()))
+		panic(r.NewTypeError("%s is not a symbol", r.valueText(arg)))
 	}
 	for key, s := range r.symbolRegistry {
 		if s == sym {

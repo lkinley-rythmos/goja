@@ -173,6 +173,68 @@ func TestBigIntStepsInterruptible(t *testing.T) {
 	}
 }
 
+// The messages and names that print a value write a BigInt through the
+// runtime too: Object.create(x) of a BigInt of 30M bits took big.Int.Text
+// seconds, uninterruptibly, and charged nothing.
+func TestBigIntTextInMessages(t *testing.T) {
+	skipHeavy(t)
+	const setup = "var x = (1n << 30000000n) - 1n;"
+	for _, src := range []string{
+		"Object.create(x)",
+		"Object.defineProperty({}, 'a', x)",
+		"Symbol.keyFor(x)",
+		"Object.defineProperty(parseInt, 'name', {value: x}); String(parseInt)",
+		"RegExp.prototype[Symbol.match].call({flags: x, exec() { return null }, lastIndex: 0}, 'a')",
+		"var tg = {}; Object.defineProperty(tg, 'a', {value: x}); new Proxy(tg, {get() { return 1 }}).a",
+	} {
+		t.Run(src, func(t *testing.T) {
+			r := New()
+			if _, err := r.RunString(setup); err != nil {
+				t.Fatal(err)
+			}
+			r.SetAllocationLimit(1 << 20)
+			start := time.Now()
+			_, err := runWithin(t, r, src, 5*time.Second)
+			if !errors.Is(err, ErrAllocationLimitExceeded) {
+				t.Fatalf("got %v, want the allocation limit", err)
+			}
+			if took := time.Since(start); took > slack(500*time.Millisecond) {
+				t.Fatalf("took %v", took)
+			}
+		})
+	}
+}
+
+// A native frame whose function has a BigInt name property is left
+// unnamed in a stack, as V8 names it after the function: the name was
+// written with big.Int.Text, seconds for a BigInt of 30M bits, also while
+// the allocation limit raised its error (which captures the stack).
+func TestBigIntFunctionNameInStack(t *testing.T) {
+	skipHeavy(t)
+	r := New()
+	if _, err := r.RunString("var x = (1n << 30000000n) - 1n; Object.defineProperty(Array.prototype.map, 'name', {value: x});"); err != nil {
+		t.Fatal(err)
+	}
+	r.SetAllocationLimit(1 << 20)
+	start := time.Now()
+	if _, err := runWithin(t, r, "[1].map(() => new Error().stack)", 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(start); took > slack(500*time.Millisecond) {
+		t.Fatalf("took %v", took)
+	}
+	// The limit raised in such a frame captures the stack without writing
+	// the name either.
+	start = time.Now()
+	_, err := runWithin(t, r, "[1].map(() => { var a = []; for (;;) a.push({}) })", 5*time.Second)
+	if !errors.Is(err, ErrAllocationLimitExceeded) {
+		t.Fatalf("got %v, want the allocation limit", err)
+	}
+	if took := time.Since(start); took > slack(2*time.Second) {
+		t.Fatalf("took %v", took)
+	}
+}
+
 // Reading a string as a BigInt is done a block at a time, with the
 // interrupt checked between them: its trimming (a UTF-8 copy of all of a
 // string that is not ASCII), its validation and the conversion of digits in

@@ -326,7 +326,7 @@ func (r *Runtime) newTemplatedFuncObject(tmpl *objectTemplate, obj *Object, f fu
 }
 
 func (f *templatedFuncObject) source() String {
-	return newStringValue(fmt.Sprintf("function %s() { [native code] }", nilSafe(f.getStr("name", nil)).toString()))
+	return newStringValue(fmt.Sprintf("function %s() { [native code] }", f.val.runtime.toStringValue(nilSafe(f.getStr("name", nil)))))
 }
 
 func (f *templatedFuncObject) export(*objectExportCtx) interface{} {

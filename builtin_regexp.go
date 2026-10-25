@@ -1058,7 +1058,7 @@ func (r *Runtime) getGlobalRegexpMatches(rxObj *Object, s String, fullUnicode bo
 
 func (r *Runtime) regexpproto_stdMatcherGeneric(rxObj *Object, s String) Value {
 	rx := rxObj.self
-	flags := nilSafe(rx.getStr("flags", nil)).String()
+	flags := r.valueText(nilSafe(rx.getStr("flags", nil)))
 	global := strings.ContainsRune(flags, 'g')
 	if global {
 		a := r.getGlobalRegexpMatches(rxObj, s, strings.ContainsRune(flags, 'u'))
@@ -1432,7 +1432,7 @@ RETURN:
 
 func (r *Runtime) regexpproto_stdReplacerGeneric(rxObj *Object, s, replaceStr String, rcall func(FunctionCall) Value) Value {
 	var results []Value
-	flags := nilSafe(rxObj.self.getStr("flags", nil)).String()
+	flags := r.valueText(nilSafe(rxObj.self.getStr("flags", nil)))
 	isGlobal := strings.ContainsRune(flags, 'g')
 	isUnicode := strings.ContainsRune(flags, 'u')
 	if isGlobal {

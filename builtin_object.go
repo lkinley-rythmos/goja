@@ -177,7 +177,7 @@ func (r *Runtime) toPropertyDescriptor(v Value) (ret PropertyDescriptor) {
 			r.typeErrorResult(true, "Invalid property descriptor. Cannot both specify accessors and a value or writable attribute")
 		}
 	} else {
-		r.typeErrorResult(true, "Property description must be an object: %s", v.String())
+		r.typeErrorResult(true, "Property description must be an object: %s", r.valueText(v))
 	}
 
 	return
@@ -207,7 +207,7 @@ func (r *Runtime) object_create(call FunctionCall) Value {
 		if o, ok := arg.(*Object); ok {
 			proto = o
 		} else {
-			r.typeErrorResult(true, "Object prototype may only be an Object or null: %s", arg.String())
+			r.typeErrorResult(true, "Object prototype may only be an Object or null: %s", r.valueText(arg))
 		}
 	}
 	o := r.newBaseObject(proto, classObject).val

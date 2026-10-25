@@ -743,7 +743,14 @@ func getFuncName(stack []Value, sb int) unistring.String {
 			if _, isProxy := f.self.(*proxyObject); isProxy {
 				return "proxy"
 			}
-			return nilSafe(f.self.getStr("name", nil)).string()
+			name := nilSafe(f.self.getStr("name", nil))
+			if _, ok := name.(*valueBigInt); ok {
+				// Not written: a stack is captured while the allocation
+				// limit or an interrupt is raised, and V8 names a frame
+				// after its function, not its name property.
+				return ""
+			}
+			return name.string()
 		}
 	}
 	return ""
