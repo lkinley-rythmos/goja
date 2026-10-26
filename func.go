@@ -152,6 +152,21 @@ type nativeFuncObject struct {
 	// proxied call, a callback) does, and a cycle of native functions calling
 	// each other never passes through the vm's loop.
 	goCall func(FunctionCall) Value
+
+	// intrName is the name the function was made with, which a stack
+	// frame shows when its name property is a BigInt, an object or not a
+	// data property (frameFuncName).
+	intrName unistring.String
+}
+
+// init is baseFuncObject.init, the name kept as the function's own.
+func (f *nativeFuncObject) init(name unistring.String, length Value) {
+	f.intrName = name
+	f.baseFuncObject.init(name, length)
+}
+
+func (f *nativeFuncObject) intrinsicName() unistring.String {
+	return f.intrName
 }
 
 type wrappedFuncObject struct {

@@ -743,14 +743,51 @@ func getFuncName(stack []Value, sb int) unistring.String {
 			if _, isProxy := f.self.(*proxyObject); isProxy {
 				return "proxy"
 			}
-			name := nilSafe(f.self.getStr("name", nil))
-			if _, ok := name.(*valueBigInt); ok {
-				// Not written: a stack is captured while the allocation
-				// limit or an interrupt is raised, and V8 names a frame
-				// after its function, not its name property.
-				return ""
+			return frameFuncName(f.self)
+		}
+	}
+	return ""
+}
+
+// frameFuncName is the name of a native function's frame: its own name
+// property, read without running any script, or the name the function
+// was made with (intrinsicFuncName) when that is not a data property that
+// can be written without one, as V8 names a frame after its function. A
+// stack is captured while the allocation limit or an interrupt is raised:
+// a getter, or an object's toString, that allocated or ran on raised it
+// again from inside the capture, until the goroutine's stack overflowed
+// (a fatal error, not a panic), and a BigInt name was written by the host
+// formatter, unbounded.
+func frameFuncName(o objectImpl) unistring.String {
+	var name Value
+	switch p := o.getOwnPropStr("name").(type) {
+	case *valueProperty:
+		if !p.accessor {
+			name = p.value
+		}
+	default:
+		name = p
+	}
+	switch name.(type) {
+	case nil, *valueBigInt, *Object:
+		return intrinsicFuncName(o)
+	}
+	return name.string()
+}
+
+// intrinsicFuncName is the name a native function was made with, whatever
+// its name property is now, or "" if it is not known.
+func intrinsicFuncName(o objectImpl) unistring.String {
+	switch f := o.(type) {
+	case interface{ intrinsicName() unistring.String }:
+		return f.intrinsicName()
+	case *templatedFuncObject:
+		if p := f.tmpl.props["name"]; p != nil {
+			if v, ok := p(f.val.runtime).(*valueProperty); ok {
+				if s, ok := v.value.(String); ok {
+					return s.string()
+				}
 			}
-			return name.string()
 		}
 	}
 	return ""

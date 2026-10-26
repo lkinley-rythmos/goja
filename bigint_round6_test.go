@@ -307,6 +307,42 @@ func TestBigIntTrimInterruptible(t *testing.T) {
 	}
 }
 
+// A native frame is named after the function when its name property is a
+// BigInt or an object, or is not a data property, as V8 names it: writing
+// a BigInt name was unbounded, and running an object's toString or a
+// getter while the allocation limit or an interrupt raised its error, which
+// captures the stack, raised it again until the goroutine's stack
+// overflowed (a fatal error).
+func TestBigIntFunctionNameIntrinsic(t *testing.T) {
+	r := New()
+	v, err := runWithin(t, r, `var stacks = [];
+	Object.defineProperty(Array.prototype.map, "name", {value: 123n});
+	stacks.push([1].map(() => new Error().stack)[0]);
+	Object.defineProperty(Array.prototype.filter, "name", {value: {toString() { throw new Error("ran") }}});
+	stacks.push([1].filter(() => { stacks.push(new Error().stack) }));
+	Object.defineProperty(Array.prototype.forEach, "name", {get() { throw new Error("ran") }});
+	[1].forEach(() => stacks.push(new Error().stack));
+	Object.defineProperty(BigInt, "name", {value: 5n});
+	BigInt({valueOf() { stacks.push(new Error().stack); return 1 }});
+	Object.defineProperty(Array.prototype.some, "name", {value: "renamed"});
+	[1].some(() => stacks.push(new Error().stack));
+	stacks.filter(s => typeof s === "string").map(s => s.split("\n")[2].trim()).join()`, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := v.String(), "at map (native),at filter (native),at forEach (native),at BigInt (native),at renamed (native)"; got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+	r = New()
+	if _, err := r.RunString(`var x = (1n << 30000000n) - 1n; Object.defineProperty(Array.prototype.map, "name", {value: {toString() { return x }}});`); err != nil {
+		t.Fatal(err)
+	}
+	r.SetAllocationLimit(1 << 20)
+	if _, err := runWithin(t, r, "[1].map(() => { var a = []; for (;;) a.push({}) })", 5*time.Second); !errors.Is(err, ErrAllocationLimitExceeded) {
+		t.Fatalf("got %v, want the allocation limit", err)
+	}
+}
+
 // Formatting a BigInt key a proxy's ownKeys gives in its TypeError goes
 // through the runtime, charged and interruptible: a key of 4M bits made a
 // message of 1.26 MB under a 1 MiB limit, charged 792 bytes, 320 ms after an
