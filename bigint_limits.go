@@ -52,9 +52,12 @@ func (r *Runtime) chargeBigInt(n int) {
 }
 
 // chargeBigIntDigits charges a BigInt of n digits, as other values are
-// charged, however small: its digits and its header.
+// charged, however small: its header, and its words as Go makes them,
+// with the word math/big may make more than it keeps and the 4 it makes
+// past them (nat.make), in their size class (a result of 509 words is
+// made in 4864 bytes, and was charged 4104).
 func (r *Runtime) chargeBigIntDigits(n int64) {
-	r.countAlloc(n*(bigIntDigitBits/8) + allocSizeBigInt)
+	r.countAlloc(allocSize(n*(bigIntDigitBits/8)+5*(bits.UintSize/8)) + allocSizeBigInt)
 }
 
 // chargeBigIntMagnitudeUp is chargeBigInt for a result whose magnitude is

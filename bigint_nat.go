@@ -16,9 +16,12 @@ import (
 // chargeWords charges a temporary of n words, made by a BigInt operation
 // whose result is shorter: the product and remainder of a division with a
 // short quotient, the copy of a negative operand of a bitwise operation.
-// It is called before the temporary is made.
+// It is called before the temporary is made, and charges what Go makes it
+// in: its size class or pages, with the 4 words math/big makes past what
+// it asks for (nat.make; the copy of a negative operand of 509 words of
+// x & -y is made in 4864 bytes, and was charged 4072).
 func (r *Runtime) chargeWords(n int) {
-	r.countAlloc(int64(n) * (bits.UintSize / 8))
+	r.countAlloc(allocSize(int64(n+4) * (bits.UintSize / 8)))
 }
 
 // math/big makes the scratch of its own products and divisions from a pool

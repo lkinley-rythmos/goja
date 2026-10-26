@@ -280,7 +280,7 @@ func (r *Runtime) bigIntSource(s String) (string, bool) {
 	// The copy is charged before it is made, as the + operator charges a
 	// string, and made at once: grown a block at a time, it took up to
 	// twice its length more.
-	r.countAlloc(int64(j - i))
+	r.countAlloc(allocSize(int64(j - i)))
 	var b strings.Builder
 	b.Grow(j - i)
 	for k := i; k < j; k++ {

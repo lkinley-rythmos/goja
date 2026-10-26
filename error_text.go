@@ -769,7 +769,7 @@ func (r *Runtime) joinText(parts ...String) String {
 		}
 	}
 	if ascii {
-		r.countAlloc(int64(n))
+		r.countAlloc(allocSize(int64(n)))
 		buf := make([]byte, 0, n)
 		for _, p := range parts {
 			s := p.(asciiString)
@@ -780,7 +780,7 @@ func (r *Runtime) joinText(parts ...String) String {
 		}
 		return asciiString(unsafe.String(unsafe.SliceData(buf), len(buf)))
 	}
-	r.countAlloc(2 * int64(n+1))
+	r.countAlloc(allocSize(2 * int64(n+1)))
 	buf := make([]uint16, 1, n+1)
 	buf[0] = unistring.BOM
 	for _, p := range parts {
@@ -830,7 +830,7 @@ func (r *Runtime) importedText(s *importedString) String {
 					n++
 				}
 			}
-			r.countAlloc(2 * int64(n+1))
+			r.countAlloc(allocSize(2 * int64(n+1)))
 			u := make([]uint16, 1, n+1)
 			u[0] = unistring.BOM
 			k = 0
@@ -964,8 +964,10 @@ const (
 // after an interrupt; a script function whose source is 2^24 such units
 // returned 159 ms after one).
 func (r *Runtime) sourceMessageParts(parts []String) []String {
-	// The scratch of the units, and the parts made of it.
-	r.countAlloc(4 * (sourceMessageMax + 2 + sourceMessageTail))
+	// The scratch of the units (grown once if a pair ends it), the tail's
+	// (grown a unit at a time from a string not scanned), and the parts
+	// made of them, each in its size class.
+	r.countAlloc(2*allocSize(4*(sourceMessageMax+2)) + 4*allocSize(4*(sourceMessageTail+8)))
 	head := make([]uint16, 0, sourceMessageMax+2)
 	for _, p := range parts {
 		head = appendLeadingUnits(head, p, sourceMessageMax+1-len(head))
@@ -1180,7 +1182,7 @@ func (r *Runtime) hostText(s String) string {
 			i += size
 		}
 	}
-	r.countAlloc(int64(n))
+	r.countAlloc(allocSize(int64(n)))
 	buf := make([]byte, 0, n)
 	for i := 0; i < len(units); {
 		r.vm.checkInterrupt()
