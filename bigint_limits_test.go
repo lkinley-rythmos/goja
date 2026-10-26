@@ -16,6 +16,8 @@ import (
 // the operands before the result is made. The values and errors are Node
 // v18.20.3's.
 func TestBigIntMaxSize(t *testing.T) {
+	// Its numbers grow the process by 1.3 GiB.
+	freeAfter(t)
 	const SCRIPT = `
 	function tooBig(f, what) {
 		assert.throws(RangeError, f, what);
