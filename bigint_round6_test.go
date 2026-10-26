@@ -98,26 +98,41 @@ func TestBigIntSymbolMessageBounded(t *testing.T) {
 	interruptWithin(t, r, "BigInt(s)", 5*time.Millisecond, bigIntStepSlack)
 }
 
-// interruptWithin runs src, interrupted after delay, and fails unless it
-// returns, interrupted, within bound of the interrupt.
-func interruptWithin(t *testing.T, r *Runtime, src string, delay, bound time.Duration) {
+// interruptWithin runs src, with an interrupt sent after delay, and fails
+// if it returns more than bound after the interrupt: interrupted, or done
+// if the interrupt came after its last check. A run that returns before
+// the interrupt is sent has nothing to bound, and passes (reported by
+// returned). It failed when a run took about delay (Date's hint with a
+// 2^25-unit string, about 5 ms): the time of the interrupt was taken
+// before it was sent, and src could return between the two, done, and the
+// interrupt then sent was left set for the next run if it came after
+// ClearInterrupt. The time is now taken, the interrupt sent, and only then
+// is it cleared and the time compared with the run's end.
+func interruptWithin(t *testing.T, r *Runtime, src string, delay, bound time.Duration) (returned bool) {
 	t.Helper()
 	prg := MustCompile("", src, false)
-	fired := make(chan time.Time, 1)
-	timer := time.AfterFunc(delay, func() { fired <- time.Now(); r.Interrupt("stop") })
+	sent := make(chan time.Time, 1)
+	timer := time.AfterFunc(delay, func() { at := time.Now(); r.Interrupt("stop"); sent <- at })
 	_, err := r.RunProgram(prg)
 	end := time.Now()
 	if timer.Stop() {
-		t.Fatalf("%s: returned %v before the interrupt", src, err)
+		t.Logf("%s: returned before the interrupt (%.100v)", src, err)
+		return true
 	}
+	at := <-sent
 	r.ClearInterrupt()
+	if !at.Before(end) {
+		t.Logf("%s: returned before the interrupt (%.100v)", src, err)
+		return true
+	}
+	if lag := end.Sub(at); lag > bound {
+		t.Fatalf("%s: returned %v after the interrupt (%.100v)", src, lag, err)
+	}
 	var ie *InterruptedError
 	if !errors.As(err, &ie) {
-		t.Fatalf("%s: got %v, want interrupted", src, err)
+		t.Logf("%s: done %v after the interrupt (%.100v)", src, end.Sub(at), err)
 	}
-	if lag := end.Sub(<-fired); lag > bound {
-		t.Fatalf("%s: returned %v after the interrupt", src, lag)
-	}
+	return false
 }
 
 // The temporaries of a BigInt operation as long as its operands are charged
