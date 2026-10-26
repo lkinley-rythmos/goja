@@ -25,6 +25,17 @@ func allocDuring(t *testing.T, r *Runtime, prg *Program, limit int64) (counted, 
 	return r.AllocatedBytes(), int64(after.TotalAlloc - before.TotalAlloc), err
 }
 
+// skipRaceAlloc skips a test that holds what an operation makes to what it
+// is charged: under the race detector, sync.Pool drops a quarter of what is
+// put back in it, so math/big makes its scratch again and again in one
+// operation (y * y made 948 KB, charged 787 KB, under it).
+func skipRaceAlloc(t *testing.T) {
+	t.Helper()
+	if raceDetectorEnabled {
+		t.Skip("math/big's pooled scratch is dropped at random under the race detector")
+	}
+}
+
 // mulTo makes big.Int.Mul's product in a destination and scratch that hold
 // other words before, along every way it splits a product: by blocks of a
 // long operand for a short one, and by Karatsuba's method, squares
@@ -86,6 +97,7 @@ func TestBigIntMulParts(t *testing.T) {
 // 575 KB made, 131 KB charged). Charged as made, x * 3n is refused under
 // a limit of its result's size and a little more.
 func TestBigIntMulTemporariesCharged(t *testing.T) {
+	skipRaceAlloc(t)
 	r := New()
 	if _, err := r.RunString("var x = (1n << 67108927n) - 12345n, y = (1n << 524351n) - 12345n;"); err != nil {
 		t.Fatal(err)
@@ -122,6 +134,7 @@ func TestBigIntMulTemporariesCharged(t *testing.T) {
 // a long string of digits read as a BigInt; the quotient of a long
 // remainder; math/big's own scratch; a carry out of a bitwise result.
 func TestBigIntPartsCharged(t *testing.T) {
+	skipRaceAlloc(t)
 	r := New()
 	if _, err := r.RunString(`var x = (1n << 1048576n) + 12345n, y = (1n << 524351n) - 12345n,
 		s = "7".repeat(300000), u = "\u3000" + "1".repeat(1 << 20) + "\u3000",
