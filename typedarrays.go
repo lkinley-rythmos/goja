@@ -78,6 +78,9 @@ type typedArrayObject struct {
 	length, offset int
 	elemSize       int
 	typedArray     typedArray
+	// bigInt is set for a BigInt64Array or a BigUint64Array, whose
+	// elements are read charged (elem).
+	bigInt bool
 }
 
 func (a ArrayBuffer) toValue(r *Runtime) Value {
@@ -733,7 +736,11 @@ func (a *typedArrayObject) _getIdx(idx int) Value {
 		if !a.viewedArrayBuf.ensureNotDetached(false) {
 			return nil
 		}
-		return a.elem(idx + a.offset)
+		// elem, written out: it does not inline.
+		if a.bigInt {
+			return a.bigElem(idx + a.offset)
+		}
+		return a.typedArray.get(idx + a.offset)
 	}
 	return nil
 }
@@ -831,8 +838,18 @@ func (a *typedArrayObject) elementValue(v Value) Value {
 }
 
 // elem is the element at idx (an index in the buffer), a BigInt one charged
-// to the allocation counter as the runtime's other new BigInts are.
+// to the allocation counter as the runtime's other new BigInts are (by
+// bigElem): the read of any other array costs one test of a field more than
+// typedArray.get.
 func (a *typedArrayObject) elem(idx int) Value {
+	if a.bigInt {
+		return a.bigElem(idx)
+	}
+	return a.typedArray.get(idx)
+}
+
+//go:noinline
+func (a *typedArrayObject) bigElem(idx int) Value {
 	v := a.typedArray.get(idx)
 	if b, ok := v.(*valueBigInt); ok {
 		a.val.runtime.chargeBigIntDigits(int64(bigDigits((*big.Int)(b))))
@@ -1053,6 +1070,10 @@ func (r *Runtime) _newTypedArrayObject(buf *arrayBufferObject, offset, length, e
 		elemSize:       elemSize,
 		defaultCtor:    defCtor,
 		typedArray:     arr,
+	}
+	switch arr.(type) {
+	case *bigInt64Array, *bigUint64Array:
+		a.bigInt = true
 	}
 	o.self = a
 	a.init()

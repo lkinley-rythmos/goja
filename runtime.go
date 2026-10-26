@@ -2890,10 +2890,13 @@ func createDataPropertyOrThrow(o *Object, p Value, v Value) {
 // would re-box the same string into a fresh interface value on every call.
 // toPropertyKey is ToPropertyKey: ToPrimitive with hint string for an
 // object, then a String or a *Symbol, with a BigInt written by bigString,
-// so that a script's property keys are interruptible and charged.
+// so that a script's property keys are interruptible and charged. An
+// integer, which the VM keeps as a key (its ToString is itself), is
+// returned in line too: the call out of line for it cost an indexed read
+// of a typed array 3% to 5%.
 func (r *Runtime) toPropertyKey(key Value) Value {
 	switch key.(type) {
-	case String, *Symbol:
+	case String, *Symbol, valueInt:
 		return key
 	}
 	return r.toPropertyKeyConverted(key)
