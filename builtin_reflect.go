@@ -101,7 +101,7 @@ func (r *Runtime) builtin_reflect_set(call FunctionCall) Value {
 	} else {
 		receiver = target
 	}
-	return r.toBoolean(target.set(call.Argument(1), call.Argument(2), receiver, false))
+	return r.toBoolean(target.set(r.toPropertyKey(call.Argument(1)), call.Argument(2), receiver, false))
 }
 
 func (r *Runtime) builtin_reflect_setPrototypeOf(call FunctionCall) Value {

@@ -5,7 +5,9 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf16"
 	"unicode/utf8"
+	"unsafe"
 
 	"github.com/dop251/goja/ast"
 	"github.com/dop251/goja/parser"
@@ -724,3 +726,129 @@ var (
 	syntaxErrorLocation = regexp.MustCompile(`(?s)^.*?Line \d+:\d+ `)
 	syntaxErrorCount    = regexp.MustCompile(` \(and \d+ more errors?\)$`)
 )
+
+// textBlock is how many code units joinText and importedText copy or read
+// between two interrupt checks (about 1 ms).
+const textBlock = 1 << 20
+
+// joinText is the concatenation of parts as a String, for a message that
+// holds a script's value: made a block of code units at a time, with the
+// interrupt checked between them, and charged before it is made, as the +
+// operator charges a string (a byte a unit, two past ASCII). A message that
+// holds a BigInt or a symbol's description, as long as a string can be, was
+// copied in one step through Go strings, and converted back to UTF-16 in
+// another, uncharged (and lost its unpaired surrogates on the way).
+func (r *Runtime) joinText(parts ...String) String {
+	n, ascii := 0, true
+	for i, p := range parts {
+		if is, ok := p.(*importedString); ok {
+			p = r.importedText(is)
+			parts[i] = p
+		}
+		a, u := devirtualizeString(p)
+		if u != nil {
+			n += len(u) - 1
+			ascii = false
+			parts[i] = u
+		} else {
+			n += len(a)
+			parts[i] = a
+		}
+		if n > maxStringLength {
+			r.throwInvalidStringLength()
+		}
+	}
+	if ascii {
+		r.countAlloc(int64(n))
+		buf := make([]byte, 0, n)
+		for _, p := range parts {
+			s := p.(asciiString)
+			for i := 0; i < len(s); i += textBlock {
+				r.vm.checkInterrupt()
+				buf = append(buf, s[i:min(i+textBlock, len(s))]...)
+			}
+		}
+		return asciiString(unsafe.String(unsafe.SliceData(buf), len(buf)))
+	}
+	r.countAlloc(2 * int64(n+1))
+	buf := make([]uint16, 1, n+1)
+	buf[0] = unistring.BOM
+	for _, p := range parts {
+		switch s := p.(type) {
+		case asciiString:
+			for i := 0; i < len(s); i += textBlock {
+				r.vm.checkInterrupt()
+				buf = appendASCIIUnits(buf, s[i:min(i+textBlock, len(s))])
+			}
+		case unicodeString:
+			for i := 1; i < len(s); i += textBlock {
+				r.vm.checkInterrupt()
+				buf = append(buf, s[i:min(i+textBlock, len(s))]...)
+			}
+		}
+	}
+	return unicodeString(buf)
+}
+
+// importedText is s, a string imported from Go, as an asciiString or a
+// unicodeString, read a block at a time with the interrupt checked between
+// them (importedString.scan reads all of it in one step), and kept in s as
+// scan keeps it.
+func (r *Runtime) importedText(s *importedString) String {
+	if !s.scanned {
+		str := s.s
+		ascii := true
+		for i := 0; i < len(str) && ascii; i += textBlock {
+			r.vm.checkInterrupt()
+			for _, c := range []byte(str[i:min(i+textBlock, len(str))]) {
+				if c >= utf8.RuneSelf {
+					ascii = false
+					break
+				}
+			}
+		}
+		if !ascii {
+			// The units, counted and then written as unistring.Scan
+			// writes them, from runes.
+			n, k := 0, 0
+			for _, c := range str {
+				if k++; k%textBlock == 0 {
+					r.vm.checkInterrupt()
+				}
+				n++
+				if c > 0xffff {
+					n++
+				}
+			}
+			r.countAlloc(2 * int64(n+1))
+			u := make([]uint16, 1, n+1)
+			u[0] = unistring.BOM
+			k = 0
+			for _, c := range str {
+				if k++; k%textBlock == 0 {
+					r.vm.checkInterrupt()
+				}
+				u = utf16.AppendRune(u, c)
+			}
+			s.u = u
+		}
+		s.scanned = true
+	}
+	if s.u != nil {
+		return s.u
+	}
+	return asciiString(s.s)
+}
+
+// valueMessage is the message prefix + v + suffix, v written as V8 writes
+// the values in its messages (noSideEffectsToString), a BigInt by the
+// runtime (bigString), and the message joined by joinText.
+func (r *Runtime) valueMessage(prefix string, v Value, suffix string) String {
+	var text String
+	if b, ok := v.(*valueBigInt); ok {
+		text = r.bigIntString(b)
+	} else {
+		text = newStringValue(r.noSideEffectsToString(v))
+	}
+	return r.joinText(asciiString(prefix), text, asciiString(suffix))
+}

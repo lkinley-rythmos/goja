@@ -612,7 +612,7 @@ func (a *arrayObject) exportToArrayOrSlice(dst reflect.Value, typ reflect.Type, 
 			}
 			err := r.toReflectValue(val, dst.Index(i), ctx)
 			if err != nil {
-				return fmt.Errorf("could not convert array element %v to %v at %d: %w", val, typ, i, err)
+				return fmt.Errorf("could not convert array element %v to %v at %d: %w", r.valueText(val), typ, i, err)
 			}
 		}
 		return nil

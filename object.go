@@ -1053,7 +1053,7 @@ func genericExportToMap(o *Object, dst reflect.Value, typ reflect.Type, ctx *obj
 			vv := reflect.New(elemTyp).Elem()
 			err = r.toReflectValue(ival, vv, ctx)
 			if err != nil {
-				return fmt.Errorf("could not convert map value %v to %v at key %s: %w", ival, typ, item.name.String(), err)
+				return fmt.Errorf("could not convert map value %v to %v at key %s: %w", r.valueText(ival), typ, item.name.String(), err)
 			}
 			dst.SetMapIndex(kv, vv)
 		} else {
@@ -1103,7 +1103,7 @@ func genericExportToArrayOrSlice(o *Object, dst reflect.Value, typ reflect.Type,
 			lp = o.self.getStr("length", nil)
 		}
 		if lp == nil {
-			return fmt.Errorf("cannot convert %v to %v: not an array or iterable", o, typ)
+			return fmt.Errorf("cannot convert %v to %v: not an array or iterable", r.valueText(o), typ)
 		}
 		l := toIntStrict(toLength(lp))
 		if dst.Len() != l {

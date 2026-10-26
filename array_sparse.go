@@ -499,7 +499,7 @@ func (a *sparseArrayObject) exportToArrayOrSlice(dst reflect.Value, typ reflect.
 			}
 			err := r.toReflectValue(val, dst.Index(idx), ctx)
 			if err != nil {
-				return fmt.Errorf("could not convert array element %v to %v at %d: %w", item.value, typ, idx, err)
+				return fmt.Errorf("could not convert array element %v to %v at %d: %w", r.valueText(item.value), typ, idx, err)
 			}
 		}
 		return nil

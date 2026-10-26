@@ -171,7 +171,7 @@ func (r *Runtime) dateproto_toPrimitive(call FunctionCall) Value {
 	if asciiString("number").StrictEquals(arg) {
 		return o.ordinaryToPrimitiveNumber()
 	}
-	panic(r.NewTypeError("Invalid hint: %s", arg))
+	panic(r.builtin_new(r.getTypeError(), []Value{r.valueMessage("Invalid hint: ", arg, "")}))
 }
 
 func (r *Runtime) dateproto_toDateString(call FunctionCall) Value {

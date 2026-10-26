@@ -10,6 +10,94 @@ import (
 	"time"
 )
 
+// The messages of BigInt(symbol), of an invalid key from a proxy's
+// ownKeys and of the other conversions that print a value are Node
+// v18.20.3's: a symbol's description whole, its code units as they are
+// (BigInt(Symbol("\ud800")) lost its unpaired surrogate to U+FFFD), a
+// BigInt key in decimal and any other as V8 writes it
+// (NoSideEffectsToString), and Reflect.set converts its key as a property
+// key.
+func TestBigIntMessagesAsNode(t *testing.T) {
+	compareLines(t, runLogged(t, bigIntMessagesScript), bigIntMessagesNode)
+}
+
+const bigIntMessagesScript = `const show = (f) => { try { const r = f(); return typeof r === 'bigint' ? r + 'n' : typeof r + ':' + String(r); } catch (e) { const m = e.message; return e.name + ': ' + (m.length > 60 ? m.length + ' ' + m.slice(0, 30) + '...' + m.slice(-20) : m) + ' [' + [m.charCodeAt(22), m.charCodeAt(23)].join() + ']'; } };
+const cases = [
+  ['Symbol()', () => BigInt(Symbol())],
+  ['Symbol("")', () => BigInt(Symbol(""))],
+  ['Symbol("s")', () => BigInt(Symbol("s"))],
+  ['Symbol(lone)', () => BigInt(Symbol("\ud800"))],
+  ['Symbol(lone mid)', () => BigInt(Symbol("ab\udc00c"))],
+  ['Symbol(pair)', () => BigInt(Symbol("\u{1F9EA}x"))],
+  ['Symbol(2000)', () => BigInt(Symbol("y".repeat(2000)))],
+  ['Symbol(unicode 2000)', () => BigInt(Symbol("\u3000".repeat(2000)))],
+  ['Object(Symbol)', () => BigInt(Object(Symbol("o")))],
+  ['asIntN Symbol', () => BigInt.asIntN(8, Symbol("a"))],
+  ['ta Symbol', () => { const a = new BigInt64Array(1); a[0] = Symbol("t"); }],
+  ['ownKeys 1n', () => Reflect.ownKeys(new Proxy({}, {ownKeys() { return [12345678901234567890n] }}))],
+  ['ownKeys -5n', () => Reflect.ownKeys(new Proxy({}, {ownKeys() { return [-5n] }}))],
+  ['ownKeys 1.5', () => Reflect.ownKeys(new Proxy({}, {ownKeys() { return [1.5] }}))],
+  ['ownKeys undefined', () => Reflect.ownKeys(new Proxy({}, {ownKeys() { return [undefined] }}))],
+  ['ownKeys null', () => Reflect.ownKeys(new Proxy({}, {ownKeys() { return [null] }}))],
+  ['ownKeys true', () => Reflect.ownKeys(new Proxy({}, {ownKeys() { return [true] }}))],
+  ['ownKeys {}', () => Reflect.ownKeys(new Proxy({}, {ownKeys() { return [{}] }}))],
+  ['ownKeys toString', () => Reflect.ownKeys(new Proxy({}, {ownKeys() { return [{toString() { return "zz" }}] }}))],
+  ['ownKeys keys', () => Object.keys(new Proxy({}, {ownKeys() { return [7n] }}))],
+  ['hint 1n', () => new Date(0)[Symbol.toPrimitive](12n)],
+  ['hint 5', () => new Date(0)[Symbol.toPrimitive](5)],
+  ['hint {}', () => new Date(0)[Symbol.toPrimitive]({})],
+  ['setPrototypeOf 12n', () => Object.setPrototypeOf({}, 12n)],
+  ['Reflect.set 12n', () => { const o = {}; return Reflect.set(o, 12n, 1) + ' ' + Object.keys(o) + ' ' + o[12]; }],
+  ['Reflect.set obj key', () => { const o = {}; Reflect.set(o, {toString() { return "k" }}, 1); return Object.keys(o).join(); }],
+];
+for (const [k, f] of cases) console.log(k, '=>', show(f));
+`
+
+const bigIntMessagesNode = "Symbol() => TypeError: Cannot convert Symbol() to a BigInt [41,32]\nSymbol(\"\") => TypeError: Cannot convert Symbol() to a BigInt [41,32]\nSymbol(\"s\") => TypeError: Cannot convert Symbol(s) to a BigInt [115,41]\nSymbol(lone) => TypeError: Cannot convert Symbol(\ufffd) to a BigInt [55296,41]\nSymbol(lone mid) => TypeError: Cannot convert Symbol(ab\ufffdc) to a BigInt [97,98]\nSymbol(pair) => TypeError: Cannot convert Symbol(\U0001f9eax) to a BigInt [55358,56810]\nSymbol(2000) => TypeError: 2035 Cannot convert Symbol(yyyyyyyy...yyyyyyy) to a BigInt [121,121]\nSymbol(unicode 2000) => TypeError: 2035 Cannot convert Symbol(\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000...\u3000\u3000\u3000\u3000\u3000\u3000\u3000) to a BigInt [12288,12288]\nObject(Symbol) => TypeError: Cannot convert Symbol(o) to a BigInt [111,41]\nasIntN Symbol => TypeError: Cannot convert Symbol(a) to a BigInt [97,41]\nta Symbol => TypeError: Cannot convert Symbol(t) to a BigInt [116,41]\nownKeys 1n => TypeError: 12345678901234567890 is not a valid property name [115,32]\nownKeys -5n => TypeError: -5 is not a valid property name [101,114]\nownKeys 1.5 => TypeError: 1.5 is not a valid property name [112,101]\nownKeys undefined => TypeError: undefined is not a valid property name [105,100]\nownKeys null => TypeError: null is not a valid property name [111,112]\nownKeys true => TypeError: true is not a valid property name [111,112]\nownKeys {} => TypeError: #<Object> is not a valid property name [105,100]\nownKeys toString => TypeError: [object Object] is not a valid property name [32,97]\nownKeys keys => TypeError: 7 is not a valid property name [114,116]\nhint 1n => TypeError: Invalid hint: 12 [NaN,NaN]\nhint 5 => TypeError: Invalid hint: 5 [NaN,NaN]\nhint {} => TypeError: Invalid hint: #<Object> [62,NaN]\nsetPrototypeOf 12n => TypeError: Object prototype may only be an Object or null: 12 [110,108]\nReflect.set 12n => string:true 12 1\nReflect.set obj key => string:k"
+
+// A symbol's description is put in BigInt(symbol)'s message as a String,
+// charged before it is made and a block at a time, the interrupt checked
+// between them: a description of 2^27 characters made a message of 134 MB
+// in 519 ms after an interrupt, charged 256 bytes. A description imported
+// from Go is read a block at a time too.
+func TestBigIntSymbolMessageBounded(t *testing.T) {
+	r := New()
+	r.Set("imported", strings.Repeat("\u3000x", 1<<20))
+	if _, err := r.RunString(`var s = Symbol("x".repeat(1 << 22)), si = Symbol(imported);`); err != nil {
+		t.Fatal(err)
+	}
+	for _, src := range []string{"BigInt(s)", "BigInt(si)"} {
+		r.SetAllocationLimit(1 << 20)
+		if _, err := r.RunString(src); !errors.Is(err, ErrAllocationLimitExceeded) {
+			t.Fatalf("%s: got %v, want the allocation limit", src, err)
+		}
+	}
+	r.SetAllocationLimit(0)
+	v, err := r.RunString(`var m; try { BigInt(si) } catch (e) { m = e.message } [m.length, m.charCodeAt(22), m.charCodeAt(23), m.slice(-14)].join()`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := v.String(), "2097187,12288,120,x) to a BigInt"; got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+
+	skipHeavy(t)
+	r = New()
+	if _, err := r.RunString(`var s = Symbol("x".repeat(1 << 27));`); err != nil {
+		t.Fatal(err)
+	}
+	r.SetAllocationLimit(1 << 20)
+	start := time.Now()
+	if _, err := r.RunString("BigInt(s)"); !errors.Is(err, ErrAllocationLimitExceeded) {
+		t.Fatalf("got %v, want the allocation limit", err)
+	}
+	if took := time.Since(start); took > slack(50*time.Millisecond) {
+		t.Fatalf("took %v", took)
+	}
+	r.SetAllocationLimit(0)
+	interruptWithin(t, r, "BigInt(s)", 5*time.Millisecond, bigIntStepSlack)
+}
+
 // interruptWithin runs src, interrupted after delay, and fails unless it
 // returns, interrupted, within bound of the interrupt.
 func interruptWithin(t *testing.T, r *Runtime, src string, delay, bound time.Duration) {
@@ -217,6 +305,37 @@ func TestBigIntTrimInterruptible(t *testing.T) {
 		runtime.GC()
 		interruptWithin(t, r, src, 5*time.Millisecond, slack(20*time.Millisecond))
 	}
+}
+
+// Formatting a BigInt key a proxy's ownKeys gives in its TypeError goes
+// through the runtime, charged and interruptible: a key of 4M bits made a
+// message of 1.26 MB under a 1 MiB limit, charged 792 bytes, 320 ms after an
+// interrupt. So does an object whose toString gives a BigInt, written in a
+// message.
+func TestBigIntOwnKeysMessageBounded(t *testing.T) {
+	const setup = "var x = 1n << 4194304n, o = {toString() { return x }};"
+	for _, src := range []string{
+		"Reflect.ownKeys(new Proxy({}, {ownKeys() { return [x] } }))",
+		"Object.keys(new Proxy({}, {ownKeys() { return [x] } }))",
+		"new Date()[Symbol.toPrimitive](x)",
+		"Object.setPrototypeOf({}, x)",
+		"[{toLocaleString: 1, toString() { return x }}].toLocaleString()",
+		"Number.prototype.valueOf.call(x)",
+	} {
+		r := New()
+		if _, err := r.RunString(setup); err != nil {
+			t.Fatal(err)
+		}
+		r.SetAllocationLimit(1 << 20)
+		if _, err := runWithin(t, r, src, 5*time.Second); !errors.Is(err, ErrAllocationLimitExceeded) {
+			t.Fatalf("%s: got %v, want the allocation limit", src, err)
+		}
+	}
+	r := New()
+	if _, err := r.RunString("var x = (1n << 30000000n) - 1n;"); err != nil {
+		t.Fatal(err)
+	}
+	interruptWithin(t, r, "Reflect.ownKeys(new Proxy({}, {ownKeys() { return [x] } }))", 5*time.Millisecond, bigIntStepSlack)
 }
 
 const bigIntTrimScript = `const show = (f) => { try { const r = f(); return typeof r === 'bigint' ? r + 'n' : typeof r + ':' + String(r); } catch (e) { const m = e.message; return e.name + ': ' + m.length + ' ' + [m.charCodeAt(15), m.charCodeAt(16), m.charCodeAt(m.length - 13)].join(); } };

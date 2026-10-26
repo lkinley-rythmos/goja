@@ -762,7 +762,11 @@ func (o *Object) ToString() Value {
 }
 
 func (o *Object) String() string {
-	return o.toPrimitiveString().String()
+	p := o.toPrimitiveString()
+	if b, ok := p.(*valueBigInt); ok {
+		return o.runtime.bigIntString(b).String()
+	}
+	return p.String()
 }
 
 func (o *Object) ToFloat() float64 {

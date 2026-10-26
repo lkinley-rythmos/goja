@@ -24,7 +24,7 @@ func (r *Runtime) toNumber(v Value) Value {
 			return _positiveZero
 		}
 	}
-	panic(r.NewTypeError("Value is not a number: %s", v))
+	panic(r.NewTypeError("Value is not a number: %s", r.valueText(v)))
 }
 
 func (r *Runtime) numberproto_valueOf(call FunctionCall) Value {

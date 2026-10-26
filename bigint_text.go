@@ -146,8 +146,12 @@ func (r *Runtime) toStringOf(v Value) String {
 // valueText is v.String(), as the messages and names that take a value's
 // text in Go take it, but a BigInt written by bigString.
 func (r *Runtime) valueText(v Value) string {
-	if b, ok := v.(*valueBigInt); ok {
-		return r.bigIntString(b).String()
+	switch v := v.(type) {
+	case *valueBigInt:
+		return r.bigIntString(v).String()
+	case nil:
+		// As fmt writes a nil Value.
+		return "<nil>"
 	}
 	return v.String()
 }

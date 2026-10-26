@@ -164,7 +164,7 @@ func (r *Runtime) toBigInt(value Value) *valueBigInt {
 	case valueBool:
 		return r.newBigInt(big.NewInt(prim.ToInteger()))
 	case *Symbol:
-		panic(typeError(fmt.Sprintf("Cannot convert %s to a BigInt", prim.descriptiveString())))
+		panic(r.symbolToBigIntError(prim))
 	case *Object:
 		return r.toBigInt(prim.toPrimitiveNumber())
 	default:
@@ -428,6 +428,19 @@ func allDigits(s string, base int, check func()) bool {
 		}
 	}
 	return true
+}
+
+// symbolToBigIntError is the TypeError for BigInt(sym), whose message has
+// all of sym's description, which may be as long as a string can be: made
+// as a String by joinText, so that it is charged, interruptible, and keeps
+// the description's code units as they are.
+func (r *Runtime) symbolToBigIntError(sym *Symbol) *Object {
+	desc := sym.desc
+	if desc == nil {
+		desc = stringEmpty
+	}
+	msg := r.joinText(asciiString("Cannot convert Symbol("), desc, asciiString(") to a BigInt"))
+	return r.builtin_new(r.getTypeError(), []Value{msg})
 }
 
 // bigIntConversionError is the SyntaxError for a string that is not a

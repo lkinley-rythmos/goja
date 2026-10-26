@@ -2320,7 +2320,7 @@ func (r *Runtime) toReflectValue(v Value, dst reflect.Value, ctx *objectExportCt
 
 	switch kind {
 	case reflect.String:
-		dst.Set(reflect.ValueOf(v.String()).Convert(typ))
+		dst.Set(reflect.ValueOf(r.valueText(v)).Convert(typ))
 		return nil
 	case reflect.Bool:
 		dst.Set(reflect.ValueOf(v.ToBoolean()).Convert(typ))
@@ -2403,7 +2403,7 @@ func (r *Runtime) toReflectValue(v Value, dst reflect.Value, ctx *objectExportCt
 					if v != nil {
 						err := r.toReflectValue(v, s.Field(i), ctx)
 						if err != nil {
-							return fmt.Errorf("could not convert struct value %v to %v for field %s: %w", v, field.Type, field.Name, err)
+							return fmt.Errorf("could not convert struct value %v to %v for field %s: %w", r.valueText(v), field.Type, field.Name, err)
 						}
 					}
 				}
@@ -2428,7 +2428,7 @@ func (r *Runtime) toReflectValue(v Value, dst reflect.Value, ctx *objectExportCt
 		return r.toReflectValue(v, dst.Elem(), ctx)
 	}
 
-	return fmt.Errorf("could not convert %v to %v", v, typ)
+	return fmt.Errorf("could not convert %v to %v", r.valueText(v), typ)
 }
 
 func (r *Runtime) wrapJSFunc(fn Callable, typ reflect.Type) func(args []reflect.Value) (results []reflect.Value) {
