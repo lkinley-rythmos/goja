@@ -12,6 +12,7 @@ import (
 // allocation limit with the limit's interrupt.
 
 func TestStringResults_PastMaxLengthThrowRangeError(t *testing.T) {
+	skipHeavy(t)
 	const script = `
 	var s = "a".repeat(2 ** 28); // 268M units, half the maximum
 	var cases = {
@@ -55,6 +56,7 @@ func TestStringResults_AtMaxLength(t *testing.T) {
 // the limit: the call must be refused with the limit's error before the
 // result is allocated.
 func TestStringResults_RefusedByAllocationLimit(t *testing.T) {
+	skipHeavy(t)
 	const limit = 16 << 20
 	const resultUnits = 50000000
 	for _, tc := range []struct{ name, setup, call string }{
@@ -125,6 +127,7 @@ func TestStringResults_StillCorrect(t *testing.T) {
 }
 
 func TestStringResults_FromCharCodeRefusedByAllocationLimit(t *testing.T) {
+	skipHeavy(t)
 	// Spreading the arguments already copies them onto the vm's stack, so
 	// only the refusal is checked here, not the memory.
 	vm := New()
@@ -141,6 +144,7 @@ func TestStringResults_FromCharCodeRefusedByAllocationLimit(t *testing.T) {
 }
 
 func TestGlobalMatch_RefusedByAllocationLimit(t *testing.T) {
+	skipHeavy(t)
 	// A global match over 10 MB has 10M matches, about 800 MB of results
 	// with Go's regexp. They must be charged as they are collected, so that
 	// the limit refuses the match long before that.

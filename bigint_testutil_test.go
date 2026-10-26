@@ -16,7 +16,9 @@ func slack(d time.Duration) time.Duration {
 
 // skipHeavy skips a test that makes values of hundreds of megabytes, with
 // -short and under the race detector (whose shadow memory would take the
-// run past a 6 GiB cap).
+// run past a 6 GiB cap: the strings of 2^28 units and more of the string
+// and global-match limit tests took a capped go test -race -short ./... to
+// 5.0 GiB, and its root package to 591 s of go test's 600).
 func skipHeavy(t *testing.T) {
 	t.Helper()
 	if testing.Short() || raceDetectorEnabled {

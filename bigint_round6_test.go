@@ -214,6 +214,10 @@ func TestBigIntShortQuotientInterruptible(t *testing.T) {
 // the blocks' boundaries, and the products and divisions made from them
 // too.
 func TestBigIntNatSteps(t *testing.T) {
+	if raceDetectorEnabled {
+		// Operands of 2^20 words: 0.5 s, 4.6 s under the race detector.
+		t.Skip("slow under the race detector")
+	}
 	r := New()
 	long := bigBlockWords + 3
 	x := testBigRand(long, 11, 1)
