@@ -919,12 +919,12 @@ func (r *Runtime) objectMessageParts(o *Object) []String {
 		name, _ := dataProperty(o, "name").(String)
 		msg, _ := dataProperty(o, "message").(String)
 		switch {
-		case name == nil || name.Length() == 0:
+		case name == nil || emptyText(name):
 			if msg == nil {
 				return []String{stringEmpty}
 			}
 			return []String{msg}
-		case msg == nil || msg.Length() == 0:
+		case msg == nil || emptyText(msg):
 			return []String{name}
 		}
 		return []String{name, asciiString(": "), msg}
@@ -932,7 +932,7 @@ func (r *Runtime) objectMessageParts(o *Object) []String {
 	if toString != nil && toString == r.objectProtoToString() {
 		if ctor, ok := dataProperty(o, "constructor").(*Object); ok {
 			if _, ok := ctor.self.assertCallable(); ok {
-				if name, ok := dataProperty(ctor, "name").(String); ok && name.Length() > 0 {
+				if name, ok := dataProperty(ctor, "name").(String); ok && !emptyText(name) {
 					return []String{asciiString("#<"), name, asciiString(">")}
 				}
 			}
@@ -1062,13 +1062,26 @@ func insideRune(s string, p int) bool {
 	return false
 }
 
-// errorProtoToString is Error.prototype.toString as the runtime created
-// it.
-func (r *Runtime) errorProtoToString() *Object {
-	if f, ok := dataProperty(r.getErrorPrototype(), "toString").(*Object); ok {
-		return f
+// emptyText reports whether s has no code units, without reading a string
+// imported from Go (whose Length scans all of it, uncharged and with no
+// interrupt check: an error's message of 2^22 units of U+3000 made 8.4 MB
+// under a 1 MiB limit before its message was charged, and one of 2^24
+// returned up to 338 ms after an interrupt). joinText reads what it keeps
+// (importedText).
+func emptyText(s String) bool {
+	if is, ok := s.(*importedString); ok {
+		return is.s == ""
 	}
-	return nil
+	return s.Length() == 0
+}
+
+// errorProtoToString is Error.prototype.toString as the runtime created
+// it, whatever the property holds now (V8 compares with its intrinsic,
+// error_to_string: a replacement made any object that took it an error,
+// and the function it replaced made none).
+func (r *Runtime) errorProtoToString() *Object {
+	r.getErrorPrototype()
+	return r.global.errorProtoToString
 }
 
 // dataPropertySym is dataProperty for a symbol key.

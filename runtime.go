@@ -137,6 +137,10 @@ type global struct {
 	regExpStringIterProtoNext *Object
 
 	ErrorPrototype *Object
+	// errorProtoToString is the Error.prototype.toString the runtime made
+	// (V8's error_to_string), which the messages that hold a value compare
+	// an object's toString with.
+	errorProtoToString *Object
 
 	Eval *Object
 

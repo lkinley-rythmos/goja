@@ -236,7 +236,8 @@ func (r *Runtime) getErrorPrototype() *Object {
 		o := ret.self
 		o._putProp("message", stringEmpty, true, false, true)
 		o._putProp("name", stringError, true, false, true)
-		o._putProp("toString", r.newNativeFunc(r.error_toString, "toString", 0), true, false, true)
+		r.global.errorProtoToString = r.newNativeFunc(r.error_toString, "toString", 0)
+		o._putProp("toString", r.global.errorProtoToString, true, false, true)
 		o._putProp("constructor", r.getError(), true, false, true)
 	}
 	return ret

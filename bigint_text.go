@@ -30,6 +30,9 @@ func (r *Runtime) bigText(x *big.Int, radix int, n int64) string {
 		r.chargeTextLeaf(len(x.Bits()), radix)
 		return x.Text(radix)
 	}
+	// The caller charges n; Go makes the buffer in a whole size class, or
+	// whole pages.
+	r.countAlloc(allocRounded(n) - n)
 	var sb strings.Builder
 	sb.Grow(int(n))
 	if radix&(radix-1) == 0 {
@@ -55,15 +58,37 @@ func (r *Runtime) bigText(x *big.Int, radix int, n int64) string {
 }
 
 // chargeTextLeaf charges what big.Int.Text makes for a number of n words
-// in radix: the text, as bytes and as a string, a copy of the number it
-// divides, and for a radix other than 10 the powers it divides by.
+// in radix, which was measured (go1.25, every radix 2 to 36, 1 to 2048
+// words, math/big's pooled scratch empty and full) and is charged with a
+// margin: the text, as bytes and as a string, each up to an eighth more in
+// its size class; in a radix that is a power of two nothing else, and in
+// any other up to 8 words nothing more than 152 bytes, but past 8 words
+// the copy it divides, the powers of the radix it divides by and the
+// quotients and remainders of its divisions, up to 28.2 words a word
+// (1500 words in radix 33 with the pool empty, as a collection leaves it;
+// 13 with it full). It charged 3 words a word, and nothing below 64
+// words: twenty x.toString(36) of 2048 words made 4.5 MB and were charged
+// 2.5 MB.
 func (r *Runtime) chargeTextLeaf(n, radix int) {
-	if n < 64 {
-		// Less than 4 KB.
-		return
-	}
 	text := int64(n)*bits.UintSize*1000/int64(bigLog2Milli(radix)) + 2
-	r.countAlloc(2*text + 3*int64(n)*(bits.UintSize/8))
+	switch {
+	case radix&(radix-1) == 0:
+		r.countAlloc(2*text + text/2 + 64)
+	case n <= 8:
+		r.countAlloc(2*text + text/2 + 64 + 16*int64(n))
+	default:
+		r.countAlloc(2*text + text/2 + 32*int64(n)*(bits.UintSize/8) + 1024)
+	}
+}
+
+// allocRounded is at least what Go takes to make n bytes: up to 32 KiB a
+// size class, at most an eighth larger than n, and past it whole 8 KiB
+// pages.
+func allocRounded(n int64) int64 {
+	if n <= 32<<10 {
+		return n + n/8 + 16
+	}
+	return (n + 8<<10 - 1) &^ (8<<10 - 1)
 }
 
 // writeZeros writes n zeros.
@@ -94,8 +119,10 @@ func (r *Runtime) bigTextPow2(sb *strings.Builder, x *big.Int, radix int) {
 	for i := top; i >= 0; i-- {
 		r.vm.checkInterrupt()
 		b := natNorm(w[i*block : min((i+1)*block, len(w))])
-		// The digits as bytes and as a string.
-		r.countAlloc(2 * int64(len(b)*bits.UintSize/perDigit+1))
+		// The digits as bytes and as a string, each in whole pages (a
+		// number of 2049 words in hex made 24 KB a call more than it was
+		// charged).
+		r.countAlloc(2 * allocRounded(int64(len(b)*bits.UintSize/perDigit+1)))
 		s := new(big.Int).SetBits(b).Text(radix)
 		if i < top {
 			writeZeros(sb, digits-len(s))
