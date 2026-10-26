@@ -301,7 +301,22 @@ func (r *Runtime) bigShiftRightAbs(x, y *big.Int) *big.Int {
 		return new(big.Int)
 	}
 	r.chargeBigInt(bitsToDigits(int64(x.BitLen()) - int64(n) + 1))
-	return new(big.Int).Rsh(x, n)
+	// A long x a block at a time, and a negative one as -ceil(|x| / 2^n),
+	// which big.Int.Rsh makes from a copy of |x| - 1: 128 MB, uncharged and
+	// in one step, for a result of one digit.
+	var z []big.Word
+	if len(x.Bits()) > bigBlockWords {
+		z = r.natShr(x.Bits(), n)
+	} else {
+		z = new(big.Int).Rsh(new(big.Int).SetBits(x.Bits()), n).Bits()
+	}
+	if x.Sign() >= 0 {
+		return new(big.Int).SetBits(z)
+	}
+	if x.TrailingZeroBits() < n {
+		z = r.natInc(z)
+	}
+	return new(big.Int).Neg(new(big.Int).SetBits(z))
 }
 
 // bigExp is x ** y, which throws where V8's BigInt::Exponentiate does.
@@ -570,7 +585,10 @@ const bigMulLeafProduct = 1 << 26
 // smaller ones by Karatsuba's method, as big.Int.Mul splits it, but with the
 // pending interrupt checked between them: two operands of 2^22 words take
 // big.Int.Mul more than two minutes, during which the runtime could not be
-// interrupted.
+// interrupted. The parts are put together a block at a time (natAddAt), and
+// a long operand by a short one is multiplied a block of the long one at a
+// time (mulBlocks): one word by 2^24 took big.Int.Mul 20 ms, and putting the
+// parts of a product near V8's limit together took it as long a step.
 func (r *Runtime) mulAbs(x, y []big.Word) *big.Int {
 	if len(x) < len(y) {
 		x, y = y, x
@@ -579,7 +597,7 @@ func (r *Runtime) mulAbs(x, y []big.Word) *big.Int {
 		return new(big.Int)
 	}
 	square := len(x) == len(y) && &x[0] == &y[0]
-	if mulIsLeaf(len(x), len(y)) {
+	if mulIsLeaf(len(x), len(y)) && len(x) <= bigBlockWords {
 		a := new(big.Int).SetBits(x)
 		if square {
 			return new(big.Int).Mul(a, a)
@@ -588,14 +606,10 @@ func (r *Runtime) mulAbs(x, y []big.Word) *big.Int {
 	}
 	r.vm.checkInterrupt()
 	h := (len(x) + 1) / 2
-	shift := uint(h) * bits.UintSize
-	x0, x1 := natNorm(x[:h]), x[h:]
 	if len(y) <= h {
-		// x1 * y * B^h + x0 * y
-		z := r.mulAbs(x1, y)
-		z.Lsh(z, shift)
-		return z.Add(z, r.mulAbs(x0, y))
+		return r.mulBlocks(x, y)
 	}
+	x0, x1 := natNorm(x[:h]), x[h:]
 	y0, y1 := x0, x1
 	if !square {
 		y0, y1 = natNorm(y[:h]), y[h:]
@@ -603,18 +617,34 @@ func (r *Runtime) mulAbs(x, y []big.Word) *big.Int {
 	z2 := r.mulAbs(x1, y1)
 	z0 := r.mulAbs(x0, y0)
 	// z1 = (x0 + x1) * (y0 + y1) - z2 - z0
-	sx := new(big.Int).Add(new(big.Int).SetBits(x0), new(big.Int).SetBits(x1))
+	sx := r.natAdd(x0, x1)
 	sy := sx
 	if !square {
-		sy = new(big.Int).Add(new(big.Int).SetBits(y0), new(big.Int).SetBits(y1))
+		sy = r.natAdd(y0, y1)
 	}
-	z1 := r.mulAbs(sx.Bits(), sy.Bits())
-	z1.Sub(z1, z2)
-	z1.Sub(z1, z0)
-	z2.Lsh(z2, 2*shift)
-	z1.Lsh(z1, shift)
-	z2.Add(z2, z1)
-	return z2.Add(z2, z0)
+	z1 := r.mulAbs(sx, sy).Bits()
+	z1 = r.natSubInPlace(z1, z2.Bits())
+	z1 = r.natSubInPlace(z1, z0.Bits())
+	// z2 * B^2h + z1 * B^h + z0, z0 < B^2h.
+	z := make([]big.Word, len(x)+len(y)+1)
+	r.natCopyAt(z, z0.Bits(), 0)
+	r.natCopyAt(z, z2.Bits(), 2*h)
+	r.natAddAt(z, z1, h)
+	return new(big.Int).SetBits(natNorm(z))
+}
+
+// mulBlocks is mulAbs of x by y no longer than half of x: x is multiplied
+// a block at a time, each block as long as y or long enough for a step of
+// big.Int.Mul, and the products are added in place.
+func (r *Runtime) mulBlocks(x, y []big.Word) *big.Int {
+	s := max(len(y), min(bigBlockWords, bigMulLeafProduct/len(y)))
+	z := make([]big.Word, len(x)+len(y))
+	for i := 0; i < len(x); i += s {
+		r.vm.checkInterrupt()
+		p := r.mulAbs(natNorm(x[i:min(i+s, len(x))]), y)
+		r.natAddAt(z, p.Bits(), i)
+	}
+	return new(big.Int).SetBits(natNorm(z))
 }
 
 // mulIsLeaf reports whether operands of m and n words make a product
@@ -645,6 +675,13 @@ const bigBitwiseLeafWords = 1 << 16
 // complement.
 func (r *Runtime) bigBitwise(x, y *big.Int, op byte) *big.Int {
 	if max(len(x.Bits()), len(y.Bits())) <= bigBitwiseLeafWords {
+		// big.Int copies a negative operand (|x| - 1), as below.
+		if x.Sign() < 0 {
+			r.chargeWords(len(x.Bits()))
+		}
+		if y.Sign() < 0 {
+			r.chargeWords(len(y.Bits()))
+		}
 		switch op {
 		case '&':
 			return new(big.Int).And(x, y)
@@ -664,6 +701,9 @@ func (r *Runtime) bigBitwise(x, y *big.Int, op byte) *big.Int {
 	case !nx && !ny:
 		z = r.natBitwise(xa, ya, op)
 	case nx && ny:
+		// |x| - 1 and |y| - 1 are copies, charged: 1n & nx, nx | -1n made
+		// 128 MB for a result of one digit.
+		r.chargeWords(len(xa) + len(ya))
 		x1, y1 := r.natDec(xa), r.natDec(ya)
 		switch op {
 		case '&':
@@ -678,6 +718,7 @@ func (r *Runtime) bigBitwise(x, y *big.Int, op byte) *big.Int {
 		}
 	default:
 		// x >= 0, y < 0.
+		r.chargeWords(len(ya))
 		y1 := r.natDec(ya)
 		switch op {
 		case '&':

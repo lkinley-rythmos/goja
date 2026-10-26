@@ -60,6 +60,9 @@ func (r *Runtime) divAbsQ(x, y *big.Int, wantQ bool) (q, m *big.Int) {
 	n := len(b.Bits())
 	qw := len(a.Bits()) - n + 1
 	if divIsLeaf(qw, n) {
+		// QuoRem makes both results, the one the caller does not charge
+		// included, and a copy of a for the remainder.
+		r.chargeWords(len(a.Bits()) + 2)
 		return new(big.Int).QuoRem(a, b, new(big.Int))
 	}
 	r.vm.checkInterrupt()
@@ -100,6 +103,8 @@ func (r *Runtime) divChunked(a, b *big.Int, k int, wantQ bool) (q, m *big.Int) {
 	shift := uint(k * bits.UintSize)
 	for i := blocks - 1; i >= 0; i-- {
 		r.vm.checkInterrupt()
+		// t, its quotient and remainder, and QuoRem's copy of t.
+		r.chargeWords(3*(k+len(b.Bits())) + 3)
 		t := new(big.Int).Lsh(m, shift)
 		t.Add(t, new(big.Int).SetBits(natNorm(aw[i*k:min((i+1)*k, len(aw))])))
 		qi := new(big.Int)
@@ -117,24 +122,42 @@ func (r *Runtime) divChunked(a, b *big.Int, k int, wantQ bool) (q, m *big.Int) {
 // divShortQuotient divides a by b, whose quotient has at most qw words, qw
 // + 1 fewer than b has: the leading qw + 1 words of b and the words of a
 // above the same place give the quotient within a few units (the words left
-// out change a / b by less than 3), which the remainder corrects.
+// out change a / b by less than 3), which the remainder corrects. The
+// product and the remainder, as long as b, are charged before they are
+// made: x / y of two numbers near V8's limit made 256 MB of them for a
+// quotient of one word.
 func (r *Runtime) divShortQuotient(a, b *big.Int, qw int) (q, m *big.Int) {
-	shift := uint(len(b.Bits())-qw-1) * bits.UintSize
-	q, _ = r.divAbs(new(big.Int).Rsh(a, shift), new(big.Int).Rsh(b, shift))
-	m = new(big.Int).Sub(a, r.mulAbs(q.Bits(), b.Bits()))
+	aw, bw := a.Bits(), b.Bits()
+	sh := len(bw) - qw - 1
+	// Shifted by whole words: the leading words themselves.
+	q, _ = r.divAbs(new(big.Int).SetBits(aw[sh:]), new(big.Int).SetBits(bw[sh:]))
+	n := len(q.Bits()) + len(bw)
+	r.chargeWords(n + max(n, len(aw)))
+	m = r.bigSubAbs(aw, r.mulAbs(q.Bits(), bw).Bits())
 	return q, r.divCorrect(q, m, b)
 }
 
-// divCorrect adjusts q and m = a - q * b until 0 <= m < b, and returns m.
+// divCorrect adjusts q and m = a - q * b until 0 <= m < b, and returns m,
+// whose words, made by the division, it may change in place. Each step
+// that makes a new number charges it.
 func (r *Runtime) divCorrect(q, m, b *big.Int) *big.Int {
 	one := big.NewInt(1)
+	bw := b.Bits()
 	for m.Sign() < 0 {
 		q.Sub(q, one)
-		m.Add(m, b)
+		if mw := m.Bits(); r.natCmp(mw, bw) <= 0 {
+			// m + b = b - |m|
+			if cap(mw) < len(bw) {
+				r.chargeWords(len(bw))
+			}
+			m = new(big.Int).SetBits(r.natRevSubInPlace(mw, bw))
+		} else {
+			m = new(big.Int).Neg(new(big.Int).SetBits(r.natSubInPlace(mw, bw)))
+		}
 	}
-	for m.Cmp(b) >= 0 {
+	for r.natCmp(m.Bits(), bw) >= 0 {
 		q.Add(q, one)
-		m.Sub(m, b)
+		m = new(big.Int).SetBits(r.natSubInPlace(m.Bits(), bw))
 	}
 	return m
 }
@@ -143,14 +166,19 @@ func (r *Runtime) divCorrect(q, m, b *big.Int) *big.Int {
 // as b less one: normalized so that b's top bit is set, a is divided a block
 // of n words (b's length) at a time, each block of the quotient
 // floor(t * inv / B^(2n)) for t the remainder so far followed by the block
-// and inv = floor(B^(2n) / b), which is at most 2 less than t / b.
+// and inv = floor(B^(2n) / b), which is at most 2 less than t / b. The
+// numbers it makes on the way, each as long as b or longer, are charged
+// before they are made.
 func (r *Runtime) divLongQuotient(a, b *big.Int, wantQ bool) (q, m *big.Int) {
 	s := uint(bits.LeadingZeros(uint(b.Bits()[len(b.Bits())-1])))
 	if s != 0 {
-		a = new(big.Int).Lsh(a, s)
-		b = new(big.Int).Lsh(b, s)
+		// The shifted operands, and the remainder shifted back.
+		r.chargeWords(len(a.Bits()) + 2*len(b.Bits()) + 2)
+		a = new(big.Int).SetBits(r.natShl(a.Bits(), s))
+		b = new(big.Int).SetBits(r.natShl(b.Bits(), s))
 	}
-	n := len(b.Bits())
+	bw := b.Bits()
+	n := len(bw)
 	inv := r.recipAbs(b)
 	aw := a.Bits()
 	blocks := (len(aw) + n - 1) / n
@@ -158,26 +186,36 @@ func (r *Runtime) divLongQuotient(a, b *big.Int, wantQ bool) (q, m *big.Int) {
 	if wantQ {
 		qw = make([]big.Word, blocks*n)
 	}
-	m = new(big.Int)
-	blockShift := uint(n * bits.UintSize)
+	var mw []big.Word
 	for i := blocks - 1; i >= 0; i-- {
 		r.vm.checkInterrupt()
-		hi := min((i+1)*n, len(aw))
-		t := new(big.Int).Lsh(m, blockShift)
-		t.Add(t, new(big.Int).SetBits(natNorm(aw[i*n:hi])))
-		qi := r.mulAbs(t.Bits(), inv.Bits())
-		qi.Rsh(qi, 2*blockShift)
-		m = t.Sub(t, r.mulAbs(qi.Bits(), b.Bits()))
+		// t = m * B^n + the block; then t * inv, qi * b, and t - qi * b.
+		tn := n + len(mw)
+		r.chargeWords(tn + (tn + len(inv.Bits())) + 2*n + 1 + tn)
+		t := make([]big.Word, tn)
+		r.natCopyAt(t, aw[i*n:min((i+1)*n, len(aw))], 0)
+		r.natCopyAt(t, mw, n)
+		t = natNorm(t)
+		// qi = t * inv / B^(2n), its words past the 2n lowest.
+		qi := r.mulAbs(t, inv.Bits())
+		if qb := qi.Bits(); len(qb) > 2*n {
+			qi.SetBits(qb[2*n:])
+		} else {
+			qi.SetBits(nil)
+		}
+		m = r.bigSubAbs(t, r.mulAbs(qi.Bits(), bw).Bits())
 		m = r.divCorrect(qi, m, b)
+		mw = m.Bits()
 		if wantQ {
-			copy(qw[i*n:(i+1)*n], qi.Bits())
+			r.natCopyAt(qw, qi.Bits(), i*n)
 		}
 	}
 	if wantQ {
 		q = new(big.Int).SetBits(natNorm(qw))
 	}
+	m = new(big.Int).SetBits(mw)
 	if s != 0 {
-		m.Rsh(m, s)
+		m.SetBits(r.natShr(mw, s))
 	}
 	return q, m
 }
@@ -186,11 +224,12 @@ func (r *Runtime) divLongQuotient(a, b *big.Int, wantQ bool) (q, m *big.Int) {
 // (B = 2^bits.UintSize), by Newton's method: the reciprocal of b's leading
 // words, which is close enough that one step of
 // x + x * (B^(2n) - b * x) / B^(2n) is within a few units, which are then
-// corrected.
+// corrected. The numbers it makes, from n to 3n words long, are charged
+// before they are made.
 func (r *Runtime) recipAbs(b *big.Int) *big.Int {
 	n := len(b.Bits())
-	pow := new(big.Int).Lsh(big.NewInt(1), uint(2*n*bits.UintSize))
 	if n <= recipLeafWords {
+		pow := new(big.Int).Lsh(big.NewInt(1), uint(2*n*bits.UintSize))
 		return pow.Quo(pow, b)
 	}
 	r.vm.checkInterrupt()
@@ -198,18 +237,26 @@ func (r *Runtime) recipAbs(b *big.Int) *big.Int {
 	// give is within B^(n + 1 - h) of b's, and after the step within B^(n +
 	// 2 - 2h) < 1/B, and a unit or two of rounding.
 	h := (n+1)/2 + 2
-	k := uint((n - h) * bits.UintSize)
-	x := r.recipAbs(new(big.Int).Rsh(b, k))
-	x.Lsh(x, k)
-	e := new(big.Int).Sub(pow, r.mulAbs(b.Bits(), x.Bits()))
+	k := n - h
+	x := r.recipAbs(new(big.Int).SetBits(b.Bits()[k:]))
+	// x << k words, b * x, B^(2n) - b * x, x * e, x +- d, B^(2n) - b * x.
+	r.chargeWords((len(x.Bits()) + k + 1) + 2*(2*n+2) + (3*n + 3) + (n + 2) + 2*(2*n+2))
+	xs := make([]big.Word, len(x.Bits())+k)
+	r.natCopyAt(xs, x.Bits(), k)
+	x.SetBits(xs)
+	e := r.powSub(2*n, r.mulAbs(b.Bits(), x.Bits()).Bits())
 	d := r.mulAbs(x.Bits(), e.Bits())
-	d.Rsh(d, uint(2*n*bits.UintSize))
-	if e.Sign() < 0 {
-		x.Sub(x, d)
+	if dw := d.Bits(); len(dw) > 2*n {
+		d.SetBits(dw[2*n:])
 	} else {
-		x.Add(x, d)
+		d.SetBits(nil)
 	}
-	m := pow.Sub(pow, r.mulAbs(b.Bits(), x.Bits()))
+	if e.Sign() < 0 {
+		x = r.bigSubAbs(x.Bits(), d.Bits())
+	} else {
+		x = new(big.Int).SetBits(r.natAdd(x.Bits(), d.Bits()))
+	}
+	m := r.powSub(2*n, r.mulAbs(b.Bits(), x.Bits()).Bits())
 	r.divCorrect(x, m, b)
 	return x
 }
