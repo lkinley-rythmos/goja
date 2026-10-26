@@ -22,7 +22,8 @@ import (
 // messages (Object::NoSideEffectsToString): primitives as String would,
 // symbols as Symbol(description), errors as "Name: message", objects whose
 // toString is Object.prototype.toString as #<Constructor name>, functions
-// as their source, and other objects as [object Class]. It reads only data
+// as their source (cut to its first 111 and last 2 code units past 128),
+// and other objects as [object Class]. It reads only data
 // properties, so it runs no script.
 func (r *Runtime) noSideEffectsToString(v Value) string {
 	switch v := v.(type) {
@@ -52,7 +53,16 @@ func (r *Runtime) objectNoSideEffectsToMaybeString(o *Object) (string, bool) {
 		return "#<Object>", true
 	}
 	if f, ok := o.self.(funcObjectImpl); ok {
-		return f.source().String(), true
+		// Cut as V8 cuts it, and read only as far as the cut keeps
+		// (sourceMessageParts): its whole source, through Go strings,
+		// made 1.16 GB under a 1 MiB limit for a native function named
+		// with 2^24 units of U+3000, and returned 659 ms after an
+		// interrupt.
+		var b strings.Builder
+		for _, p := range r.sourceMessageParts(f.sourceText()) {
+			b.WriteString(p.String())
+		}
+		return b.String(), true
 	}
 	if o.self.className() == classError {
 		name := dataPropertyString(o, "name", "Error")

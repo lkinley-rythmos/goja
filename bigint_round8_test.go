@@ -57,27 +57,7 @@ func TestMessageFunctionSourceRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, f := range []string{"N", "M", "F"} {
-		returnsWithin(t, r, "new Date()[Symbol.toPrimitive]("+f+")", 5*time.Millisecond, 20*time.Millisecond)
-	}
-}
-
-// returnsWithin runs src, which an interrupt after delay may or may not
-// find running, and fails if it returns more than bound after the
-// interrupt.
-func returnsWithin(t *testing.T, r *Runtime, src string, delay, bound time.Duration) {
-	t.Helper()
-	prg := MustCompile("", src, false)
-	fired := make(chan time.Time, 1)
-	timer := time.AfterFunc(delay, func() { at := time.Now(); r.Interrupt("stop"); fired <- at })
-	_, err := r.RunProgram(prg)
-	end := time.Now()
-	if timer.Stop() {
-		return
-	}
-	at := <-fired
-	r.ClearInterrupt()
-	if lag := end.Sub(at); lag > bound {
-		t.Fatalf("%s: returned %v after the interrupt (%v)", src, lag, err)
+		interruptWithin(t, r, "new Date()[Symbol.toPrimitive]("+f+")", 5*time.Millisecond, 20*time.Millisecond)
 	}
 }
 
@@ -208,6 +188,100 @@ func TestTextBlockLoopsPairAtEdges(t *testing.T) {
 		if got, ok := r.bigIntSource(unicodeString(append(append(append([]uint16{}, w...), '1', '2'), w[1:]...))); !ok || got != "12" {
 			t.Errorf("bigIntSource, digits at %d: got %q, %v", at, got, ok)
 		}
+	}
+}
+
+// The function arm of noSideEffectsToString, which the incompatible
+// receiver errors, the errors for null or undefined bases, the in
+// operator's and others write a value with, cuts a function's source as
+// V8 does and reads only what it keeps: it wrote the whole source, with
+// no cut, through Go strings (a native function named with 2^22 units of
+// U+3000 made 298 MB under a 1 MiB limit, charged 256 bytes; named with
+// 2^24, 1.16 GB, and returned 659 ms after an interrupt; a script
+// function's source of 2^24 such units 611 MB, 465 ms).
+func TestNoSideEffectsFunctionSourceRead(t *testing.T) {
+	r := New()
+	if err := r.Set("G", strings.Repeat("é", 1<<22)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.RunString(`var N = Math.abs, M = Math.min, F = eval("(function(){/*" + "　".repeat(1 << 22) + "*/})");
+		Object.defineProperty(N, "name", {value: "　".repeat(1 << 22)}); Object.defineProperty(M, "name", {value: G});`); err != nil {
+		t.Fatal(err)
+	}
+	sites := []string{"Map.prototype.clear.call(%s)", "null[%s]", "Set.prototype.add.call(%s, 1)", "%s in 5", "Promise.prototype.then.call(%s)"}
+	for _, f := range []string{"N", "M", "F"} {
+		for _, site := range sites {
+			src := strings.ReplaceAll(site, "%s", f)
+			counted, actual, err := allocDuring(t, r, MustCompile("", src, false), 1<<20)
+			var ex *Exception
+			if !errors.As(err, &ex) || errors.Is(err, ErrAllocationLimitExceeded) {
+				t.Fatalf("%s: got %v, want its TypeError", src, err)
+			}
+			if msg := ex.Value().(*Object).Get("message").String(); utf8.RuneCountInString(msg) > 220 {
+				t.Errorf("%s: a message of %d characters", src, utf8.RuneCountInString(msg))
+			}
+			if actual > 2<<20 {
+				t.Errorf("%s: made %d bytes, charged %d", src, actual, counted)
+			}
+		}
+	}
+	if raceDetectorEnabled {
+		return
+	}
+	r.SetAllocationLimit(0)
+	if err := r.Set("G", strings.Repeat("é", 1<<24)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.RunString(`F = eval("(function(){/*" + "　".repeat(1 << 24) + "*/})");
+		Object.defineProperty(N, "name", {value: "　".repeat(1 << 24)}); Object.defineProperty(M, "name", {value: G});`); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"N", "M", "F"} {
+		for _, site := range sites[:2] {
+			interruptWithin(t, r, strings.ReplaceAll(site, "%s", f), 5*time.Millisecond, 20*time.Millisecond)
+		}
+	}
+}
+
+// Those messages hold the cut Node v18.20.3 makes, of native and script
+// functions shorter and longer than 128 code units, with surrogate pairs
+// in what is kept: the same 624 cases give the same messages in Docker
+// Node v18.20.3 (rcx-go-crud-parity-gap-goja-rle-api-1). A pair the cut
+// splits leaves an unpaired surrogate, which these messages, made in Go
+// strings, write as U+FFFD, where Node keeps it.
+func TestNoSideEffectsFunctionSourceCutAsNode(t *testing.T) {
+	const script = `
+	const P = "\ud842\udfb7", fill = n => "a".repeat(n), fns = [Math.abs, Map, function f(a) { return a }, () => 1];
+	for (let n = 120; n < 140; n++) {
+		fns.push(eval("(function(){/*" + fill(n - 16) + "*/})"));
+		fns.push(eval("(function(){/*" + fill(96) + P + fill(n - 18 - 96) + "*/})"));
+		fns.push(eval("(() => '" + fill(n - 11) + P + "a')"));
+		fns.push(eval("(() => \"" + "\u00e9".repeat(n - 8) + "\")"));
+		fns.push(eval("(() => ` + "`" + `" + "\u3000".repeat(n - 8) + "` + "`" + `)"));
+	}
+	const sites = [
+		[f => Map.prototype.clear.call(f), c => "Method Map.prototype.clear called on incompatible receiver " + c],
+		[f => Set.prototype.add.call(f, 1), c => "Method Set.prototype.add called on incompatible receiver " + c],
+		[f => Promise.prototype.then.call(f), c => "Method Promise.prototype.then called on incompatible receiver " + c],
+		[f => null[f], c => "Cannot read properties of null (reading '" + c + "')"],
+		[f => { undefined[f] = 1 }, c => "Cannot set properties of undefined (setting '" + c + "')"],
+		[f => f in 5, c => "Cannot use 'in' operator to search for '" + c + "' in 5"],
+	];
+	const bad = [];
+	for (const f of fns) {
+		const text = Function.prototype.toString.call(f);
+		const cut = text.length > 128 ? text.slice(0, 111) + "...<omitted>..." + text.slice(-2) : text;
+		for (const [site, want] of sites) {
+			try { site(f); bad.push("no error: " + text) } catch (e) { if (e.message !== want(cut)) bad.push(e.message) }
+		}
+	}
+	bad.join("\n")`
+	v, err := New().RunString(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := v.String(); s != "" {
+		t.Fatalf("written otherwise than Node:\n%s", s)
 	}
 }
 
