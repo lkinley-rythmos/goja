@@ -289,7 +289,7 @@ func (r *Runtime) writeItemLocaleString(item Value, buf *StringBuilder) {
 				return
 			}
 		}
-		r.typeErrorResult(true, "Property 'toLocaleString' of object %s is not a function", r.valueText(item))
+		panic(r.textError(r.getTypeError(), asciiString("Property 'toLocaleString' of object "), r.valueTextString(item), asciiString(" is not a function")))
 	}
 }
 

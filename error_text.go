@@ -841,14 +841,226 @@ func (r *Runtime) importedText(s *importedString) String {
 }
 
 // valueMessage is the message prefix + v + suffix, v written as V8 writes
-// the values in its messages (noSideEffectsToString), a BigInt by the
-// runtime (bigString), and the message joined by joinText.
+// the values in its messages (messageParts), and the message joined by
+// joinText: no part of v is copied or converted through a Go string, so a
+// message that holds a string or a symbol's description as long as a
+// string can be is charged before it is made, made a block at a time, and
+// keeps its code units (Date's "Invalid hint" converted a 64Mi-unit hint
+// to UTF-8 and back, 1.8 GB, uncharged and in single steps, and lost an
+// unpaired surrogate to U+FFFD).
 func (r *Runtime) valueMessage(prefix string, v Value, suffix string) String {
-	var text String
-	if b, ok := v.(*valueBigInt); ok {
-		text = r.bigIntString(b)
-	} else {
-		text = newStringValue(r.noSideEffectsToString(v))
+	parts := append([]String{asciiString(prefix)}, r.messageParts(v)...)
+	return r.joinText(append(parts, asciiString(suffix))...)
+}
+
+// messageParts is v as V8 writes it in its messages
+// (Object::NoSideEffectsToString), in parts to join: a primitive as String
+// writes it, a BigInt by bigString, a symbol as Symbol(description); a
+// proxy as its target; a function as its source, cut to its first 111 and
+// last 2 code units past 128 (a bound one as V8 writes any); an error (or an object whose toString is
+// Error.prototype.toString) as "name: message", a name or message that is
+// not a string left out; an object whose toString is
+// Object.prototype.toString, and whose constructor is a function with a
+// name, as #<name>; any other as [object Tag], Tag its Symbol.toStringTag
+// if that is a string data property, or its class as V8 names it
+// (v8ClassName). Only data properties are read, so no script runs.
+func (r *Runtime) messageParts(v Value) []String {
+	switch v := v.(type) {
+	case nil:
+		return []String{asciiString("undefined")}
+	case String:
+		return []String{v}
+	case *valueBigInt:
+		return []String{r.bigIntString(v)}
+	case *Symbol:
+		desc := v.desc
+		if desc == nil {
+			desc = stringEmpty
+		}
+		return []String{asciiString("Symbol("), desc, asciiString(")")}
+	case *Object:
+		return r.objectMessageParts(v)
 	}
-	return r.joinText(asciiString(prefix), text, asciiString(suffix))
+	return []String{v.toString()}
+}
+
+func (r *Runtime) objectMessageParts(o *Object) []String {
+	for {
+		p, ok := o.self.(*proxyObject)
+		if !ok {
+			break
+		}
+		if p.target == nil {
+			// Revoked: V8 writes its target, null.
+			return []String{stringNull}
+		}
+		o = p.target
+	}
+	if _, ok := o.self.(*boundFuncObject); ok {
+		// JSBoundFunction::ToString.
+		return []String{asciiString("function () { [native code] }")}
+	}
+	if f, ok := o.self.(funcObjectImpl); ok {
+		src := f.source()
+		if n := src.Length(); n > 128 {
+			return []String{src.Substring(0, 111), asciiString("...<omitted>..."), src.Substring(n-2, n)}
+		}
+		return []String{src}
+	}
+	toString, _ := dataProperty(o, "toString").(*Object)
+	if o.self.className() == classError || toString != nil && toString == r.errorProtoToString() {
+		name, _ := dataProperty(o, "name").(String)
+		msg, _ := dataProperty(o, "message").(String)
+		switch {
+		case name == nil || name.Length() == 0:
+			if msg == nil {
+				return []String{stringEmpty}
+			}
+			return []String{msg}
+		case msg == nil || msg.Length() == 0:
+			return []String{name}
+		}
+		return []String{name, asciiString(": "), msg}
+	}
+	if toString != nil && toString == r.objectProtoToString() {
+		if ctor, ok := dataProperty(o, "constructor").(*Object); ok {
+			if _, ok := ctor.self.assertCallable(); ok {
+				if name, ok := dataProperty(ctor, "name").(String); ok && name.Length() > 0 {
+					return []String{asciiString("#<"), name, asciiString(">")}
+				}
+			}
+		}
+	}
+	tag, ok := dataPropertySym(o, SymToStringTag).(String)
+	if !ok {
+		tag = asciiString(v8ClassName(o))
+	}
+	return []String{asciiString("[object "), tag, asciiString("]")}
+}
+
+// errorProtoToString is Error.prototype.toString as the runtime created
+// it.
+func (r *Runtime) errorProtoToString() *Object {
+	if f, ok := dataProperty(r.getErrorPrototype(), "toString").(*Object); ok {
+		return f
+	}
+	return nil
+}
+
+// dataPropertySym is dataProperty for a symbol key.
+func dataPropertySym(o *Object, name *Symbol) Value {
+	for depth := 0; o != nil && depth < 1000; depth++ {
+		if _, ok := o.self.(*proxyObject); ok {
+			return nil
+		}
+		switch p := o.self.getOwnPropSym(name).(type) {
+		case nil:
+		case *valueProperty:
+			if p.accessor {
+				return nil
+			}
+			return p.value
+		default:
+			return p
+		}
+		o = o.self.proto()
+	}
+	return nil
+}
+
+// v8ClassName is o's class as V8 names it (JSReceiver::class_name) where
+// Goja's differs: a typed array's kind, and the type of the value a
+// BigInt or Symbol object wraps.
+func v8ClassName(o *Object) string {
+	switch s := o.self.(type) {
+	case *typedArrayObject:
+		switch s.typedArray.(type) {
+		case *uint8Array:
+			return "Uint8Array"
+		case *uint8ClampedArray:
+			return "Uint8ClampedArray"
+		case *int8Array:
+			return "Int8Array"
+		case *uint16Array:
+			return "Uint16Array"
+		case *int16Array:
+			return "Int16Array"
+		case *uint32Array:
+			return "Uint32Array"
+		case *int32Array:
+			return "Int32Array"
+		case *float32Array:
+			return "Float32Array"
+		case *float64Array:
+			return "Float64Array"
+		case *bigInt64Array:
+			return "BigInt64Array"
+		case *bigUint64Array:
+			return "BigUint64Array"
+		}
+	case *primitiveValueObject:
+		switch s.pValue.(type) {
+		case *valueBigInt:
+			return "BigInt"
+		case *Symbol:
+			return "Symbol"
+		}
+	}
+	return o.self.className()
+}
+
+// hostText is s as a Go string, for the messages and host values that take
+// a value's text in Go (valueText): an ASCII string, or one imported from
+// Go, as it is; any other converted as String converts it (an unpaired
+// surrogate to U+FFFD), a block of code units at a time with the interrupt
+// checked between them, and charged before it is made. String converted
+// all of it in one step, through a slice of runes four times its length,
+// uncharged.
+func (r *Runtime) hostText(s String) string {
+	switch s := s.(type) {
+	case asciiString:
+		return string(s)
+	case *importedString:
+		return s.s
+	}
+	_, u := devirtualizeString(s)
+	if u == nil {
+		return s.String()
+	}
+	units := u[1:]
+	n := 0
+	for i := 0; i < len(units); i++ {
+		if i%textBlock == 0 {
+			r.vm.checkInterrupt()
+		}
+		c, size := decodeUnit(units, i)
+		n += utf8.RuneLen(c)
+		i += size - 1
+	}
+	r.countAlloc(int64(n))
+	buf := make([]byte, 0, n)
+	for i := 0; i < len(units); i++ {
+		if i%textBlock == 0 {
+			r.vm.checkInterrupt()
+		}
+		c, size := decodeUnit(units, i)
+		buf = utf8.AppendRune(buf, c)
+		i += size - 1
+	}
+	return unsafe.String(unsafe.SliceData(buf), len(buf))
+}
+
+// decodeUnit is the code point at units[i] as utf16.Decode reads it, and
+// how many units it takes.
+func decodeUnit(units []uint16, i int) (rune, int) {
+	c := rune(units[i])
+	if utf16.IsSurrogate(c) {
+		if i+1 < len(units) {
+			if d := utf16.DecodeRune(c, rune(units[i+1])); d != utf8.RuneError {
+				return d, 2
+			}
+		}
+		return utf8.RuneError, 1
+	}
+	return c, 1
 }

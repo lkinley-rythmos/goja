@@ -109,7 +109,7 @@ func (r *Runtime) arrayBufferProto_getByteLength(call FunctionCall) Value {
 		}
 		return intToValue(0)
 	}
-	panic(r.NewTypeError("Object is not ArrayBuffer: %s", r.valueText(o)))
+	panic(r.textError(r.getTypeError(), asciiString("Object is not ArrayBuffer: "), r.valueTextString(o)))
 }
 
 func (r *Runtime) arrayBufferProto_slice(call FunctionCall) Value {
@@ -140,9 +140,9 @@ func (r *Runtime) arrayBufferProto_slice(call FunctionCall) Value {
 			}
 			return ret
 		}
-		panic(r.NewTypeError("Species constructor did not return an ArrayBuffer: %s", ret.String()))
+		panic(r.textError(r.getTypeError(), asciiString("Species constructor did not return an ArrayBuffer: "), r.valueTextString(ret)))
 	}
-	panic(r.NewTypeError("Object is not ArrayBuffer: %s", r.valueText(o)))
+	panic(r.textError(r.getTypeError(), asciiString("Object is not ArrayBuffer: "), r.valueTextString(o)))
 }
 
 func (r *Runtime) arrayBuffer_isView(call FunctionCall) Value {
@@ -1400,7 +1400,7 @@ func (r *Runtime) typedArrayCreate(ctor *Object, args ...Value) *typedArrayObjec
 		}
 		return ta
 	}
-	panic(r.NewTypeError("Invalid TypedArray: %s", r.valueText(o)))
+	panic(r.textError(r.getTypeError(), asciiString("Invalid TypedArray: "), r.valueTextString(o)))
 }
 
 func (r *Runtime) typedArrayFrom(ctor, items *Object, mapFn, thisValue Value, taCtor typedArrayObjectCtor, proto *Object) *Object {
@@ -1458,7 +1458,7 @@ func (r *Runtime) _newTypedArrayFromArrayBuffer(ab *arrayBufferObject, args []Va
 	if len(args) > 1 && args[1] != nil && args[1] != _undefined {
 		byteOffset = r.toIndex(args[1])
 		if byteOffset%ta.elemSize != 0 {
-			panic(r.newErrorf(r.getRangeError(), "Start offset of %s should be a multiple of %d", r.valueText(nilSafe(newTarget.self.getStr("name", nil))), ta.elemSize))
+			panic(r.textError(r.getRangeError(), asciiString("Start offset of "), r.valueTextString(nilSafe(newTarget.self.getStr("name", nil))), asciiString(fmt.Sprintf(" should be a multiple of %d", ta.elemSize))))
 		}
 	}
 	var length int
@@ -1471,7 +1471,7 @@ func (r *Runtime) _newTypedArrayFromArrayBuffer(ab *arrayBufferObject, args []Va
 	} else {
 		ab.ensureNotDetached(true)
 		if len(ab.data)%ta.elemSize != 0 {
-			panic(r.newErrorf(r.getRangeError(), "Byte length of %s should be a multiple of %d", r.valueText(nilSafe(newTarget.self.getStr("name", nil))), ta.elemSize))
+			panic(r.textError(r.getRangeError(), asciiString("Byte length of "), r.valueTextString(nilSafe(newTarget.self.getStr("name", nil))), asciiString(fmt.Sprintf(" should be a multiple of %d", ta.elemSize))))
 		}
 		length = (len(ab.data) - byteOffset) / ta.elemSize
 		if length < 0 {

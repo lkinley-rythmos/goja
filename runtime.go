@@ -2827,13 +2827,11 @@ func (r *Runtime) toObject(v Value, args ...interface{}) *Object {
 	if len(args) > 0 {
 		panic(r.NewTypeError(args...))
 	} else {
-		var s string
-		if v == nil {
-			s = "undefined"
-		} else {
-			s = r.valueText(v)
+		var s String = asciiString("undefined")
+		if v != nil {
+			s = r.valueTextString(v)
 		}
-		panic(r.NewTypeError("Value is not an object: %s", s))
+		panic(r.textError(r.getTypeError(), asciiString("Value is not an object: "), s))
 	}
 }
 

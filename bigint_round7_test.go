@@ -5,7 +5,9 @@ import (
 	"math/big"
 	"math/bits"
 	"runtime"
+	"strings"
 	"testing"
+	"time"
 )
 
 // allocDuring runs prg under limit (0 for none) and returns what the
@@ -140,6 +142,146 @@ func TestBigIntPartsCharged(t *testing.T) {
 		}
 		if actual > counted+64<<10 {
 			t.Errorf("%s: made %d bytes, charged %d", src, actual, counted)
+		}
+	}
+}
+
+// The messages that hold a script's value are made without a Go string of
+// it: Date's "Invalid hint" with a symbol's description of 2^27 characters
+// made 268 MB under a 1 MiB limit and returned 82 ms after an interrupt,
+// and with a hint of 2^26 units of U+3000 made 1.8 GB and returned 1.3 s
+// after one. The same holds for the messages valueText wrote through fmt.
+func TestMessageValuesBounded(t *testing.T) {
+	const setup = `var U = "　".repeat(1 << 22), S = Symbol("x".repeat(1 << 23)), E = new Error(U),
+		O = {toString() { return U }}, F = function() {}, T = {};
+		Object.defineProperty(F, "name", {value: U}); Object.defineProperty(T, "a", {value: U});`
+	srcs := []string{
+		"new Date()[Symbol.toPrimitive](S)",
+		"new Date()[Symbol.toPrimitive](U)",
+		"new Date()[Symbol.toPrimitive](E)",
+		"Reflect.ownKeys(new Proxy({}, {ownKeys() { return [E] } }))",
+		"Number.prototype.valueOf.call(U)",
+		"Symbol.keyFor(U)",
+		"Object.defineProperty({}, 'a', U)",
+		"Object.create(U)",
+		"Object.setPrototypeOf({}, U)",
+		"[{toLocaleString: 1, toString() { return U }}].toLocaleString()",
+		"Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get.call(O)",
+		"Uint8Array.from.call(function() { return O }, [1])",
+		"Reflect.construct(Int16Array, [new ArrayBuffer(4), 1], F)",
+		"Map.prototype.clear.call(U)",
+		"new Proxy(T, {get() { return 1 }}).a",
+	}
+	r := New()
+	if _, err := r.RunString(setup); err != nil {
+		t.Fatal(err)
+	}
+	for _, src := range srcs {
+		counted, actual, err := allocDuring(t, r, MustCompile("", src, false), 1<<20)
+		if !errors.Is(err, ErrAllocationLimitExceeded) {
+			t.Errorf("%s: got %v, want the allocation limit", src, err)
+		}
+		if actual > 2<<20 {
+			t.Errorf("%s: made %d bytes, charged %d", src, actual, counted)
+		}
+	}
+	if raceDetectorEnabled {
+		return
+	}
+	r.SetAllocationLimit(0)
+	if _, err := r.RunString(`U = "　".repeat(1 << 25); S = Symbol("x".repeat(1 << 26)); E = new Error(U);
+		Object.defineProperty(F, "name", {value: U});`); err != nil {
+		t.Fatal(err)
+	}
+	for _, src := range srcs[:3] {
+		interruptWithin(t, r, src, 5*time.Millisecond, 20*time.Millisecond)
+	}
+	for _, src := range []string{"Number.prototype.valueOf.call(U)", "Reflect.construct(Int16Array, [new ArrayBuffer(4), 1], F)"} {
+		interruptWithin(t, r, src, 5*time.Millisecond, 20*time.Millisecond)
+	}
+}
+
+// The values in the messages of Date's "Invalid hint" and of an invalid key
+// from a proxy's ownKeys are written as Node v18.20.3 writes them: a BigInt
+// or Symbol object and a typed array by their class, a proxy as its target
+// (a callable one as its function's source), a long function cut, a bound
+// one as V8 writes any, an error's name and message only when they are
+// strings, and a symbol's or a string's code units as they are (an
+// unpaired surrogate was lost to U+FFFD).
+func TestMessageValuesAsNode(t *testing.T) {
+	const script = `
+	const rev = Proxy.revocable({}, {}); rev.revoke();
+	const vals = [Object(1n), Object(Symbol("q")), new Uint8Array(1), new BigInt64Array(1), new Proxy(function(){}, {}),
+		new Proxy([], {}), new Proxy(new Proxy(function(){}, {}), {}), rev.proxy, new Proxy(new Error("pe"), {}),
+		function f(){}.bind(null), eval("(function(){" + "a".repeat(117) + "})"), Object.assign(new Error("m"), {name: undefined}),
+		Object.assign(new Error("m"), {name: 5}), Object.assign(new Error(), {message: 5}), {toString: Error.prototype.toString},
+		Object.assign(Object.create(null), {[Symbol.toStringTag]: "Tg"}), new DataView(new ArrayBuffer(1)), (function*(){})(),
+		"\ud800", Symbol("\ud800"), Symbol(), Object.assign(new Error(), {name: "\ud800", message: "\udc00"})];
+	const out = [];
+	for (const v of vals) {
+		try { new Date()[Symbol.toPrimitive](v) } catch (e) { out.push(e.message) }
+		try { Reflect.ownKeys(new Proxy({}, {ownKeys() { return [v] }})) } catch (e) { out.push(e.message) }
+	}
+	out.map(m => Array.from(m, c => c.charCodeAt(0) > 0xd7ff && c.charCodeAt(0) < 0xe000 ? "<" + c.charCodeAt(0) + ">" : c).join("")).join("\n")`
+	// From Docker Node v18.20.3 (rcx-go-crud-parity-gap-goja-rle-api-1).
+	const want = `Invalid hint: [object BigInt]
+[object BigInt] is not a valid property name
+Invalid hint: [object Symbol]
+[object Symbol] is not a valid property name
+Invalid hint: [object Uint8Array]
+[object Uint8Array] is not a valid property name
+Invalid hint: [object BigInt64Array]
+[object BigInt64Array] is not a valid property name
+Invalid hint: function(){}
+function(){} is not a valid property name
+Invalid hint: [object Array]
+[object Array] is not a valid property name
+Invalid hint: function(){}
+function(){} is not a valid property name
+Invalid hint: null
+null is not a valid property name
+Invalid hint: Error: pe
+Error: pe is not a valid property name
+Invalid hint: function () { [native code] }
+function () { [native code] } is not a valid property name
+Invalid hint: function(){aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...<omitted>...a}
+function(){aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...<omitted>...a} is not a valid property name
+Invalid hint: m
+m is not a valid property name
+Invalid hint: m
+m is not a valid property name
+Invalid hint: Error
+Error is not a valid property name
+Invalid hint: 
+ is not a valid property name
+Invalid hint: [object Tg]
+[object Tg] is not a valid property name
+Invalid hint: #<DataView>
+#<DataView> is not a valid property name
+Invalid hint: [object Generator]
+[object Generator] is not a valid property name
+Invalid hint: <55296>
+Invalid hint: Symbol(<55296>)
+Invalid hint: Symbol()
+Invalid hint: <55296>: <56320>
+<55296>: <56320> is not a valid property name`
+	v, err := New().RunString(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := v.String(); got != want {
+		gl, wl := strings.Split(got, "\n"), strings.Split(want, "\n")
+		for i := range max(len(gl), len(wl)) {
+			var g, w string
+			if i < len(gl) {
+				g = gl[i]
+			}
+			if i < len(wl) {
+				w = wl[i]
+			}
+			if g != w {
+				t.Errorf("line %d: got %q, want %q", i, g, w)
+			}
 		}
 	}
 }

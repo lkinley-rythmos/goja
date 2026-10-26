@@ -1,9 +1,12 @@
 package goja
 
 import (
+	"fmt"
 	"math/big"
 	"math/bits"
 	"strings"
+
+	"github.com/dop251/goja/unistring"
 )
 
 // Large BigInts are written in parts, as large products are (mulAbs), with
@@ -178,16 +181,73 @@ func (r *Runtime) toStringOf(v Value) String {
 }
 
 // valueText is v.String(), as the messages and names that take a value's
-// text in Go take it, but a BigInt written by bigString.
+// text in Go take it, but a BigInt written by bigString and a string
+// converted by hostText: charged, and a block at a time.
 func (r *Runtime) valueText(v Value) string {
-	switch v := v.(type) {
-	case *valueBigInt:
-		return r.bigIntString(v).String()
-	case nil:
+	if v == nil {
 		// As fmt writes a nil Value.
 		return "<nil>"
 	}
-	return v.String()
+	switch s := r.valueString(v).(type) {
+	case nil:
+		return v.String()
+	default:
+		return r.hostText(s)
+	}
+}
+
+// valueString is the text valueText takes of v, as a String: a string, a
+// BigInt by bigString, a symbol's description, an object's ToString (which
+// may run its toString), or nil for any other value, whose String is
+// short.
+func (r *Runtime) valueString(v Value) String {
+	switch v := v.(type) {
+	case String:
+		return v
+	case *valueBigInt:
+		return r.bigIntString(v)
+	case *Symbol:
+		if v.desc == nil {
+			return stringEmpty
+		}
+		return v.desc
+	case *Object:
+		p := v.toPrimitiveString()
+		if s := r.valueString(p); s != nil {
+			return s
+		}
+		return p.toString()
+	}
+	return nil
+}
+
+// valueTextString is valueText as a String, for a message joined by
+// joinText.
+func (r *Runtime) valueTextString(v Value) String {
+	if v == nil {
+		return asciiString("<nil>")
+	}
+	if s := r.valueString(v); s != nil {
+		return s
+	}
+	return v.toString()
+}
+
+// keyText is a property key given as a fmt.Stringer, as a String.
+func (r *Runtime) keyText(name fmt.Stringer) String {
+	switch n := name.(type) {
+	case unistring.String:
+		return stringValueFromRaw(n)
+	case Value:
+		return r.valueTextString(n)
+	}
+	return newStringValue(name.String())
+}
+
+// textError is an error of type typ whose message is parts, joined by
+// joinText, as a message that holds a script's value is.
+func (r *Runtime) textError(typ *Object, parts ...String) *Object {
+	return r.builtin_new(typ, []Value{r.joinText(parts...)})
 }
 
 // bigIntString is b in decimal by bigString.
