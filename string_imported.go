@@ -39,6 +39,23 @@ func (i *importedString) ensureScanned() {
 	}
 }
 
+// prefixUnits is the string of the leading characters of i that are at
+// least n UTF-16 code units long, or all of i if it is shorter, read
+// without scanning the rest of i.
+func (i *importedString) prefixUnits(n int) String {
+	units := 0
+	for k, c := range i.s {
+		if units >= n {
+			return newStringValue(i.s[:k])
+		}
+		units++
+		if c > 0xffff {
+			units++
+		}
+	}
+	return newStringValue(i.s)
+}
+
 func (i *importedString) ToInteger() int64 {
 	i.ensureScanned()
 	if i.u != nil {

@@ -176,3 +176,55 @@ func TestBigIntNatSteps(t *testing.T) {
 		check("divAbs remainder", m, wm)
 	}
 }
+
+// Trimming a string converted to a BigInt, of every kind of white space,
+// gives Node v18.20.3's results, for a string made by the script or
+// imported from Go (read in its UTF-8, without making its code units), and
+// the message of one that is not a BigInt holds its first 1,000 code units.
+func TestBigIntTrimAsNode(t *testing.T) {
+	compareLines(t, runLogged(t, bigIntTrimScript), bigIntTrimNode)
+	r := New()
+	for _, s := range []string{" 12\u3000", "\ufeff-0x1f", "\u2028\u20290b101 ", "\u3000", "", "\u00851", "1\u180e", "\U0001F9EA1", strings.Repeat("\u3000", 600) + "x" + strings.Repeat("\U0001F9EA", 600)} {
+		r.Set("s", s)
+		v, err := r.RunString(`var made = s.split("").join(""); [made, s].map(t => { try { return String(BigInt(t)) } catch (e) { return e.message } }).concat(s == 31n, 1n < s)`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a := v.Export().([]interface{})
+		if a[0] != a[1] {
+			t.Errorf("%q: imported %q, made %q", s, a[1], a[0])
+		}
+		if _, ok := r.Get("s").(*importedString); !ok && len(s) > 16 {
+			t.Errorf("%q: not imported", s)
+		}
+	}
+}
+
+// Trimming a string converted to a BigInt checks the interrupt between
+// blocks of characters, as its conversion does, and so does reading a
+// string imported from Go: Node's 1n written after 2^27 spaces, 2^26 ideographic
+// spaces, or 2^27 imported spaces returned 66, 211 and 613 ms after an
+// interrupt.
+func TestBigIntTrimInterruptible(t *testing.T) {
+	skipHeavy(t)
+	r := New()
+	r.Set("imported", strings.Repeat(" ", 1<<27)+"1")
+	r.Set("importedUni", strings.Repeat("\u3000", 1<<26)+"1")
+	if _, err := r.RunString(`var ascii = " ".repeat(2 ** 27) + "1", uni = "\u3000".repeat(2 ** 26) + "1", trail = "1" + "\u3000".repeat(2 ** 26);`); err != nil {
+		t.Fatal(err)
+	}
+	for _, src := range []string{"BigInt(ascii)", "BigInt(uni)", "BigInt(trail)", "BigInt(imported)", "BigInt(importedUni)", "imported == 1n"} {
+		runtime.GC()
+		interruptWithin(t, r, src, 5*time.Millisecond, slack(20*time.Millisecond))
+	}
+}
+
+const bigIntTrimScript = `const show = (f) => { try { const r = f(); return typeof r === 'bigint' ? r + 'n' : typeof r + ':' + String(r); } catch (e) { const m = e.message; return e.name + ': ' + m.length + ' ' + [m.charCodeAt(15), m.charCodeAt(16), m.charCodeAt(m.length - 13)].join(); } };
+const ws = [" ", "\t", "\n", "\v", "\f", "\r", "\u00a0", "\u1680", "\u2000", "\u200a", "\u2028", "\u2029", "\u202f", "\u205f", "\u3000", "\ufeff"];
+const cases = [];
+for (const w of ws) cases.push(w + "12" + w, w + w + "-0x1f" + w, w + "0b101" + w + w);
+cases.push("\u0085" + "1", "1" + "\u180e", "\u{1F9EA}1", " 1 2 ", "", "   ", "\u3000", "+7\u3000", "-\u30007", " \ud800 1");
+for (const s of cases) console.log(JSON.stringify(s), '=>', show(() => BigInt(s)), show(() => s == 18n), show(() => 1n < s));
+`
+
+const bigIntTrimNode = "\" 12 \" => 12n boolean:false boolean:true\n\"  -0x1f \" => SyntaxError: 35 32,32,32 boolean:false boolean:false\n\" 0b101  \" => 5n boolean:false boolean:true\n\"\\t12\\t\" => 12n boolean:false boolean:true\n\"\\t\\t-0x1f\\t\" => SyntaxError: 35 9,9,9 boolean:false boolean:false\n\"\\t0b101\\t\\t\" => 5n boolean:false boolean:true\n\"\\n12\\n\" => 12n boolean:false boolean:true\n\"\\n\\n-0x1f\\n\" => SyntaxError: 35 10,10,10 boolean:false boolean:false\n\"\\n0b101\\n\\n\" => 5n boolean:false boolean:true\n\"\\u000b12\\u000b\" => 12n boolean:false boolean:true\n\"\\u000b\\u000b-0x1f\\u000b\" => SyntaxError: 35 11,11,11 boolean:false boolean:false\n\"\\u000b0b101\\u000b\\u000b\" => 5n boolean:false boolean:true\n\"\\f12\\f\" => 12n boolean:false boolean:true\n\"\\f\\f-0x1f\\f\" => SyntaxError: 35 12,12,12 boolean:false boolean:false\n\"\\f0b101\\f\\f\" => 5n boolean:false boolean:true\n\"\\r12\\r\" => 12n boolean:false boolean:true\n\"\\r\\r-0x1f\\r\" => SyntaxError: 35 13,13,13 boolean:false boolean:false\n\"\\r0b101\\r\\r\" => 5n boolean:false boolean:true\n\"\u00a012\u00a0\" => 12n boolean:false boolean:true\n\"\u00a0\u00a0-0x1f\u00a0\" => SyntaxError: 35 160,160,160 boolean:false boolean:false\n\"\u00a00b101\u00a0\u00a0\" => 5n boolean:false boolean:true\n\"\u168012\u1680\" => 12n boolean:false boolean:true\n\"\u1680\u1680-0x1f\u1680\" => SyntaxError: 35 5760,5760,5760 boolean:false boolean:false\n\"\u16800b101\u1680\u1680\" => 5n boolean:false boolean:true\n\"\u200012\u2000\" => 12n boolean:false boolean:true\n\"\u2000\u2000-0x1f\u2000\" => SyntaxError: 35 8192,8192,8192 boolean:false boolean:false\n\"\u20000b101\u2000\u2000\" => 5n boolean:false boolean:true\n\"\u200a12\u200a\" => 12n boolean:false boolean:true\n\"\u200a\u200a-0x1f\u200a\" => SyntaxError: 35 8202,8202,8202 boolean:false boolean:false\n\"\u200a0b101\u200a\u200a\" => 5n boolean:false boolean:true\n\"\u202812\u2028\" => 12n boolean:false boolean:true\n\"\u2028\u2028-0x1f\u2028\" => SyntaxError: 35 8232,8232,8232 boolean:false boolean:false\n\"\u20280b101\u2028\u2028\" => 5n boolean:false boolean:true\n\"\u202912\u2029\" => 12n boolean:false boolean:true\n\"\u2029\u2029-0x1f\u2029\" => SyntaxError: 35 8233,8233,8233 boolean:false boolean:false\n\"\u20290b101\u2029\u2029\" => 5n boolean:false boolean:true\n\"\u202f12\u202f\" => 12n boolean:false boolean:true\n\"\u202f\u202f-0x1f\u202f\" => SyntaxError: 35 8239,8239,8239 boolean:false boolean:false\n\"\u202f0b101\u202f\u202f\" => 5n boolean:false boolean:true\n\"\u205f12\u205f\" => 12n boolean:false boolean:true\n\"\u205f\u205f-0x1f\u205f\" => SyntaxError: 35 8287,8287,8287 boolean:false boolean:false\n\"\u205f0b101\u205f\u205f\" => 5n boolean:false boolean:true\n\"\u300012\u3000\" => 12n boolean:false boolean:true\n\"\u3000\u3000-0x1f\u3000\" => SyntaxError: 35 12288,12288,12288 boolean:false boolean:false\n\"\u30000b101\u3000\u3000\" => 5n boolean:false boolean:true\n\"\ufeff12\ufeff\" => 12n boolean:false boolean:true\n\"\ufeff\ufeff-0x1f\ufeff\" => SyntaxError: 35 65279,65279,65279 boolean:false boolean:false\n\"\ufeff0b101\ufeff\ufeff\" => 5n boolean:false boolean:true\n\"\u00851\" => SyntaxError: 29 133,49,49 boolean:false boolean:false\n\"1\u180e\" => SyntaxError: 29 49,6158,6158 boolean:false boolean:false\n\"\U0001f9ea1\" => SyntaxError: 30 55358,56810,49 boolean:false boolean:false\n\" 1 2 \" => SyntaxError: 32 32,49,32 boolean:false boolean:false\n\"\" => 0n boolean:false boolean:false\n\"   \" => 0n boolean:false boolean:false\n\"\u3000\" => 0n boolean:false boolean:false\n\"+7\u3000\" => 7n boolean:false boolean:true\n\"-\u30007\" => SyntaxError: 30 45,12288,55 boolean:false boolean:false\n\" \\ud800 1\" => SyntaxError: 31 32,55296,49 boolean:false boolean:false"

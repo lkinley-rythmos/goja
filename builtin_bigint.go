@@ -241,25 +241,42 @@ func (r *Runtime) stringToBigIntOf(s String) (*big.Int, error) {
 
 // bigIntSource is s trimmed of white space, as StringToBigInt reads it, or
 // false if what is left has a character that is not ASCII, which no BigInt
-// has. A long string is read a block at a time, with the interrupt checked
-// between them; toTrimmedUTF8 made a UTF-8 copy of the whole of a string
-// that is not ASCII first, uninterruptibly.
+// has. A long string is read a block of bigIntScanBlock characters at a
+// time, its trimming included, with the interrupt checked between them:
+// toTrimmedUTF8 made a UTF-8 copy of the whole of a string that is not
+// ASCII first, uninterruptibly, and trimmed an ASCII one in one step. A
+// string imported from Go is read in its UTF-8, without making its code
+// units (which scanned all of it at once).
 func (r *Runtime) bigIntSource(s String) (string, bool) {
-	if a, ok := s.(asciiString); ok {
-		return a.toTrimmedUTF8(), true
+	switch s := s.(type) {
+	case asciiString:
+		return r.trimSpaceUTF8(string(s)), true
+	case *importedString:
+		// What is left is checked by the conversion, which refuses any
+		// character but a digit, a sign or a prefix.
+		return r.trimSpaceUTF8(s.s), true
 	}
 	i, j := 0, s.Length()
 	for i < j && isWhiteSpaceUnit(s.CharAt(i)) {
 		i++
+		if i%bigIntScanBlock == 0 {
+			r.vm.checkInterrupt()
+		}
 	}
 	for j > i && isWhiteSpaceUnit(s.CharAt(j-1)) {
 		j--
+		if j%bigIntScanBlock == 0 {
+			r.vm.checkInterrupt()
+		}
 	}
+	// The copy is charged before it is made, as the + operator charges a
+	// string.
+	r.countAlloc(int64(j - i))
 	var b strings.Builder
 	for k := i; k < j; k++ {
-		if (k-i)%(1<<20) == 0 {
+		if (k-i)%bigIntScanBlock == 0 {
 			r.vm.checkInterrupt()
-			b.Grow(min(j-k, 1<<20))
+			b.Grow(min(j-k, bigIntScanBlock))
 		}
 		c := s.CharAt(k)
 		if c >= utf8.RuneSelf {
@@ -268,6 +285,43 @@ func (r *Runtime) bigIntSource(s String) (string, bool) {
 		b.WriteByte(byte(c))
 	}
 	return b.String(), true
+}
+
+// bigIntScanBlock is how many characters bigIntSource and the conversion
+// read between two interrupt checks (about 1 ms).
+const bigIntScanBlock = 1 << 20
+
+// trimSpaceUTF8 is s, UTF-8, trimmed of ECMAScript white space, a block of
+// characters at a time, with the interrupt checked between them.
+func (r *Runtime) trimSpaceUTF8(s string) string {
+	i, j, n := 0, len(s), 0
+	for i < j {
+		c, size := rune(s[i]), 1
+		if c >= utf8.RuneSelf {
+			c, size = utf8.DecodeRuneInString(s[i:])
+		}
+		if c > 0xffff || !isWhiteSpaceUnit(uint16(c)) {
+			break
+		}
+		i += size
+		if n++; n%bigIntScanBlock == 0 {
+			r.vm.checkInterrupt()
+		}
+	}
+	for j > i {
+		c, size := rune(s[j-1]), 1
+		if c >= utf8.RuneSelf {
+			c, size = utf8.DecodeLastRuneInString(s[i:j])
+		}
+		if c > 0xffff || !isWhiteSpaceUnit(uint16(c)) {
+			break
+		}
+		j -= size
+		if n++; n%bigIntScanBlock == 0 {
+			r.vm.checkInterrupt()
+		}
+	}
+	return s[i:j]
 }
 
 // isWhiteSpaceUnit reports whether c is ECMAScript WhiteSpace or a
@@ -381,6 +435,11 @@ func allDigits(s string, base int, check func()) bool {
 // split if it is there, and which is made a String, so that the half kept
 // stays what it was.
 func (r *Runtime) bigIntConversionError(s String) *Object {
+	if is, ok := s.(*importedString); ok && !is.scanned {
+		// Only the units that can be in the message are made: making
+		// them all scanned all of the string at once.
+		s = is.prefixUnits(1001)
+	}
 	text := s
 	if s.Length() > 1000 {
 		text = s.Substring(0, 1000).Concat(newStringValue("\u2026"))
