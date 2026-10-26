@@ -857,7 +857,8 @@ func (r *Runtime) valueMessage(prefix string, v Value, suffix string) String {
 // (Object::NoSideEffectsToString), in parts to join: a primitive as String
 // writes it, a BigInt by bigString, a symbol as Symbol(description); a
 // proxy as its target; a function as its source, cut to its first 111 and
-// last 2 code units past 128 (a bound one as V8 writes any); an error (or an object whose toString is
+// last 2 code units past 128 (sourceMessageParts; a bound one as V8 writes
+// any); an error (or an object whose toString is
 // Error.prototype.toString) as "name: message", a name or message that is
 // not a string left out; an object whose toString is
 // Object.prototype.toString, and whose constructor is a function with a
@@ -901,11 +902,7 @@ func (r *Runtime) objectMessageParts(o *Object) []String {
 		return []String{asciiString("function () { [native code] }")}
 	}
 	if f, ok := o.self.(funcObjectImpl); ok {
-		src := f.source()
-		if n := src.Length(); n > 128 {
-			return []String{src.Substring(0, 111), asciiString("...<omitted>..."), src.Substring(n-2, n)}
-		}
-		return []String{src}
+		return r.sourceMessageParts(f.sourceText())
 	}
 	toString, _ := dataProperty(o, "toString").(*Object)
 	if o.self.className() == classError || toString != nil && toString == r.errorProtoToString() {
@@ -936,6 +933,123 @@ func (r *Runtime) objectMessageParts(o *Object) []String {
 		tag = asciiString(v8ClassName(o))
 	}
 	return []String{asciiString("[object "), tag, asciiString("]")}
+}
+
+// The cut of a function's source in a message (sourceMessageParts): one
+// longer than sourceMessageMax code units is cut to its first
+// sourceMessageHead and its last sourceMessageTail.
+const (
+	sourceMessageMax  = 128
+	sourceMessageHead = 111
+	sourceMessageTail = 2
+)
+
+// sourceMessageParts is a function's source, in the parts sourceText gives
+// it in, as V8 writes it in a message (Object::NoSideEffectsToString):
+// whole if it is at most 128 code units long, else its first 111 and its
+// last 2 around "...<omitted>...". Only those units are read and made,
+// charged first: source() made all of it, through Go strings, before it was
+// cut (a native function named with 2^22 units of U+3000 made 149 MB under
+// a 1 MiB limit, charged 542 bytes, and one named with 2^24 returned 345 ms
+// after an interrupt; a script function whose source is 2^24 such units
+// returned 159 ms after one).
+func (r *Runtime) sourceMessageParts(parts []String) []String {
+	// The scratch of the units, and the parts made of it.
+	r.countAlloc(4 * (sourceMessageMax + 2 + sourceMessageTail))
+	head := make([]uint16, 0, sourceMessageMax+2)
+	for _, p := range parts {
+		head = appendLeadingUnits(head, p, sourceMessageMax+1-len(head))
+		if len(head) > sourceMessageMax {
+			break
+		}
+	}
+	if len(head) <= sourceMessageMax {
+		return []String{StringFromUTF16(head)}
+	}
+	tail := make([]uint16, 0, sourceMessageTail)
+	for i := len(parts) - 1; i >= 0 && len(tail) < sourceMessageTail; i-- {
+		tail = append(trailingUnits(parts[i], sourceMessageTail-len(tail)), tail...)
+	}
+	return []String{StringFromUTF16(head[:sourceMessageHead]), asciiString("...<omitted>..."), StringFromUTF16(tail)}
+}
+
+// appendLeadingUnits appends s's first k code units (all of them if it is
+// shorter) to buf. A string imported from Go and not yet scanned is read in
+// its UTF-8, as far as the units go, as the scan would convert it.
+func appendLeadingUnits(buf []uint16, s String, k int) []uint16 {
+	if is, ok := s.(*importedString); ok && !is.scanned {
+		return appendUTF8Units(buf, is.s, k)
+	}
+	a, u := devirtualizeString(s)
+	if u != nil {
+		return append(buf, u[1:1+min(k, len(u)-1)]...)
+	}
+	for i := 0; i < min(k, len(a)); i++ {
+		buf = append(buf, uint16(a[i]))
+	}
+	return buf
+}
+
+// trailingUnits is s's last k code units (all of them if it is shorter). A
+// string imported from Go and not yet scanned is read in its UTF-8, from
+// the start of a rune at least 4k bytes before its end (k runes at least,
+// of a unit or more each).
+func trailingUnits(s String, k int) []uint16 {
+	if is, ok := s.(*importedString); ok && !is.scanned {
+		str := is.s
+		u := appendUTF8Units(nil, str[runeStartBefore(str, max(0, len(str)-4*k)):], len(str))
+		return u[max(0, len(u)-k):]
+	}
+	a, u := devirtualizeString(s)
+	if u != nil {
+		return append([]uint16(nil), u[max(1, len(u)-k):]...)
+	}
+	w := make([]uint16, 0, k)
+	for i := max(0, len(a)-k); i < len(a); i++ {
+		w = append(w, uint16(a[i]))
+	}
+	return w
+}
+
+// appendUTF8Units appends the first k code units of str (all of them if it
+// is shorter) to buf, converted as unistring.Scan converts them: str read
+// as range reads it, an invalid byte as U+FFFD.
+func appendUTF8Units(buf []uint16, str string, k int) []uint16 {
+	n := len(buf)
+	for i := 0; i < len(str) && len(buf)-n < k; {
+		c, size := utf8.DecodeRuneInString(str[i:])
+		buf = utf16.AppendRune(buf, c)
+		i += size
+	}
+	return buf[:min(len(buf), n+k)]
+}
+
+// runeStartBefore is the last index of s at or before p (0 <= p <= len(s))
+// where a rune starts as a range over all of s reads it.
+func runeStartBefore(s string, p int) int {
+	for p > 0 && p < len(s) && insideRune(s, p) {
+		p--
+	}
+	return p
+}
+
+// insideRune reports whether s[p] is a byte of a rune that starts before
+// it: a continuation byte that a valid sequence takes in, which starts at
+// most three bytes before it, at the last byte before it that is not a
+// continuation byte. Any other byte starts a rune: a sequence holds no byte
+// but its first that is not a continuation byte, and a byte that no valid
+// sequence takes in is a rune (U+FFFD) of its own.
+func insideRune(s string, p int) bool {
+	if utf8.RuneStart(s[p]) {
+		return false
+	}
+	for j := p - 1; j >= max(0, p-3); j-- {
+		if utf8.RuneStart(s[j]) {
+			_, size := utf8.DecodeRuneInString(s[j:])
+			return j+size > p
+		}
+	}
+	return false
 }
 
 // errorProtoToString is Error.prototype.toString as the runtime created
@@ -1027,25 +1141,31 @@ func (r *Runtime) hostText(s String) string {
 	if u == nil {
 		return s.String()
 	}
+	// The interrupt is checked as each block starts, and a block ends
+	// past the pair its last unit starts, if it does. It was checked at
+	// the indexes that are multiples of the block, which no pair started
+	// at if all of them started at odd ones: a string of 2^25 pairs after
+	// an ASCII character was converted with no check, and returned 133 ms
+	// after an interrupt (1.5 ms without the character).
 	units := u[1:]
 	n := 0
-	for i := 0; i < len(units); i++ {
-		if i%textBlock == 0 {
-			r.vm.checkInterrupt()
+	for i := 0; i < len(units); {
+		r.vm.checkInterrupt()
+		for end := min(i+textBlock, len(units)); i < end; {
+			c, size := decodeUnit(units, i)
+			n += utf8.RuneLen(c)
+			i += size
 		}
-		c, size := decodeUnit(units, i)
-		n += utf8.RuneLen(c)
-		i += size - 1
 	}
 	r.countAlloc(int64(n))
 	buf := make([]byte, 0, n)
-	for i := 0; i < len(units); i++ {
-		if i%textBlock == 0 {
-			r.vm.checkInterrupt()
+	for i := 0; i < len(units); {
+		r.vm.checkInterrupt()
+		for end := min(i+textBlock, len(units)); i < end; {
+			c, size := decodeUnit(units, i)
+			buf = utf8.AppendRune(buf, c)
+			i += size
 		}
-		c, size := decodeUnit(units, i)
-		buf = utf8.AppendRune(buf, c)
-		i += size - 1
 	}
 	return unsafe.String(unsafe.SliceData(buf), len(buf))
 }

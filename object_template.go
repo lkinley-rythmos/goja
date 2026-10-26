@@ -329,6 +329,10 @@ func (f *templatedFuncObject) source() String {
 	return newStringValue(fmt.Sprintf("function %s() { [native code] }", f.val.runtime.toStringValue(nilSafe(f.getStr("name", nil)))))
 }
 
+func (f *templatedFuncObject) sourceText() []String {
+	return nativeSourceText(f.val.runtime.toStringValue(nilSafe(f.getStr("name", nil))))
+}
+
 func (f *templatedFuncObject) export(*objectExportCtx) interface{} {
 	return f.f
 }

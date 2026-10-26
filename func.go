@@ -61,6 +61,10 @@ type AsyncContextTracker interface {
 
 type funcObjectImpl interface {
 	source() String
+	// sourceText is source() in the parts it is made of, which a message
+	// that keeps some of its code units reads without making it whole
+	// (Runtime.sourceMessageParts).
+	sourceText() []String
 }
 
 type baseFuncObject struct {
@@ -205,6 +209,16 @@ func (f *nativeFuncObject) source() String {
 	return newStringValue(fmt.Sprintf("function %s() { [native code] }", f.val.runtime.toStringValue(nilSafe(f.getStr("name", nil)))))
 }
 
+func (f *nativeFuncObject) sourceText() []String {
+	return nativeSourceText(f.val.runtime.toStringValue(nilSafe(f.getStr("name", nil))))
+}
+
+// nativeSourceText is the source of a native function named name, in
+// parts.
+func nativeSourceText(name String) []String {
+	return []String{asciiString("function "), name, asciiString("() { [native code] }")}
+}
+
 func (f *nativeFuncObject) export(*objectExportCtx) interface{} {
 	return f.f
 }
@@ -302,6 +316,11 @@ func (f *baseFuncObject) createInstance(newTarget *Object) *Object {
 
 func (f *baseJsFuncObject) source() String {
 	return newStringValue(f.src)
+}
+
+func (f *baseJsFuncObject) sourceText() []String {
+	// Read in its UTF-8, as source() converts all of it.
+	return []String{&importedString{s: f.src}}
 }
 
 func (f *baseJsFuncObject) construct(args []Value, newTarget *Object) *Object {
