@@ -60,14 +60,19 @@ func (r *Runtime) divAbsQ(x, y *big.Int, wantQ bool) (q, m *big.Int) {
 	n := len(b.Bits())
 	qw := len(a.Bits()) - n + 1
 	if divIsLeaf(qw, n) {
-		// QuoRem makes both results, the one the caller does not charge
-		// included, and a copy of a for the remainder.
-		r.chargeWords(len(a.Bits()) + 2)
+		// QuoRem makes the remainder in a copy of a, and the quotient,
+		// which the caller charges when it wants it, and its scratch.
+		w := len(a.Bits()) + 2
+		if !wantQ {
+			w += qw + 1
+		}
+		r.chargeWords(w)
+		r.chargeDivScratch(n)
 		return new(big.Int).QuoRem(a, b, new(big.Int))
 	}
 	r.vm.checkInterrupt()
 	if qw+1 < n {
-		return r.divShortQuotient(a, b, qw)
+		return r.divShortQuotient(a, b, qw, wantQ)
 	}
 	if k := divLeafQuotientWords(n); k > 0 {
 		return r.divChunked(a, b, k, wantQ)
@@ -97,8 +102,10 @@ func (r *Runtime) divChunked(a, b *big.Int, k int, wantQ bool) (q, m *big.Int) {
 	blocks := (len(aw) + k - 1) / k
 	var qw []big.Word
 	if wantQ {
-		qw = make([]big.Word, blocks*k)
+		// As long as the quotient can be, which the caller charges.
+		qw = make([]big.Word, len(aw)-len(b.Bits())+1)
 	}
+	r.chargeDivScratch(len(b.Bits()))
 	m = new(big.Int)
 	shift := uint(k * bits.UintSize)
 	for i := blocks - 1; i >= 0; i-- {
@@ -110,7 +117,9 @@ func (r *Runtime) divChunked(a, b *big.Int, k int, wantQ bool) (q, m *big.Int) {
 		qi := new(big.Int)
 		qi, m = qi.QuoRem(t, b, new(big.Int))
 		if wantQ {
-			copy(qw[i*k:(i+1)*k], qi.Bits())
+			// Each block of the quotient below k words; those above its
+			// length zero.
+			copy(qw[min(i*k, len(qw)):min((i+1)*k, len(qw))], qi.Bits())
 		}
 	}
 	if !wantQ {
@@ -125,10 +134,14 @@ func (r *Runtime) divChunked(a, b *big.Int, k int, wantQ bool) (q, m *big.Int) {
 // out change a / b by less than 3), which the remainder corrects. The
 // product and the remainder, as long as b, are charged before they are
 // made: x / y of two numbers near V8's limit made 256 MB of them for a
-// quotient of one word.
-func (r *Runtime) divShortQuotient(a, b *big.Int, qw int) (q, m *big.Int) {
+// quotient of one word. The quotient, which the caller charges when it
+// wants it, is charged here when it does not.
+func (r *Runtime) divShortQuotient(a, b *big.Int, qw int, wantQ bool) (q, m *big.Int) {
 	aw, bw := a.Bits(), b.Bits()
 	sh := len(bw) - qw - 1
+	if !wantQ {
+		r.chargeWords(len(aw) - len(bw) + 2)
+	}
 	// Shifted by whole words: the leading words themselves.
 	q, _ = r.divAbs(new(big.Int).SetBits(aw[sh:]), new(big.Int).SetBits(bw[sh:]))
 	n := len(q.Bits()) + len(bw)
@@ -152,7 +165,7 @@ func (r *Runtime) divCorrect(q, m, b *big.Int) *big.Int {
 			}
 			m = new(big.Int).SetBits(r.natRevSubInPlace(mw, bw))
 		} else {
-			m = new(big.Int).Neg(new(big.Int).SetBits(r.natSubInPlace(mw, bw)))
+			m = negWords(r.natSubInPlace(mw, bw))
 		}
 	}
 	for r.natCmp(m.Bits(), bw) >= 0 {
@@ -184,7 +197,9 @@ func (r *Runtime) divLongQuotient(a, b *big.Int, wantQ bool) (q, m *big.Int) {
 	blocks := (len(aw) + n - 1) / n
 	var qw []big.Word
 	if wantQ {
-		qw = make([]big.Word, blocks*n)
+		// As long as the quotient can be, which the caller charges: as
+		// many blocks of n words, it was up to 2n words longer, uncharged.
+		qw = make([]big.Word, len(aw)-n+1)
 	}
 	var mw []big.Word
 	for i := blocks - 1; i >= 0; i-- {
@@ -207,7 +222,7 @@ func (r *Runtime) divLongQuotient(a, b *big.Int, wantQ bool) (q, m *big.Int) {
 		m = r.divCorrect(qi, m, b)
 		mw = m.Bits()
 		if wantQ {
-			r.natCopyAt(qw, qi.Bits(), i*n)
+			r.natCopyAt(qw, natNorm(qi.Bits()), i*n)
 		}
 	}
 	if wantQ {
@@ -229,6 +244,9 @@ func (r *Runtime) divLongQuotient(a, b *big.Int, wantQ bool) (q, m *big.Int) {
 func (r *Runtime) recipAbs(b *big.Int) *big.Int {
 	n := len(b.Bits())
 	if n <= recipLeafWords {
+		// B^(2n), the copy Quo divides and the quotient, and its scratch.
+		r.chargeWords((2*n + 5) + (2*n + 6) + (n + 6))
+		r.chargeDivScratch(n)
 		pow := new(big.Int).Lsh(big.NewInt(1), uint(2*n*bits.UintSize))
 		return pow.Quo(pow, b)
 	}

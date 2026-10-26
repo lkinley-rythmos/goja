@@ -269,20 +269,25 @@ func (r *Runtime) bigIntSource(s String) (string, bool) {
 			r.vm.checkInterrupt()
 		}
 	}
-	// The copy is charged before it is made, as the + operator charges a
-	// string.
-	r.countAlloc(int64(j - i))
-	var b strings.Builder
 	for k := i; k < j; k++ {
 		if (k-i)%bigIntScanBlock == 0 {
 			r.vm.checkInterrupt()
-			b.Grow(min(j-k, bigIntScanBlock))
 		}
-		c := s.CharAt(k)
-		if c >= utf8.RuneSelf {
+		if s.CharAt(k) >= utf8.RuneSelf {
 			return "", false
 		}
-		b.WriteByte(byte(c))
+	}
+	// The copy is charged before it is made, as the + operator charges a
+	// string, and made at once: grown a block at a time, it took up to
+	// twice its length more.
+	r.countAlloc(int64(j - i))
+	var b strings.Builder
+	b.Grow(j - i)
+	for k := i; k < j; k++ {
+		if (k-i)%bigIntScanBlock == 0 {
+			r.vm.checkInterrupt()
+		}
+		b.WriteByte(byte(s.CharAt(k)))
 	}
 	return b.String(), true
 }
@@ -385,8 +390,15 @@ func stringToBigIntWith(str string, r *Runtime) (*big.Int, error) {
 		return nil, strconv.ErrSyntax
 	}
 	if r != nil {
-		// log2(10) < 3.33 bits a digit.
-		r.chargeBigIntDigits(int64(bitsToDigits(int64(len(digits)) * 333 / 100)))
+		// log2(10) < 3.33 bits a digit. A long string is converted in
+		// parts, as many words as the result in all (bigdec), and their
+		// products are charged as they are made.
+		n := int64(bitsToDigits(int64(len(digits)) * 333 / 100))
+		r.startBigOp()
+		r.chargeBigIntDigits(n)
+		if len(digits) > 18 {
+			r.chargeBigIntDigits(n)
+		}
 	}
 	var z *big.Int
 	switch {
@@ -396,7 +408,7 @@ func stringToBigIntWith(str string, r *Runtime) (*big.Int, error) {
 	case r == nil:
 		z, _ = bigdec.Parse(digits)
 	default:
-		z, _ = bigdec.ParseWith(digits, r.mulSigned, r.vm.checkInterrupt)
+		z, _ = bigdec.ParseWith(digits, r.bigMulPart, r.vm.checkInterrupt)
 	}
 	if str[0] == '-' {
 		z.Neg(z)

@@ -77,8 +77,11 @@ func partShorter(i, n int) bool {
 	return n > 0 && leafDigits <= (n-1)>>i
 }
 
+// leaf converts s, made in words of the room it takes: big.Int.SetString
+// grows them four at a time, making 40 KB for 4096 digits (1.8 KB so).
 func leaf(s string) *big.Int {
-	z, _ := new(big.Int).SetString(s, 10)
+	z := new(big.Int).SetBits(make([]big.Word, 0, (len(s)*3402/1000+bits.UintSize-1)/bits.UintSize+1))
+	z, _ = z.SetString(s, 10)
 	return z
 }
 

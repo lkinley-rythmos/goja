@@ -41,6 +41,9 @@ type allocCounter struct {
 	bytes     int64 // estimated bytes allocated since the last SetAllocationLimit
 	limit     int64 // 0 disables the limit
 	nextCheck int64 // next multiple of allocCheckInterval at which to check
+	// words of math/big's scratch charged for the current BigInt operation
+	// (see chargeBigScratch)
+	bigScratch int
 }
 
 // SetAllocationLimit resets the allocation counter to zero and sets the

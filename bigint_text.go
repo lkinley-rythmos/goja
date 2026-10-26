@@ -17,35 +17,66 @@ const bigTextLeafWords = 1 << 11
 
 // bigText returns x in radix, as big.Int.Text does: a radix that is a
 // power of two at once, any other by halves, dividing by powers of the
-// radix (divAbs).
-func (r *Runtime) bigText(x *big.Int, radix int) string {
+// radix (divAbs). n is at least the length of the text, which the caller
+// charges: the text is made in a buffer of that size. The parts, the
+// powers and the quotients, and the text big.Int.Text makes of each part
+// (bigTextLeaf) are charged here before they are made: they were 2 MB
+// uncharged for x of 2^20 bits.
+func (r *Runtime) bigText(x *big.Int, radix int, n int64) string {
 	if len(x.Bits()) <= bigTextLeafWords {
+		r.chargeTextLeaf(len(x.Bits()), radix)
 		return x.Text(radix)
 	}
-	if radix&(radix-1) == 0 {
-		return r.bigTextPow2(x, radix)
-	}
 	var sb strings.Builder
+	sb.Grow(int(n))
+	if radix&(radix-1) == 0 {
+		r.bigTextPow2(&sb, x, radix)
+		return sb.String()
+	}
 	if x.Sign() < 0 {
 		sb.WriteByte('-')
 	}
 	// pows[i] is radix^(digits << i), digits as many as fit in the leaf.
 	digits := bigTextLeafWords * bits.UintSize * 1000 / bigLog2Milli(radix) / 2
+	// radix^digits and the powers big.Int.Exp makes on the way.
+	r.chargeWords(8 * (bigTextLeafWords/2 + 1))
 	pows := []*big.Int{new(big.Int).Exp(big.NewInt(int64(radix)), big.NewInt(int64(digits)), nil)}
 	for 2*len(pows[len(pows)-1].Bits()) <= len(x.Bits()) {
 		r.vm.checkInterrupt()
 		p := pows[len(pows)-1]
+		r.chargeWords(2*len(p.Bits()) + 1)
 		pows = append(pows, r.mulAbs(p.Bits(), p.Bits()))
 	}
 	r.writeText(&sb, new(big.Int).SetBits(x.Bits()), radix, pows, digits, -1)
 	return sb.String()
 }
 
+// chargeTextLeaf charges what big.Int.Text makes for a number of n words
+// in radix: the text, as bytes and as a string, a copy of the number it
+// divides, and for a radix other than 10 the powers it divides by.
+func (r *Runtime) chargeTextLeaf(n, radix int) {
+	if n < 64 {
+		// Less than 4 KB.
+		return
+	}
+	text := int64(n)*bits.UintSize*1000/int64(bigLog2Milli(radix)) + 2
+	r.countAlloc(2*text + 3*int64(n)*(bits.UintSize/8))
+}
+
+// writeZeros writes n zeros.
+func writeZeros(sb *strings.Builder, n int) {
+	const zeros = "0000000000000000000000000000000000000000000000000000000000000000"
+	for ; n > len(zeros); n -= len(zeros) {
+		sb.WriteString(zeros)
+	}
+	sb.WriteString(zeros[:max(n, 0)])
+}
+
 // bigTextPow2 is big.Int.Text for a radix that is a power of two, a block
 // of words at a time (a number of 2^24 words takes Text 0.3 s in hex): the
 // blocks are a whole number of digits, 2^16 words, or 3 or 5 times 2^14 in
 // base 8 or 32.
-func (r *Runtime) bigTextPow2(x *big.Int, radix int) string {
+func (r *Runtime) bigTextPow2(sb *strings.Builder, x *big.Int, radix int) {
 	perDigit := bits.TrailingZeros(uint(radix))
 	block := 1 << 16
 	if bits.UintSize%perDigit != 0 {
@@ -53,29 +84,29 @@ func (r *Runtime) bigTextPow2(x *big.Int, radix int) string {
 	}
 	digits := block * bits.UintSize / perDigit
 	w := x.Bits()
-	var sb strings.Builder
 	if x.Sign() < 0 {
 		sb.WriteByte('-')
 	}
 	top := (len(w) - 1) / block
 	for i := top; i >= 0; i-- {
 		r.vm.checkInterrupt()
-		s := new(big.Int).SetBits(natNorm(w[i*block : min((i+1)*block, len(w))])).Text(radix)
-		if i < top && len(s) < digits {
-			sb.WriteString(strings.Repeat("0", digits-len(s)))
+		b := natNorm(w[i*block : min((i+1)*block, len(w))])
+		// The digits as bytes and as a string.
+		r.countAlloc(2 * int64(len(b)*bits.UintSize/perDigit+1))
+		s := new(big.Int).SetBits(b).Text(radix)
+		if i < top {
+			writeZeros(sb, digits-len(s))
 		}
 		sb.WriteString(s)
 	}
-	return sb.String()
 }
 
 // writeText writes x, padded with zeros to width digits when width >= 0.
 func (r *Runtime) writeText(sb *strings.Builder, x *big.Int, radix int, pows []*big.Int, digits, width int) {
 	if len(x.Bits()) <= bigTextLeafWords {
+		r.chargeTextLeaf(len(x.Bits()), radix)
 		s := x.Text(radix)
-		if width > len(s) {
-			sb.WriteString(strings.Repeat("0", width-len(s)))
-		}
+		writeZeros(sb, width-len(s))
 		sb.WriteString(s)
 		return
 	}
@@ -85,6 +116,8 @@ func (r *Runtime) writeText(sb *strings.Builder, x *big.Int, radix int, pows []*
 	for k > 0 && 2*len(pows[k].Bits()) > len(x.Bits())+1 {
 		k--
 	}
+	// The quotient (divAbs charges the remainder).
+	r.chargeWords(len(x.Bits()) - len(pows[k].Bits()) + 2)
 	q, m := r.divAbs(x, pows[k])
 	low := digits << k
 	if width >= 0 {
@@ -131,8 +164,9 @@ func (r *Runtime) bigString(x *big.Int, radix int) String {
 	if n > maxStringLength {
 		r.throwInvalidStringLength()
 	}
+	r.startBigOp()
 	r.countAlloc(n)
-	return asciiString(r.bigText(x, radix))
+	return asciiString(r.bigText(x, radix, n))
 }
 
 // toStringOf is v.toString(), with a BigInt written by bigString.

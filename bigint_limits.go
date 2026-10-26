@@ -42,11 +42,12 @@ func (r *Runtime) throwBigIntTooBig() {
 
 // chargeBigInt is called before a BigInt result of n digits is made: it
 // refuses one longer than V8's limit, and charges its digits to the
-// allocation counter.
+// allocation counter. It starts the operation that makes it (startBigOp).
 func (r *Runtime) chargeBigInt(n int) {
 	if n > bigIntMaxLength {
 		r.throwBigIntTooBig()
 	}
+	r.startBigOp()
 	r.chargeBigIntDigits(int64(n))
 }
 
@@ -116,6 +117,12 @@ func (r *Runtime) bigMul(x, y *big.Int) *big.Int {
 		return y
 	}
 	r.chargeBigInt(bigDigits(x) + bigDigits(y))
+	return r.mulSigned(x, y)
+}
+
+// bigMulPart is x * y, a part of a larger operation, charged as made.
+func (r *Runtime) bigMulPart(x, y *big.Int) *big.Int {
+	r.chargeBigIntDigits(int64(len(x.Bits()) + len(y.Bits())))
 	return r.mulSigned(x, y)
 }
 
@@ -200,7 +207,7 @@ func (r *Runtime) bigNot(x *big.Int) *big.Int {
 		return new(big.Int).SetBits(r.natDec(x.Bits()))
 	}
 	z := r.natInc(r.natCopy(x.Bits()))
-	return new(big.Int).Neg(new(big.Int).SetBits(z))
+	return negWords(z)
 }
 
 // natCopy is a copy of x, made a block at a time.
@@ -316,7 +323,7 @@ func (r *Runtime) bigShiftRightAbs(x, y *big.Int) *big.Int {
 	if x.TrailingZeroBits() < n {
 		z = r.natInc(z)
 	}
-	return new(big.Int).Neg(new(big.Int).SetBits(z))
+	return negWords(z)
 }
 
 // bigExp is x ** y, which throws where V8's BigInt::Exponentiate does.
@@ -367,6 +374,7 @@ func (r *Runtime) bigExp(x, y *big.Int) *big.Int {
 	// V8 does not throw, so the powers are made the faster way, from the
 	// highest bit of n down, multiplying by x, which is short, rather than
 	// by the square before.
+	r.startBigOp()
 	z := x
 	for i := bits.Len(uint(n)) - 2; i >= 0; i-- {
 		r.chargeBigIntDigits(2 * int64(bigDigits(z)))
@@ -520,7 +528,7 @@ func (r *Runtime) bigAsIntN(n int64, x *big.Int) *big.Int {
 			return t
 		}
 		r.bigNegModPow2(w, uint(n))
-		return new(big.Int).Neg(new(big.Int).SetBits(natNorm(w)))
+		return negWords(natNorm(w))
 	}
 	// x mod 2^n is u = 2^n - t (t != 0), and the result u, or u - 2^n = -t
 	// when bit n - 1 of u is set, that is when t <= 2^(n-1).
@@ -587,8 +595,13 @@ const bigMulLeafProduct = 1 << 26
 // big.Int.Mul more than two minutes, during which the runtime could not be
 // interrupted. The parts are put together a block at a time (natAddAt), and
 // a long operand by a short one is multiplied a block of the long one at a
-// time (mulBlocks): one word by 2^24 took big.Int.Mul 20 ms, and putting the
-// parts of a product near V8's limit together took it as long a step.
+// time: one word by 2^24 took big.Int.Mul 20 ms, and putting the parts of a
+// product near V8's limit together took it as long a step.
+//
+// The caller charges the product, len(x) + len(y) words. The parts are made
+// in it and in one scratch buffer, charged here before it is made
+// (mulScratchWords): made for each part, they were several times the
+// product, uncharged (one word by 2^20 + 1 made a second product).
 func (r *Runtime) mulAbs(x, y []big.Word) *big.Int {
 	if len(x) < len(y) {
 		x, y = y, x
@@ -596,55 +609,154 @@ func (r *Runtime) mulAbs(x, y []big.Word) *big.Int {
 	if len(y) == 0 {
 		return new(big.Int)
 	}
-	square := len(x) == len(y) && &x[0] == &y[0]
 	if mulIsLeaf(len(x), len(y)) && len(x) <= bigBlockWords {
+		if 16*len(y) > bigScratchCharged {
+			r.chargeMulScratch(len(y))
+		}
 		a := new(big.Int).SetBits(x)
-		if square {
+		if len(x) == len(y) && &x[0] == &y[0] {
 			return new(big.Int).Mul(a, a)
 		}
 		return new(big.Int).Mul(a, new(big.Int).SetBits(y))
 	}
-	r.vm.checkInterrupt()
-	h := (len(x) + 1) / 2
-	if len(y) <= h {
-		return r.mulBlocks(x, y)
+	r.chargeMulScratch(mulLeafMax(len(x), len(y)))
+	// A word of room, for a sum made in place (z.Add(z, ...)).
+	z := make([]big.Word, len(x)+len(y), len(x)+len(y)+1)
+	r.mulTo(z, x, y, nil)
+	return new(big.Int).SetBits(natNorm(z))
+}
+
+// mulTo sets z, of len(x) + len(y) words, to |x| * |y|, for normalized x
+// and y, using t as scratch: when t is shorter than the product needs
+// (mulScratchWords), a scratch buffer is charged and made.
+func (r *Runtime) mulTo(z, x, y, t []big.Word) {
+	if len(x) < len(y) {
+		x, y = y, x
 	}
+	m, n := len(x), len(y)
+	if n == 0 {
+		r.natClear(z)
+		return
+	}
+	square := m == n && &x[0] == &y[0]
+	if mulIsLeaf(m, n) && m <= bigBlockWords {
+		// big.Int.Mul makes the product in z, which has exactly the room
+		// it needs and does not overlap x or y (their capacities end
+		// elsewhere: see natSlice), writing every word of it.
+		p := new(big.Int).SetBits(z[:0:len(z)])
+		a := new(big.Int).SetBits(x)
+		if square {
+			p.Mul(a, a)
+		} else {
+			p.Mul(a, new(big.Int).SetBits(y))
+		}
+		if pw := p.Bits(); len(pw) > 0 && &pw[0] != &z[0] {
+			copy(z, pw)
+			clear(z[len(pw):])
+		}
+		return
+	}
+	r.vm.checkInterrupt()
+	if need := mulScratchWords(m, n); len(t) < need {
+		r.chargeWords(need)
+		t = make([]big.Word, need)
+	}
+	h := (m + 1) / 2
+	if n <= h {
+		// A block of x at a time, each product made in t and added to z.
+		s := mulBlockWords(n)
+		r.natClear(z)
+		p, rest := natSlice(t, 0, s+n), t[s+n:]
+		for i := 0; i < m; i += s {
+			r.vm.checkInterrupt()
+			b := natNorm(x[i:min(i+s, m)])
+			if len(b) == 0 {
+				continue
+			}
+			pb := p[: len(b)+n : len(b)+n]
+			r.mulTo(pb, b, y, rest)
+			r.natAddAt(z, natNorm(pb), i)
+		}
+		return
+	}
+	// z = z2 * B^2h + z1 * B^h + z0, with z0 = x0 * y0 and z2 = x1 * y1
+	// made in place, and z1 = (x0 + x1) * (y0 + y1) - z2 - z0 in t.
 	x0, x1 := natNorm(x[:h]), x[h:]
 	y0, y1 := x0, x1
 	if !square {
 		y0, y1 = natNorm(y[:h]), y[h:]
 	}
-	z2 := r.mulAbs(x1, y1)
-	z0 := r.mulAbs(x0, y0)
-	// z1 = (x0 + x1) * (y0 + y1) - z2 - z0
-	sx := r.natAdd(x0, x1)
+	z0 := z[: len(x0)+len(y0) : len(x0)+len(y0)]
+	r.mulTo(z0, x0, y0, t)
+	r.natClear(z[len(z0) : 2*h])
+	r.mulTo(natSlice(z, 2*h, len(z)), x1, y1, t)
+	sx := r.natAddTo(natSlice(t, 0, h+1), x0, x1)
 	sy := sx
 	if !square {
-		sy = r.natAdd(y0, y1)
+		sy = r.natAddTo(natSlice(t, h+1, 2*h+2), y0, y1)
 	}
-	z1 := r.mulAbs(sx, sy).Bits()
-	z1 = r.natSubInPlace(z1, z2.Bits())
-	z1 = r.natSubInPlace(z1, z0.Bits())
-	// z2 * B^2h + z1 * B^h + z0, z0 < B^2h.
-	z := make([]big.Word, len(x)+len(y)+1)
-	r.natCopyAt(z, z0.Bits(), 0)
-	r.natCopyAt(z, z2.Bits(), 2*h)
+	p := natSlice(t, 2*h+2, 2*h+2+len(sx)+len(sy))
+	r.mulTo(p, sx, sy, t[4*h+4:])
+	z1 := r.natSubInPlace(natNorm(p), natNorm(z[:2*h]))
+	z1 = r.natSubInPlace(z1, natNorm(z[2*h:]))
 	r.natAddAt(z, z1, h)
-	return new(big.Int).SetBits(natNorm(z))
 }
 
-// mulBlocks is mulAbs of x by y no longer than half of x: x is multiplied
-// a block at a time, each block as long as y or long enough for a step of
-// big.Int.Mul, and the products are added in place.
-func (r *Runtime) mulBlocks(x, y []big.Word) *big.Int {
-	s := max(len(y), min(bigBlockWords, bigMulLeafProduct/len(y)))
-	z := make([]big.Word, len(x)+len(y))
-	for i := 0; i < len(x); i += s {
-		r.vm.checkInterrupt()
-		p := r.mulAbs(natNorm(x[i:min(i+s, len(x))]), y)
-		r.natAddAt(z, p.Bits(), i)
+// mulBlockWords is how long a block of the long operand mulTo multiplies
+// by a short one of n words at a time: as long as the short one, or long
+// enough for a step of big.Int.Mul but its product no longer than
+// mulBlockScratch words, so that the scratch it is made in stays small.
+func mulBlockWords(n int) int {
+	return max(n, min(bigBlockWords, bigMulLeafProduct/n, mulBlockScratch-n))
+}
+
+// mulBlockScratch bounds the scratch of a product by a short operand
+// (mulBlockWords): 32 KiB.
+const mulBlockScratch = 1 << 12
+
+// mulScratchWords is how many words of scratch mulTo needs for operands of
+// m >= n words, not left to big.Int.Mul: for a short operand, a block's
+// product (mulBlockWords) and its own scratch; otherwise x0 + x1, y0 + y1,
+// their product and its scratch, the scratch of z0 and z2 being reused
+// for it.
+func mulScratchWords(m, n int) int {
+	if n == 0 || mulIsLeaf(m, n) && m <= bigBlockWords {
+		return 0
 	}
-	return new(big.Int).SetBits(natNorm(z))
+	h := (m + 1) / 2
+	if n <= h {
+		s := mulBlockWords(n)
+		return s + n + mulScratchWords(s, n)
+	}
+	return 4*h + 4 + max(mulScratchWords(h+1, h+1), mulScratchWords(h, h), mulScratchWords(m-h, n-h))
+}
+
+// mulLeafMax is the length of the longest shorter operand of the products
+// mulTo leaves to big.Int.Mul for operands of m >= n words.
+func mulLeafMax(m, n int) int {
+	if n == 0 || mulIsLeaf(m, n) && m <= bigBlockWords {
+		return n
+	}
+	h := (m + 1) / 2
+	if n <= h {
+		return mulLeafMax(mulBlockWords(n), n)
+	}
+	return mulLeafMax(h+1, h+1)
+}
+
+// natSlice is z[i:j] with its capacity ending at j, so that big.Int does
+// not take it for an alias of another part of z (math/big's alias compares
+// where capacities end).
+func natSlice(z []big.Word, i, j int) []big.Word {
+	return z[i:j:j]
+}
+
+// natClear zeroes z a block at a time.
+func (r *Runtime) natClear(z []big.Word) {
+	for i := 0; i < len(z); i += bigBlockWords {
+		r.vm.checkInterrupt()
+		clear(z[i:min(i+bigBlockWords, len(z))])
+	}
 }
 
 // mulIsLeaf reports whether operands of m and n words make a product
@@ -681,6 +793,12 @@ func (r *Runtime) bigBitwise(x, y *big.Int, op byte) *big.Int {
 		}
 		if y.Sign() < 0 {
 			r.chargeWords(len(y.Bits()))
+		}
+		// A negative result is made as -(m + 1), m made first and m + 1
+		// in a new slice: for &, of two negative operands; for |, of any;
+		// for ^, of one.
+		if nx, ny := x.Sign() < 0, y.Sign() < 0; op == '&' && nx && ny || op == '|' && (nx || ny) || op == '^' && nx != ny {
+			r.chargeWords(max(len(x.Bits()), len(y.Bits())))
 		}
 		switch op {
 		case '&':
@@ -747,7 +865,9 @@ func (r *Runtime) natBitwise(x, y []big.Word, op byte) []big.Word {
 	} else if op == 'n' {
 		n = len(x)
 	}
-	z := make([]big.Word, n)
+	// A word of room, for the carry of natInc: append moved a result whose
+	// bits were all set to a slice twice as long, uncharged.
+	z := make([]big.Word, n, n+1)
 	for i := 0; i < n; i += bigBlockWords {
 		r.vm.checkInterrupt()
 		for j := i; j < min(i+bigBlockWords, n); j++ {

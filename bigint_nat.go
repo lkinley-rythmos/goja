@@ -21,6 +21,54 @@ func (r *Runtime) chargeWords(n int) {
 	r.countAlloc(int64(n) * (bits.UintSize / 8))
 }
 
+// math/big makes the scratch of its own products and divisions from a pool
+// (getStack), which it grows as an operation needs, and which a garbage
+// collection empties (a loop of x.toString() for x of 2^20 bits grew it
+// by 1.2 MB a call). With the pool empty, a product whose shorter operand
+// has n words made up to 14.4n words of it, a division by a number of n
+// words up to 25n (both measured over the shapes mulAbs and divAbs leave
+// to big.Int). A BigInt operation charges it before a part that may need
+// more than the operation has been charged for it so far (the parts share
+// the pool), when that is more than bigScratchCharged words: a product
+// whose shorter operand is below 256 words, or a division by fewer than
+// 147, is not charged it.
+const bigScratchCharged = 1 << 12
+
+// chargeMulScratch charges math/big's scratch for products whose shorter
+// operands have at most n words.
+func (r *Runtime) chargeMulScratch(n int) {
+	r.chargeBigScratch(16 * n)
+}
+
+// chargeDivScratch charges math/big's scratch for divisions by numbers of
+// at most n words.
+func (r *Runtime) chargeDivScratch(n int) {
+	r.chargeBigScratch(28 * n)
+}
+
+// chargeBigScratch charges w words of math/big's scratch, for the part of
+// a BigInt operation about to need them, when the operation has not been
+// charged as much for it yet: the pool grows into a new slice, as long as
+// the part needs (its old one is left behind).
+func (r *Runtime) chargeBigScratch(w int) {
+	if w > bigScratchCharged && w > r.alloc.bigScratch {
+		r.chargeWords(w)
+		r.alloc.bigScratch = w
+	}
+}
+
+// startBigOp starts a BigInt operation, with no scratch charged for it.
+func (r *Runtime) startBigOp() {
+	r.alloc.bigScratch = 0
+}
+
+// negWords is -z for the words z, made in them: big.Int.Neg of another
+// big.Int copies its words.
+func negWords(z []big.Word) *big.Int {
+	x := new(big.Int).SetBits(z)
+	return x.Neg(x)
+}
+
 // natCmp compares x and y.
 func (r *Runtime) natCmp(x, y []big.Word) int {
 	if len(x) != len(y) {
@@ -101,6 +149,18 @@ func (r *Runtime) natAdd(x, y []big.Word) []big.Word {
 	}
 	z := make([]big.Word, len(x)+1)
 	r.natCopyAt(z, x, 0)
+	r.natAddAt(z, y, 0)
+	return natNorm(z)
+}
+
+// natAddTo sets z, at least one word longer than x and y, to x + y, and
+// returns it normalized.
+func (r *Runtime) natAddTo(z, x, y []big.Word) []big.Word {
+	if len(x) < len(y) {
+		x, y = y, x
+	}
+	r.natCopyAt(z, x, 0)
+	r.natClear(z[len(x):])
 	r.natAddAt(z, y, 0)
 	return natNorm(z)
 }
@@ -208,7 +268,7 @@ func (r *Runtime) powSub(k int, x []big.Word) *big.Int {
 		z := make([]big.Word, len(x))
 		r.natCopyAt(z, x, 0)
 		r.natSubAt(z, []big.Word{1}, k)
-		return new(big.Int).Neg(new(big.Int).SetBits(natNorm(z)))
+		return negWords(natNorm(z))
 	}
 	if len(x) == 0 {
 		z := make([]big.Word, k+1)

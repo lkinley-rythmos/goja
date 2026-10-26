@@ -17,7 +17,7 @@ func TestBigIntText(t *testing.T) {
 		x := testBigRand(n, uint64(n), 1<<(bits.UintSize-2))
 		for _, radix := range []int{10, 3, 7, 36, 16} {
 			for _, v := range []*big.Int{x, new(big.Int).Neg(x), new(big.Int).Exp(big.NewInt(int64(radix)), big.NewInt(int64(n*20)), nil)} {
-				if got := r.bigText(v, radix); got != v.Text(radix) {
+				if got := r.bigText(v, radix, bigTextLengthV8(v, radix)); got != v.Text(radix) {
 					t.Fatalf("%d words in radix %d: wrong", n, radix)
 				}
 			}
@@ -28,7 +28,7 @@ func TestBigIntText(t *testing.T) {
 		x := testBigRand(n, uint64(n), 1<<(bits.UintSize-2))
 		for _, radix := range []int{2, 4, 8, 16, 32} {
 			for _, v := range []*big.Int{x, new(big.Int).Neg(x), new(big.Int).Lsh(big.NewInt(1), uint(64*n-3))} {
-				if got := r.bigText(v, radix); got != v.Text(radix) {
+				if got := r.bigText(v, radix, bigTextLengthV8(v, radix)); got != v.Text(radix) {
 					t.Fatalf("%d words in radix %d: wrong", n, radix)
 				}
 			}
