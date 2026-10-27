@@ -186,6 +186,21 @@ func compileRegexp(patternStr, flags string) (*regexpPattern, error) {
 	return compileRegexpFor(nil, patternStr, flags)
 }
 
+// CompileRegExpUncached compiles pattern with flags as a regular expression
+// literal, and the RegExp constructor, compile it, and returns the error
+// they would give (nil when they compile it), but it neither reads nor
+// writes the process-wide cache of compiled patterns (see
+// SetRegexpCacheSize): it always does the whole compile, whatever the
+// cache holds, and leaves the cache as it was. The compiled pattern is
+// dropped. It is for measuring what compiling a pattern costs when the
+// cache does not hold it: a cached compile costs a copy of the cached
+// template, which says nothing of what a compile that misses the cache,
+// after the cache has dropped its patterns, will cost.
+func CompileRegExpUncached(pattern, flags string) error {
+	_, err := compileRegexpUncached(nil, pattern, flags)
+	return err
+}
+
 // compileRegexpFor is compileRegexp for a pattern a running script makes: r
 // (nil for a literal, compiled with the script) is charged the memory the
 // compiled pattern holds when it is not in the cache yet.
