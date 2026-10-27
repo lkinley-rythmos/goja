@@ -30,7 +30,7 @@ func (r *Runtime) chargeWords(n int) {
 // and 6 more uncharged, 275 bytes an operation, which a loop of 1,000 made
 // past any allowance.
 func (r *Runtime) chargeHeaders(n int) {
-	r.countAlloc(int64(n) * allocSize(allocSizeBigInt))
+	r.countAlloc(int64(n) * allocSizeBigIntHeader)
 }
 
 // chargeBuffers charges temporaries made in separate buffers of the given

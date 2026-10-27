@@ -35,6 +35,11 @@ const (
 	allocSizeSparseItem = int64(unsafe.Sizeof(sparseArrayItem{}))
 	// A BigInt's header, charged with its digits (see chargeBigInt).
 	allocSizeBigInt = int64(unsafe.Sizeof(big.Int{}))
+	// What Go makes a BigInt's header in, its size class (allocSize) on a
+	// 64-bit platform, more than on a 32-bit one (16), which
+	// TestAllocSizeTables holds it to. It is a constant, for the charges of
+	// every BigInt operation.
+	allocSizeBigIntHeader = 32
 )
 
 type allocCounter struct {

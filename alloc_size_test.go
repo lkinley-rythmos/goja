@@ -1,6 +1,7 @@
 package goja
 
 import (
+	"math/bits"
 	"runtime"
 	"runtime/debug"
 	"testing"
@@ -41,5 +42,32 @@ func TestAllocSizeClasses(t *testing.T) {
 		if made != want {
 			t.Errorf("%d bytes: made %d, allocSize %d", n, made, want)
 		}
+	}
+}
+
+// allocSize's tables give, for every size up to the pages, the smallest
+// class that holds it (16 below 16 bytes), and the constants the BigInt
+// charges fold are at least what allocSize gives (on a 32-bit platform a
+// header is made in 16 bytes, and two digits in 48).
+func TestAllocSizeTables(t *testing.T) {
+	for n := int64(1); n <= maxSmallAllocSize+3*allocPageSize; n++ {
+		want := (n + allocPageSize - 1) &^ (allocPageSize - 1)
+		if n <= maxSmallAllocSize {
+			for _, c := range allocSizeClasses {
+				if int64(c) >= max(n, 16) {
+					want = int64(c)
+					break
+				}
+			}
+		}
+		if got := allocSize(n); got != want {
+			t.Fatalf("allocSize(%d) = %d, want %d", n, got, want)
+		}
+	}
+	if got := allocSize(allocSizeBigInt); got > allocSizeBigIntHeader {
+		t.Errorf("a BigInt's header is made in %d bytes, allocSizeBigIntHeader is %d", got, allocSizeBigIntHeader)
+	}
+	if want := allocSize(2*(bigIntDigitBits/8)+5*(bits.UintSize/8)) + allocSizeBigIntHeader; smallBigIntCharge < want {
+		t.Errorf("smallBigIntCharge is %d, chargeBigIntDigits(2) would be %d", smallBigIntCharge, want)
 	}
 }

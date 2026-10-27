@@ -57,8 +57,18 @@ func (r *Runtime) chargeBigInt(n int) {
 // past them (nat.make), in their size class (a result of 509 words is
 // made in 4864 bytes, and was charged 4104).
 func (r *Runtime) chargeBigIntDigits(n int64) {
-	r.countAlloc(allocSize(n*(bigIntDigitBits/8)+5*(bits.UintSize/8)) + allocSizeBigInt)
+	if n <= 2 {
+		// One or two digits, most results, without a lookup.
+		r.countAlloc(smallBigIntCharge)
+		return
+	}
+	r.countAlloc(allocSize(n*(bigIntDigitBits/8)+5*(bits.UintSize/8)) + allocSizeBigIntHeader)
 }
+
+// smallBigIntCharge is chargeBigIntDigits(2): two digits and five spare
+// words in their class (64 bytes; 48 on a 32-bit platform), and the
+// header. TestAllocSizeTables holds it to that.
+const smallBigIntCharge = 64 + allocSizeBigIntHeader
 
 // chargeBigIntMagnitudeUp is chargeBigInt for a result whose magnitude is
 // one more than x's (x + 1n for x >= 0n, x - 1n for x <= 0n, ~x for
