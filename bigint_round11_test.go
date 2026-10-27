@@ -70,7 +70,10 @@ func TestBigIntBuffersChargedEach(t *testing.T) {
 		if c.reps >= 1000 {
 			// And with the collector off, which leaves math/big's pool full.
 			func() {
+				defer debug.FreeOSMemory()
 				defer debug.SetGCPercent(debug.SetGCPercent(-1))
+				// It makes 320 MB with nothing collected, which goes back
+				// to the system after (see skipHeavy).
 				chargedOverN(t, r, label+", the collector off", c.op, c.reps)
 			}()
 		}

@@ -14,6 +14,7 @@ import (
 // bytes and were charged 69,504.
 func TestBigIntScratchChargedEachOperation(t *testing.T) {
 	skipRaceAlloc(t)
+	defer debug.FreeOSMemory()
 	defer debug.SetGCPercent(debug.SetGCPercent(-1))
 	// A host finalizer that blocks until the test ends.
 	release := make(chan struct{})
@@ -68,6 +69,7 @@ func TestBigIntParsePowersCharged(t *testing.T) {
 		for _, gcOff := range []bool{false, true} {
 			func() {
 				if gcOff {
+					defer debug.FreeOSMemory()
 					defer debug.SetGCPercent(debug.SetGCPercent(-1))
 				}
 				r := New()
