@@ -824,7 +824,7 @@ func (r *Runtime) bigBitwise(x, y *big.Int, op byte) *big.Int {
 	case nx && ny:
 		// |x| - 1 and |y| - 1 are copies, charged: 1n & nx, nx | -1n made
 		// 128 MB for a result of one digit.
-		r.chargeWords(len(xa) + len(ya))
+		r.chargeBuffers(len(xa), len(ya))
 		x1, y1 := r.natDec(xa), r.natDec(ya)
 		switch op {
 		case '&':

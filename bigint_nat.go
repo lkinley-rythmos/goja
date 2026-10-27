@@ -24,6 +24,18 @@ func (r *Runtime) chargeWords(n int) {
 	r.countAlloc(allocSize(int64(n+4) * (bits.UintSize / 8)))
 }
 
+// chargeBuffers charges temporaries made in separate buffers of the given
+// numbers of words, each as chargeWords charges one: Go rounds each to its
+// size class or pages on its own, and math/big makes each with its spare
+// words. Their sum, rounded once, fell short: the copy x % y divides and
+// the quotient it drops, of 4097 and 4098 words, are made in 40,960 bytes
+// each, and were charged 73,728 for the two.
+func (r *Runtime) chargeBuffers(words ...int) {
+	for _, n := range words {
+		r.chargeWords(n)
+	}
+}
+
 // math/big makes the scratch of its own products and divisions from a pool
 // (getStack), which it grows as an operation needs, and which a garbage
 // collection empties (a loop of x.toString() for x of 2^20 bits grew it

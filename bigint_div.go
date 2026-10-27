@@ -62,11 +62,10 @@ func (r *Runtime) divAbsQ(x, y *big.Int, wantQ bool) (q, m *big.Int) {
 	if divIsLeaf(qw, n) {
 		// QuoRem makes the remainder in a copy of a, and the quotient,
 		// which the caller charges when it wants it, and its scratch.
-		w := len(a.Bits()) + 2
+		r.chargeWords(len(a.Bits()) + 2)
 		if !wantQ {
-			w += qw + 1
+			r.chargeWords(qw + 1)
 		}
-		r.chargeWords(w)
 		r.chargeDivScratch(n)
 		return new(big.Int).QuoRem(a, b, new(big.Int))
 	}
@@ -110,8 +109,9 @@ func (r *Runtime) divChunked(a, b *big.Int, k int, wantQ bool) (q, m *big.Int) {
 	shift := uint(k * bits.UintSize)
 	for i := blocks - 1; i >= 0; i-- {
 		r.vm.checkInterrupt()
-		// t, its quotient and remainder, and QuoRem's copy of t.
-		r.chargeWords(3*(k+len(b.Bits())) + 3)
+		// t, its quotient, and QuoRem's copy of t that holds the
+		// remainder.
+		r.chargeBuffers(k+len(b.Bits())+1, k+len(b.Bits())+1, k+len(b.Bits())+1)
 		t := new(big.Int).Lsh(m, shift)
 		t.Add(t, new(big.Int).SetBits(natNorm(aw[i*k:min((i+1)*k, len(aw))])))
 		qi := new(big.Int)
@@ -144,8 +144,9 @@ func (r *Runtime) divShortQuotient(a, b *big.Int, qw int, wantQ bool) (q, m *big
 	}
 	// Shifted by whole words: the leading words themselves.
 	q, _ = r.divAbs(new(big.Int).SetBits(aw[sh:]), new(big.Int).SetBits(bw[sh:]))
+	// The product, and the remainder.
 	n := len(q.Bits()) + len(bw)
-	r.chargeWords(n + max(n, len(aw)))
+	r.chargeBuffers(n, max(n, len(aw)))
 	m = r.bigSubAbs(aw, r.mulAbs(q.Bits(), bw).Bits())
 	return q, r.divCorrect(q, m, b)
 }
@@ -186,7 +187,7 @@ func (r *Runtime) divLongQuotient(a, b *big.Int, wantQ bool) (q, m *big.Int) {
 	s := uint(bits.LeadingZeros(uint(b.Bits()[len(b.Bits())-1])))
 	if s != 0 {
 		// The shifted operands, and the remainder shifted back.
-		r.chargeWords(len(a.Bits()) + 2*len(b.Bits()) + 2)
+		r.chargeBuffers(len(a.Bits())+1, len(b.Bits())+1, len(b.Bits()))
 		a = new(big.Int).SetBits(r.natShl(a.Bits(), s))
 		b = new(big.Int).SetBits(r.natShl(b.Bits(), s))
 	}
@@ -206,7 +207,7 @@ func (r *Runtime) divLongQuotient(a, b *big.Int, wantQ bool) (q, m *big.Int) {
 		r.vm.checkInterrupt()
 		// t = m * B^n + the block; then t * inv, qi * b, and t - qi * b.
 		tn := n + len(mw)
-		r.chargeWords(tn + (tn + len(inv.Bits())) + 2*n + 1 + tn)
+		r.chargeBuffers(tn, tn+len(inv.Bits()), 2*n+1, tn)
 		t := make([]big.Word, tn)
 		r.natCopyAt(t, aw[i*n:min((i+1)*n, len(aw))], 0)
 		r.natCopyAt(t, mw, n)
@@ -244,8 +245,9 @@ func (r *Runtime) divLongQuotient(a, b *big.Int, wantQ bool) (q, m *big.Int) {
 func (r *Runtime) recipAbs(b *big.Int) *big.Int {
 	n := len(b.Bits())
 	if n <= recipLeafWords {
-		// B^(2n), the copy Quo divides and the quotient, and its scratch.
-		r.chargeWords((2*n + 5) + (2*n + 6) + (n + 6))
+		// B^(2n), the copy Quo divides and the quotient (each with the 4
+		// spare words chargeWords adds), and its scratch.
+		r.chargeBuffers(2*n+1, 2*n+2, n+2)
 		r.chargeDivScratch(n)
 		pow := new(big.Int).Lsh(big.NewInt(1), uint(2*n*bits.UintSize))
 		return pow.Quo(pow, b)
@@ -257,8 +259,9 @@ func (r *Runtime) recipAbs(b *big.Int) *big.Int {
 	h := (n+1)/2 + 2
 	k := n - h
 	x := r.recipAbs(new(big.Int).SetBits(b.Bits()[k:]))
-	// x << k words, b * x, B^(2n) - b * x, x * e, x +- d, B^(2n) - b * x.
-	r.chargeWords((len(x.Bits()) + k + 1) + 2*(2*n+2) + (3*n + 3) + (n + 2) + 2*(2*n+2))
+	// x << k words; b * x and B^(2n) - b * x; x * e; x +- d; b * x and
+	// B^(2n) - b * x again.
+	r.chargeBuffers(len(x.Bits())+k+1, 2*n+2, 2*n+2, 3*n+3, n+2, 2*n+2, 2*n+2)
 	xs := make([]big.Word, len(x.Bits())+k)
 	r.natCopyAt(xs, x.Bits(), k)
 	x.SetBits(xs)

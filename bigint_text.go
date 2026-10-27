@@ -44,8 +44,10 @@ func (r *Runtime) bigText(x *big.Int, radix int, n int64) string {
 	}
 	// pows[i] is radix^(digits << i), digits as many as fit in the leaf.
 	digits := bigTextLeafWords * bits.UintSize * 1000 / bigLog2Milli(radix) / 2
-	// radix^digits and the powers big.Int.Exp makes on the way.
-	r.chargeWords(8 * (bigTextLeafWords/2 + 1))
+	// radix^digits and the powers big.Int.Exp makes on the way, eight
+	// buffers of up to half a leaf.
+	r.chargeBuffers(bigTextLeafWords/2+1, bigTextLeafWords/2+1, bigTextLeafWords/2+1, bigTextLeafWords/2+1,
+		bigTextLeafWords/2+1, bigTextLeafWords/2+1, bigTextLeafWords/2+1, bigTextLeafWords/2+1)
 	pows := []*big.Int{new(big.Int).Exp(big.NewInt(int64(radix)), big.NewInt(int64(digits)), nil)}
 	for 2*len(pows[len(pows)-1].Bits()) <= len(x.Bits()) {
 		r.vm.checkInterrupt()
