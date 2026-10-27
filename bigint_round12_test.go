@@ -3,6 +3,7 @@ package goja
 import (
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"testing"
 )
 
@@ -53,6 +54,32 @@ func TestBigIntScratchChargedEachOperation(t *testing.T) {
 		}
 		if counted := r.AllocatedBytes(); made > counted+64<<10 {
 			t.Errorf("%s, 12 times after a collection: made %d bytes, charged %d", c.op, made, counted)
+		}
+	}
+}
+
+// A decimal string longer than a leaf is parsed with 10^4096 made by
+// charged products: big.Int.Exp made it with powers on the way that were
+// not charged (fifty parses of 4097 digits made 383 KB, and were charged
+// 279 KB). 1,000 parses at 4097 and 8192 digits, the collector on and off.
+func TestBigIntParsePowersCharged(t *testing.T) {
+	skipRaceAlloc(t)
+	for _, digits := range []int{4097, 8192} {
+		for _, gcOff := range []bool{false, true} {
+			func() {
+				if gcOff {
+					defer debug.SetGCPercent(debug.SetGCPercent(-1))
+				}
+				r := New()
+				if _, err := r.RunString(`var s = "7".repeat(` + strconv.Itoa(digits) + `); BigInt("1")`); err != nil {
+					t.Fatal(err)
+				}
+				label := strconv.Itoa(digits) + " digits"
+				if gcOff {
+					label += ", the collector off"
+				}
+				chargedOverN(t, r, label, "BigInt(s)", 1000)
+			}()
 		}
 	}
 }

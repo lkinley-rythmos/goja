@@ -45,7 +45,15 @@ func ParseWith(s string, mul func(x, y *big.Int) *big.Int, check func()) (*big.I
 		return leaf(s), true
 	}
 	// pows[i] is 10^(leafDigits << i), up to one at least half as long as s.
-	pows := []*big.Int{new(big.Int).Exp(big.NewInt(10), big.NewInt(leafDigits), nil)}
+	// The first is 10^16 squared eight times, by mul, which a caller
+	// charges: big.Int.Exp made it with powers on the way that a caller
+	// could not charge (fifty parses of 4097 digits made 383 KB, and were
+	// charged 279 KB).
+	p := big.NewInt(1e16)
+	for d := 16; d < leafDigits; d *= 2 {
+		p = mul(p, p)
+	}
+	pows := []*big.Int{p}
 	for partShorter(len(pows), len(s)) {
 		check()
 		p := pows[len(pows)-1]

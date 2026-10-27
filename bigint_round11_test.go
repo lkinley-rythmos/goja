@@ -1,6 +1,7 @@
 package goja
 
 import (
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"testing"
@@ -64,6 +65,14 @@ func TestBigIntBuffersChargedEach(t *testing.T) {
 		if _, err := r.RunString(c.setup); err != nil {
 			t.Fatal(err)
 		}
-		chargedOverN(t, r, strings.SplitN(c.setup, ",", 2)[0]+": "+c.op, c.op, c.reps)
+		label := strings.SplitN(c.setup, ",", 2)[0] + ": " + c.op
+		chargedOverN(t, r, label, c.op, c.reps)
+		if c.reps >= 1000 {
+			// And with the collector off, which leaves math/big's pool full.
+			func() {
+				defer debug.SetGCPercent(debug.SetGCPercent(-1))
+				chargedOverN(t, r, label+", the collector off", c.op, c.reps)
+			}()
+		}
 	}
 }
