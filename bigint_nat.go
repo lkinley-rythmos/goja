@@ -3,8 +3,6 @@ package goja
 import (
 	"math/big"
 	"math/bits"
-	"runtime"
-	"sync/atomic"
 )
 
 // Linear steps on the words of large BigInts (magnitudes, least significant
@@ -53,70 +51,44 @@ func (r *Runtime) chargeBuffers(words ...int) {
 // by 1.2 MB a call). With the pool empty, a product whose shorter operand
 // has n words made up to 14.4n words of it, a division by a number of n
 // words up to 25n (both measured over the shapes mulAbs and divAbs leave
-// to big.Int). A BigInt operation charges it before a part that may need
-// more than the operation has been charged for it so far (the parts share
-// the pool), when that is more than bigScratchCharged words; a product
-// whose shorter operand is below 256 words, or a division by fewer than
-// 147, which needs less, is charged it once a collection
-// (chargeBigScratch).
-const bigScratchCharged = 1 << 12
+// to big.Int). Every BigInt operation that may need it is charged it, as
+// if the pool were empty, sized from its operands, before the part that
+// needs the most: whether a collection emptied the pool is not known (a
+// count of collections kept by a finalizer stopped when a host's finalizer
+// blocked, and twelve remainders by 100 words made 148 KB uncharged). A
+// product by fewer than mulScratchWordsMin words, or a division by one
+// word, uses none.
+
+// mulScratchWordsMin is the length of the shorter operand below which
+// math/big multiplies (and squares) without scratch: basicSqrThreshold
+// (12), less than karatsubaThreshold (40).
+const mulScratchWordsMin = 12
 
 // chargeMulScratch charges math/big's scratch for products whose shorter
 // operands have at most n words.
 func (r *Runtime) chargeMulScratch(n int) {
-	r.chargeBigScratch(16 * n)
+	if n >= mulScratchWordsMin {
+		r.chargeBigScratch(16 * n)
+	}
 }
 
 // chargeDivScratch charges math/big's scratch for divisions by numbers of
 // at most n words.
 func (r *Runtime) chargeDivScratch(n int) {
-	r.chargeBigScratch(28 * n)
+	if n > 1 {
+		r.chargeBigScratch(28 * n)
+	}
 }
 
 // chargeBigScratch charges w words of math/big's scratch, for the part of
 // a BigInt operation about to need them, when the operation has not been
 // charged as much for it yet: the pool grows into a new slice, as long as
 // the part needs (its old one is left behind).
-//
-// The scratch of parts that need less is charged once for each garbage
-// collection, which empties the pool, as long as the longest the runtime
-// has needed since it: 1,000 x / y by a divisor of 100 words, block by
-// block, made 147 KB of it more than they were charged, a few collections'
-// worth.
 func (r *Runtime) chargeBigScratch(w int) {
-	if w > bigScratchCharged {
-		if w > r.alloc.bigScratch {
-			r.chargeWords(w)
-			r.alloc.bigScratch = w
-		}
-		return
-	}
-	if gc := bigPoolEmptied.Load(); gc != r.alloc.smallScratchGC {
-		r.alloc.smallScratchGC = gc
-		r.alloc.smallScratch = 0
-	}
-	if w > r.alloc.smallScratch {
+	if w > r.alloc.bigScratch {
 		r.chargeWords(w)
-		r.alloc.smallScratch = w
+		r.alloc.bigScratch = w
 	}
-}
-
-// bigPoolEmptied counts the garbage collections, each of which empties
-// math/big's pool of scratch (sync.Pool): a value made unreachable at each
-// one counts it when it is finalized, and makes the next.
-var bigPoolEmptied atomic.Uint64
-
-type gcSentinel struct{ _ *gcSentinel }
-
-func init() {
-	armGCSentinel()
-}
-
-func armGCSentinel() {
-	runtime.SetFinalizer(&gcSentinel{}, func(*gcSentinel) {
-		bigPoolEmptied.Add(1)
-		armGCSentinel()
-	})
 }
 
 // startBigOp starts a BigInt operation, with no scratch charged for it.

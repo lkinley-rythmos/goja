@@ -44,10 +44,6 @@ type allocCounter struct {
 	// words of math/big's scratch charged for the current BigInt operation
 	// (see chargeBigScratch)
 	bigScratch int
-	// the longest scratch below bigScratchCharged charged since the
-	// garbage collection smallScratchGC counts (see chargeBigScratch)
-	smallScratch   int
-	smallScratchGC uint64
 }
 
 // SetAllocationLimit resets the allocation counter to zero and sets the
