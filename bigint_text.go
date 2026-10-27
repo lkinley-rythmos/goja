@@ -48,6 +48,8 @@ func (r *Runtime) bigText(x *big.Int, radix int, n int64) string {
 	// buffers of up to half a leaf.
 	r.chargeBuffers(bigTextLeafWords/2+1, bigTextLeafWords/2+1, bigTextLeafWords/2+1, bigTextLeafWords/2+1,
 		bigTextLeafWords/2+1, bigTextLeafWords/2+1, bigTextLeafWords/2+1, bigTextLeafWords/2+1)
+	// radix^digits, the two numbers it is made of, and x's copy.
+	r.chargeHeaders(4)
 	pows := []*big.Int{new(big.Int).Exp(big.NewInt(int64(radix)), big.NewInt(int64(digits)), nil)}
 	for 2*len(pows[len(pows)-1].Bits()) <= len(x.Bits()) {
 		r.vm.checkInterrupt()
@@ -115,6 +117,7 @@ func (r *Runtime) bigTextPow2(sb *strings.Builder, x *big.Int, radix int) {
 		// number of 2049 words in hex made 24 KB a call more than it was
 		// charged).
 		r.countAlloc(2 * allocSize(int64(len(b)*bits.UintSize/perDigit+2)))
+		r.chargeHeaders(1)
 		s := new(big.Int).SetBits(b).Text(radix)
 		if i < top {
 			writeZeros(sb, digits-len(s))

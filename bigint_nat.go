@@ -3,6 +3,8 @@ package goja
 import (
 	"math/big"
 	"math/bits"
+	"runtime"
+	"sync/atomic"
 )
 
 // Linear steps on the words of large BigInts (magnitudes, least significant
@@ -22,6 +24,15 @@ import (
 // x & -y is made in 4864 bytes, and was charged 4072).
 func (r *Runtime) chargeWords(n int) {
 	r.countAlloc(allocSize(int64(n+4) * (bits.UintSize / 8)))
+}
+
+// chargeHeaders charges n big.Int values (their headers: the words are
+// charged on their own) that a step of a BigInt operation makes on the way,
+// each in its size class. A division made block by block made 4 a block
+// and 6 more uncharged, 275 bytes an operation, which a loop of 1,000 made
+// past any allowance.
+func (r *Runtime) chargeHeaders(n int) {
+	r.countAlloc(int64(n) * allocSize(allocSizeBigInt))
 }
 
 // chargeBuffers charges temporaries made in separate buffers of the given
@@ -44,9 +55,10 @@ func (r *Runtime) chargeBuffers(words ...int) {
 // words up to 25n (both measured over the shapes mulAbs and divAbs leave
 // to big.Int). A BigInt operation charges it before a part that may need
 // more than the operation has been charged for it so far (the parts share
-// the pool), when that is more than bigScratchCharged words: a product
+// the pool), when that is more than bigScratchCharged words; a product
 // whose shorter operand is below 256 words, or a division by fewer than
-// 147, is not charged it.
+// 147, which needs less, is charged it once a collection
+// (chargeBigScratch).
 const bigScratchCharged = 1 << 12
 
 // chargeMulScratch charges math/big's scratch for products whose shorter
@@ -65,11 +77,46 @@ func (r *Runtime) chargeDivScratch(n int) {
 // a BigInt operation about to need them, when the operation has not been
 // charged as much for it yet: the pool grows into a new slice, as long as
 // the part needs (its old one is left behind).
+//
+// The scratch of parts that need less is charged once for each garbage
+// collection, which empties the pool, as long as the longest the runtime
+// has needed since it: 1,000 x / y by a divisor of 100 words, block by
+// block, made 147 KB of it more than they were charged, a few collections'
+// worth.
 func (r *Runtime) chargeBigScratch(w int) {
-	if w > bigScratchCharged && w > r.alloc.bigScratch {
-		r.chargeWords(w)
-		r.alloc.bigScratch = w
+	if w > bigScratchCharged {
+		if w > r.alloc.bigScratch {
+			r.chargeWords(w)
+			r.alloc.bigScratch = w
+		}
+		return
 	}
+	if gc := bigPoolEmptied.Load(); gc != r.alloc.smallScratchGC {
+		r.alloc.smallScratchGC = gc
+		r.alloc.smallScratch = 0
+	}
+	if w > r.alloc.smallScratch {
+		r.chargeWords(w)
+		r.alloc.smallScratch = w
+	}
+}
+
+// bigPoolEmptied counts the garbage collections, each of which empties
+// math/big's pool of scratch (sync.Pool): a value made unreachable at each
+// one counts it when it is finalized, and makes the next.
+var bigPoolEmptied atomic.Uint64
+
+type gcSentinel struct{ _ *gcSentinel }
+
+func init() {
+	armGCSentinel()
+}
+
+func armGCSentinel() {
+	runtime.SetFinalizer(&gcSentinel{}, func(*gcSentinel) {
+		bigPoolEmptied.Add(1)
+		armGCSentinel()
+	})
 }
 
 // startBigOp starts a BigInt operation, with no scratch charged for it.
@@ -210,6 +257,7 @@ func (r *Runtime) natRevSubInPlace(x, y []big.Word) []big.Word {
 // bigSubAbs is |x| - |y| as a signed number, made.
 func (r *Runtime) bigSubAbs(x, y []big.Word) *big.Int {
 	if max(len(x), len(y)) <= bigBlockWords {
+		r.chargeHeaders(3)
 		return new(big.Int).Sub(new(big.Int).SetBits(x), new(big.Int).SetBits(y))
 	}
 	neg := false
@@ -218,6 +266,7 @@ func (r *Runtime) bigSubAbs(x, y []big.Word) *big.Int {
 	}
 	z := make([]big.Word, len(x))
 	r.natCopyAt(z, x, 0)
+	r.chargeHeaders(1)
 	res := new(big.Int).SetBits(r.natSubInPlace(z, y))
 	if neg {
 		res.Neg(res)
@@ -279,6 +328,7 @@ func (r *Runtime) natShr(x []big.Word, s uint) []big.Word {
 // the number of k words all of whose bits are set, less x, plus one, or,
 // when x >= B^k, -(x - B^k).
 func (r *Runtime) powSub(k int, x []big.Word) *big.Int {
+	r.chargeHeaders(1)
 	if len(x) > k {
 		z := make([]big.Word, len(x))
 		r.natCopyAt(z, x, 0)

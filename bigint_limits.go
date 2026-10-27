@@ -613,9 +613,8 @@ func (r *Runtime) mulAbs(x, y []big.Word) *big.Int {
 		return new(big.Int)
 	}
 	if mulIsLeaf(len(x), len(y)) && len(x) <= bigBlockWords {
-		if 16*len(y) > bigScratchCharged {
-			r.chargeMulScratch(len(y))
-		}
+		r.chargeMulScratch(len(y))
+		r.chargeHeaders(3)
 		a := new(big.Int).SetBits(x)
 		if len(x) == len(y) && &x[0] == &y[0] {
 			return new(big.Int).Mul(a, a)
@@ -626,6 +625,7 @@ func (r *Runtime) mulAbs(x, y []big.Word) *big.Int {
 	// A word of room, for a sum made in place (z.Add(z, ...)).
 	z := make([]big.Word, len(x)+len(y), len(x)+len(y)+1)
 	r.mulTo(z, x, y, nil)
+	r.chargeHeaders(1)
 	return new(big.Int).SetBits(natNorm(z))
 }
 
@@ -646,6 +646,7 @@ func (r *Runtime) mulTo(z, x, y, t []big.Word) {
 		// big.Int.Mul makes the product in z, which has exactly the room
 		// it needs and does not overlap x or y (their capacities end
 		// elsewhere: see natSlice), writing every word of it.
+		r.chargeHeaders(3)
 		p := new(big.Int).SetBits(z[:0:len(z)])
 		a := new(big.Int).SetBits(x)
 		if square {

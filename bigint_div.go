@@ -52,9 +52,11 @@ func (r *Runtime) remAbs(x, y *big.Int) *big.Int {
 // divAbsQ is divAbs, its quotient left nil when wantQ is not set and the
 // division is made a block at a time.
 func (r *Runtime) divAbsQ(x, y *big.Int, wantQ bool) (q, m *big.Int) {
+	r.chargeHeaders(2)
 	a := new(big.Int).SetBits(x.Bits())
 	b := new(big.Int).SetBits(y.Bits())
 	if a.Cmp(b) < 0 {
+		r.chargeHeaders(1)
 		return new(big.Int), a
 	}
 	n := len(b.Bits())
@@ -67,6 +69,7 @@ func (r *Runtime) divAbsQ(x, y *big.Int, wantQ bool) (q, m *big.Int) {
 			r.chargeWords(qw + 1)
 		}
 		r.chargeDivScratch(n)
+		r.chargeHeaders(2)
 		return new(big.Int).QuoRem(a, b, new(big.Int))
 	}
 	r.vm.checkInterrupt()
@@ -105,6 +108,8 @@ func (r *Runtime) divChunked(a, b *big.Int, k int, wantQ bool) (q, m *big.Int) {
 		qw = make([]big.Word, len(aw)-len(b.Bits())+1)
 	}
 	r.chargeDivScratch(len(b.Bits()))
+	// m, and the quotient.
+	r.chargeHeaders(2)
 	m = new(big.Int)
 	shift := uint(k * bits.UintSize)
 	for i := blocks - 1; i >= 0; i-- {
@@ -112,6 +117,8 @@ func (r *Runtime) divChunked(a, b *big.Int, k int, wantQ bool) (q, m *big.Int) {
 		// t, its quotient, and QuoRem's copy of t that holds the
 		// remainder.
 		r.chargeBuffers(k+len(b.Bits())+1, k+len(b.Bits())+1, k+len(b.Bits())+1)
+		// t, the block of a, qi, and the remainder QuoRem is given.
+		r.chargeHeaders(4)
 		t := new(big.Int).Lsh(m, shift)
 		t.Add(t, new(big.Int).SetBits(natNorm(aw[i*k:min((i+1)*k, len(aw))])))
 		qi := new(big.Int)
@@ -143,6 +150,7 @@ func (r *Runtime) divShortQuotient(a, b *big.Int, qw int, wantQ bool) (q, m *big
 		r.chargeWords(len(aw) - len(bw) + 2)
 	}
 	// Shifted by whole words: the leading words themselves.
+	r.chargeHeaders(2)
 	q, _ = r.divAbs(new(big.Int).SetBits(aw[sh:]), new(big.Int).SetBits(bw[sh:]))
 	// The product, and the remainder.
 	n := len(q.Bits()) + len(bw)
@@ -155,9 +163,12 @@ func (r *Runtime) divShortQuotient(a, b *big.Int, qw int, wantQ bool) (q, m *big
 // whose words, made by the division, it may change in place. Each step
 // that makes a new number charges it.
 func (r *Runtime) divCorrect(q, m, b *big.Int) *big.Int {
+	r.chargeHeaders(1)
 	one := big.NewInt(1)
 	bw := b.Bits()
 	for m.Sign() < 0 {
+		// Each step makes m anew.
+		r.chargeHeaders(1)
 		q.Sub(q, one)
 		if mw := m.Bits(); r.natCmp(mw, bw) <= 0 {
 			// m + b = b - |m|
@@ -170,6 +181,7 @@ func (r *Runtime) divCorrect(q, m, b *big.Int) *big.Int {
 		}
 	}
 	for r.natCmp(m.Bits(), bw) >= 0 {
+		r.chargeHeaders(1)
 		q.Add(q, one)
 		m = new(big.Int).SetBits(r.natSubInPlace(m.Bits(), bw))
 	}
@@ -188,6 +200,7 @@ func (r *Runtime) divLongQuotient(a, b *big.Int, wantQ bool) (q, m *big.Int) {
 	if s != 0 {
 		// The shifted operands, and the remainder shifted back.
 		r.chargeBuffers(len(a.Bits())+1, len(b.Bits())+1, len(b.Bits()))
+		r.chargeHeaders(2)
 		a = new(big.Int).SetBits(r.natShl(a.Bits(), s))
 		b = new(big.Int).SetBits(r.natShl(b.Bits(), s))
 	}
@@ -226,6 +239,8 @@ func (r *Runtime) divLongQuotient(a, b *big.Int, wantQ bool) (q, m *big.Int) {
 			r.natCopyAt(qw, natNorm(qi.Bits()), i*n)
 		}
 	}
+	// q and m.
+	r.chargeHeaders(2)
 	if wantQ {
 		q = new(big.Int).SetBits(natNorm(qw))
 	}
@@ -249,6 +264,8 @@ func (r *Runtime) recipAbs(b *big.Int) *big.Int {
 		// spare words chargeWords adds), and its scratch.
 		r.chargeBuffers(2*n+1, 2*n+2, n+2)
 		r.chargeDivScratch(n)
+		// 1 and B^(2n).
+		r.chargeHeaders(2)
 		pow := new(big.Int).Lsh(big.NewInt(1), uint(2*n*bits.UintSize))
 		return pow.Quo(pow, b)
 	}
@@ -258,6 +275,8 @@ func (r *Runtime) recipAbs(b *big.Int) *big.Int {
 	// 2 - 2h) < 1/B, and a unit or two of rounding.
 	h := (n+1)/2 + 2
 	k := n - h
+	// The leading words, and x +- d.
+	r.chargeHeaders(2)
 	x := r.recipAbs(new(big.Int).SetBits(b.Bits()[k:]))
 	// x << k words; b * x and B^(2n) - b * x; x * e; x +- d; b * x and
 	// B^(2n) - b * x again.
