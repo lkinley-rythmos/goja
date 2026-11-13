@@ -502,3 +502,53 @@ func TestOwnAPIs_ErrorStack(t *testing.T) {
 		}
 	}
 }
+
+func TestGetOwnAccessorProperty(t *testing.T) {
+	vm := New()
+	v, err := vm.RunString(`
+		var calls = 0;
+		var get = function () { calls++; return 1; };
+		var set = function (x) { calls++; };
+		var o = { d: 1 };
+		Object.defineProperty(o, "a", { get: get, set: set, enumerable: false, configurable: true });
+		Object.defineProperty(o, "g", { get: get, enumerable: true, configurable: false });
+		var p = new Proxy(o, { getOwnPropertyDescriptor: function () { calls++; return undefined; } });
+		[o, p, get, set];
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	arr := v.(*Object)
+	o, p := arr.Get("0").(*Object), arr.Get("1").(*Object)
+	get, set := arr.Get("2").(*Object), arr.Get("3").(*Object)
+
+	if g, s, e, c, ok := o.GetOwnAccessorProperty("a"); !ok || g != get || s != set || e || !c {
+		t.Errorf("a: %v %v %v %v %v", g, s, e, c, ok)
+	}
+	if g, s, e, c, ok := o.GetOwnAccessorProperty("g"); !ok || g != get || s != nil || !e || c {
+		t.Errorf("g: %v %v %v %v %v", g, s, e, c, ok)
+	}
+	for _, name := range []string{"d", "missing", "toString"} {
+		if _, _, _, _, ok := o.GetOwnAccessorProperty(name); ok {
+			t.Errorf("%s: ok for a data, missing or inherited property", name)
+		}
+	}
+	if _, _, _, _, ok := p.GetOwnAccessorProperty("a"); ok {
+		t.Error("proxy: ok")
+	}
+	if n := vm.Get("calls").ToInteger(); n != 0 {
+		t.Errorf("ran %d getter, setter or trap calls", n)
+	}
+	if n := testing.AllocsPerRun(100, func() { o.GetOwnAccessorProperty("a") }); n != 0 {
+		t.Errorf("allocates %v per lookup", n)
+	}
+
+	// Replacing the accessor with another, after deleting it, shows as a
+	// different getter.
+	if _, err := vm.RunString(`delete o.a; Object.defineProperty(o, "a", { get: function () { return 2; }, configurable: true });`); err != nil {
+		t.Fatal(err)
+	}
+	if g, _, _, _, ok := o.GetOwnAccessorProperty("a"); !ok || g == get {
+		t.Errorf("replaced: same getter %v %v", g == get, ok)
+	}
+}

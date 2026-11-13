@@ -89,6 +89,40 @@ func (o *Object) GetOwnDataProperty(name string) (v Value, writable, enumerable,
 	return ownDataProperty(prop)
 }
 
+// GetOwnAccessorProperty returns the object's own accessor property name,
+// as Object.getOwnPropertyDescriptor describes it: its getter and setter
+// (nil where undefined) and its enumerable and configurable attributes. ok
+// is false when the object has no own property name, when the property is a
+// data property, and for the objects GetOwnDataProperty cannot read. It
+// never runs JavaScript: it calls no getter, setter or Proxy trap. A host
+// uses it to check that an accessor it installed is still the one in
+// place, by comparing the getter's identity.
+//
+// For an ordinary object and an ASCII name the lookup allocates nothing.
+// This method will panic with an *Exception if a JavaScript exception is thrown in the process. Use Runtime.Try to catch these.
+func (o *Object) GetOwnAccessorProperty(name string) (getter, setter *Object, enumerable, configurable, ok bool) {
+	var prop Value
+	switch impl := o.self.(type) {
+	case *baseObject:
+		prop = impl.values[unistring.NewFromString(name)]
+	case *errorObject:
+		u := unistring.NewFromString(name)
+		if u == propNameStack && !impl.stackPropAdded {
+			return nil, nil, false, false, false
+		}
+		prop = impl.getOwnPropStr(u)
+	default:
+		if !ownPropsReadable(o.self) {
+			return nil, nil, false, false, false
+		}
+		prop = o.self.getOwnPropStr(unistring.NewFromString(name))
+	}
+	if p, isProp := prop.(*valueProperty); isProp && p.accessor {
+		return p.getterFunc, p.setterFunc, p.enumerable, p.configurable, true
+	}
+	return nil, nil, false, false, false
+}
+
 // GetOwnDataPropertySymbol is GetOwnDataProperty for a symbol-keyed
 // property: it returns the object's own data property sym, as
 // Object.getOwnPropertyDescriptor describes it. ok is false when the
