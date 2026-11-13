@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/dop251/goja/unistring"
@@ -184,24 +183,32 @@ func TestNewHostObjectWithCapacityCharge(t *testing.T) {
 	}
 }
 
-// TestNewHostObjectWithCapacityHuge: a capacity too large to reserve
-// fails as it does for NewObjectWithCapacity.
+// TestNewHostObjectWithCapacityHuge: a hint beyond maxHostPresize, up to
+// math.MaxInt, reserves maxHostPresize slots, charges what NewObject charges,
+// and the object still grows past the reservation.
 func TestNewHostObjectWithCapacityHuge(t *testing.T) {
-	vm := New()
-	outcome := func(mk func(int) *Object, n int) (s string) {
-		defer func() {
-			if x := recover(); x != nil {
-				s = fmt.Sprint("panic: ", x)
+	for _, n := range []int{maxHostPresize + 1, 1 << 20, 1 << 50, math.MaxInt} {
+		vm := New()
+		before := vm.AllocatedBytes()
+		o := vm.NewHostObjectWithCapacity(n)
+		host := vm.AllocatedBytes() - before
+		before = vm.AllocatedBytes()
+		vm.NewObject()
+		plain := vm.AllocatedBytes() - before
+		if host != plain {
+			t.Errorf("n=%d: charged %d, NewObject charges %d", n, host, plain)
+		}
+		b := o.self.(*baseObject)
+		if c := cap(b.propNames); c != maxHostPresize {
+			t.Errorf("n=%d: reserved %d names, want %d", n, c, maxHostPresize)
+		}
+		for k := 0; k < maxHostPresize+10; k++ {
+			if err := o.Set(fmt.Sprint("k", k), k); err != nil {
+				t.Fatal(err)
 			}
-		}()
-		o := mk(n).self.(*baseObject)
-		return fmt.Sprint(o.values != nil, cap(o.propNames))
-	}
-	for _, n := range []int{math.MaxInt, 1 << 50} {
-		host, sized := outcome(vm.NewHostObjectWithCapacity, n), outcome(vm.NewObjectWithCapacity, n)
-		t.Logf("n=%d: %s", n, host)
-		if host != sized || !strings.HasPrefix(host, "panic: ") {
-			t.Errorf("n=%d: NewHostObjectWithCapacity %s, NewObjectWithCapacity %s", n, host, sized)
+		}
+		if got := len(o.Keys()); got != maxHostPresize+10 {
+			t.Errorf("n=%d: %d keys after growth, want %d", n, got, maxHostPresize+10)
 		}
 	}
 }

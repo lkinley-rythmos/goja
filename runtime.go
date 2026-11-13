@@ -593,14 +593,22 @@ func (r *Runtime) NewObjectWithCapacity(n int) *Object {
 // is not charged, as the growth of an object NewObject made is not. A host
 // that pre-sizes an object it is about to fill then changes how often the
 // storage grows, not the count, nor so which runs reach the limit.
-// n <= 0 behaves exactly like NewObject.
+// n <= 0 behaves exactly like NewObject. n is a hint, reserved up to
+// maxHostPresize properties: a host's count (a document's field count, say)
+// can exceed the distinct keys the object ends up with, and the reservation
+// is not charged, so it is bounded here. The object still grows past it as
+// any object does.
 func (r *Runtime) NewHostObjectWithCapacity(n int) *Object {
 	o := r.newBaseObject(r.global.ObjectPrototype, classObject)
 	if n > 0 {
-		o.presize(n)
+		o.presize(min(n, maxHostPresize))
 	}
 	return o.val
 }
+
+// maxHostPresize bounds NewHostObjectWithCapacity's reservation: about
+// 385 KiB of storage on 64-bit platforms.
+const maxHostPresize = 4096
 
 // CreateObject creates an object with given prototype. Equivalent of Object.create(proto).
 func (r *Runtime) CreateObject(proto *Object) *Object {

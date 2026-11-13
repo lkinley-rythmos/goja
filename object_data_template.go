@@ -10,8 +10,9 @@ import (
 // ObjectTemplate describes ordinary objects that start with a fixed list of
 // own string-keyed data properties (writable, enumerable, configurable, in
 // the order they were put), each of whose values is made the first time it
-// is needed. Making an object from a template is one allocation, whatever
-// the template's size; a property's value is made when something reads,
+// is needed. Making an object from a template with no extra capacity is one
+// allocation, whatever the template's size (an extra hint adds the
+// storage it reserves); a property's value is made when something reads,
 // writes, redefines or deletes it, or reads every value (JSON.stringify,
 // Object.entries, for-in, Export and the like). Listing the keys
 // (Object.keys, Reflect.ownKeys) or checking for one ("in",
@@ -24,8 +25,11 @@ import (
 // per property in the template's order, provided each property's factory
 // is a pure function of the runtime: it must return a value equal to what
 // an eager definition would have stored, and must not run JavaScript or
-// read or write anything a script can see. A factory runs at most once per
-// object, in the object's runtime, on whatever goroutine is running that
+// read or write anything a script can see. A factory that returns runs at
+// most once per object: its value is kept. One that panics, or is stopped
+// by an interrupt or the allocation limit, keeps nothing, and the next
+// access calls it again (an abandoned attempt's charges stay counted). It
+// runs in the object's runtime, on whatever goroutine is running that
 // runtime at the time; when several values are made at once, in no
 // particular order. A factory that returns nil makes undefined.
 //
