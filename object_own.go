@@ -132,7 +132,7 @@ func (o *Object) GetOwnDataPropertySymbol(sym *Symbol) (v Value, writable, enume
 // and records the keys read.
 func ownPropsReadable(impl objectImpl) bool {
 	switch impl.(type) {
-	case *baseObject, *guardedObject, *templatedObject, *templatedFuncObject, *templatedArrayObject,
+	case *baseObject, *guardedObject, *templatedObject, *dataTemplatedObject, *templatedFuncObject, *templatedArrayObject,
 		*arrayObject, *sparseArrayObject, *taggedTemplateArray, *argumentsObject, *stringObject,
 		*primitiveValueObject, *errorObject, *dateObject, *regexpObject, *descriptorObject,
 		*mapObject, *setObject, *weakMapObject, *weakSetObject, *Promise,
