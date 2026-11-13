@@ -567,10 +567,15 @@ func (r *Runtime) newObjectSized(n int) *Object {
 	o := r.newBaseObject(r.global.ObjectPrototype, classObject)
 	if n > 0 {
 		r.countAlloc(int64(n) * allocSizePropSlot)
-		o.values = make(map[unistring.String]Value, n)
-		o.propNames = make([]unistring.String, 0, n)
+		o.presize(n)
 	}
 	return o.val
+}
+
+// presize makes o's property storage for n > 0 string-keyed properties.
+func (o *baseObject) presize(n int) {
+	o.values = make(map[unistring.String]Value, n)
+	o.propNames = make([]unistring.String, 0, n)
 }
 
 // NewObjectWithCapacity creates an ordinary object (as NewObject) whose
@@ -579,6 +584,22 @@ func (r *Runtime) newObjectSized(n int) *Object {
 // n <= 0 behaves exactly like NewObject.
 func (r *Runtime) NewObjectWithCapacity(n int) *Object {
 	return r.newObjectSized(n)
+}
+
+// NewHostObjectWithCapacity creates an ordinary object (as NewObject) whose
+// property storage is pre-sized for n string-keyed properties, as
+// NewObjectWithCapacity's is, but which the allocation counter (see
+// SetAllocationLimit) charges only what it charges NewObject: the storage
+// is not charged, as the growth of an object NewObject made is not. A host
+// that pre-sizes an object it is about to fill then changes how often the
+// storage grows, not the count, nor so which runs reach the limit.
+// n <= 0 behaves exactly like NewObject.
+func (r *Runtime) NewHostObjectWithCapacity(n int) *Object {
+	o := r.newBaseObject(r.global.ObjectPrototype, classObject)
+	if n > 0 {
+		o.presize(n)
+	}
+	return o.val
 }
 
 // CreateObject creates an object with given prototype. Equivalent of Object.create(proto).
