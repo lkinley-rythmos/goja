@@ -552,3 +552,63 @@ func TestGetOwnAccessorProperty(t *testing.T) {
 		t.Errorf("replaced: same getter %v %v", g == get, ok)
 	}
 }
+
+type accessorDynamicView struct{ *Object }
+
+func (d accessorDynamicView) Set(k string, v Value) bool { return d.Object.Set(k, v) == nil }
+func (d accessorDynamicView) Delete(k string) bool       { return d.Object.Delete(k) == nil }
+func (d accessorDynamicView) Has(k string) bool {
+	for _, own := range d.Keys() {
+		if own == k {
+			return true
+		}
+	}
+	return false
+}
+
+// TestGetOwnAccessorPropertyRunsNoJavaScript: a dynamic object whose Get
+// forwards to JavaScript, and a template whose value is never made.
+func TestGetOwnAccessorPropertyRunsNoJavaScript(t *testing.T) {
+	r := New()
+	v, err := r.RunString(`var calls = 0; ({ get lineItems() { calls++; return 1; } })`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dyn := r.NewDynamicObject(accessorDynamicView{v.(*Object)})
+	if _, _, _, _, ok := dyn.GetOwnAccessorProperty("lineItems"); ok {
+		t.Error("dynamic object: ok")
+	}
+	if n := r.Get("calls").ToInteger(); n != 0 {
+		t.Errorf("dynamic object: ran the getter %d times", n)
+	}
+
+	made := 0
+	tmpl := NewObjectTemplate()
+	tmpl.Put("lineItems", func(r *Runtime) Value { made++; return r.NewObject() })
+	objs := make([]*Object, 101)
+	for i := range objs {
+		objs[i] = r.NewObjectFromTemplate(tmpl, 0)
+	}
+	i := 0
+	before := r.AllocatedBytes()
+	allocs := testing.AllocsPerRun(100, func() {
+		if _, _, _, _, ok := objs[i].GetOwnAccessorProperty("lineItems"); ok {
+			t.Error("template: ok for a data property")
+		}
+		i++
+	})
+	if allocs != 0 || made != 0 || r.AllocatedBytes() != before {
+		t.Errorf("template: %v allocs, %d values made, %d bytes charged", allocs, made, r.AllocatedBytes()-before)
+	}
+	if _, err := r.RunString(""); err != nil {
+		t.Fatal(err)
+	}
+	o := objs[0]
+	r.Set("o", o)
+	if _, err := r.RunString(`Object.defineProperty(o, "lineItems", { get: function () { return 2; }, configurable: true })`); err != nil {
+		t.Fatal(err)
+	}
+	if g, _, _, _, ok := o.GetOwnAccessorProperty("lineItems"); !ok || g == nil {
+		t.Error("template: accessor defined over a pending entry not found")
+	}
+}

@@ -93,7 +93,8 @@ func (o *Object) GetOwnDataProperty(name string) (v Value, writable, enumerable,
 // as Object.getOwnPropertyDescriptor describes it: its getter and setter
 // (nil where undefined) and its enumerable and configurable attributes. ok
 // is false when the object has no own property name, when the property is a
-// data property, and for the objects GetOwnDataProperty cannot read. It
+// data property, for Go-backed and dynamic objects (which have none), and
+// for the objects GetOwnDataProperty cannot read. It
 // never runs JavaScript: it calls no getter, setter or Proxy trap. A host
 // uses it to check that an accessor it installed is still the one in
 // place, by comparing the getter's identity.
@@ -105,6 +106,16 @@ func (o *Object) GetOwnAccessorProperty(name string) (getter, setter *Object, en
 	switch impl := o.self.(type) {
 	case *baseObject:
 		prop = impl.values[unistring.NewFromString(name)]
+	case *dataTemplatedObject:
+		// A template's pending entries are data properties: only what is
+		// already in values can be an accessor, so nothing is made here.
+		prop = impl.values[unistring.NewFromString(name)]
+	case *objectGoReflect, *objectGoMapReflect, *objectGoArrayReflect, *objectGoSliceReflect,
+		*objectGoMapSimple, *objectGoSlice, *dynamicObject, *dynamicArray:
+		// Go-backed and dynamic objects have no accessor properties, and
+		// describing one of theirs reads its value through Go code that
+		// may run JavaScript.
+		return nil, nil, false, false, false
 	case *errorObject:
 		u := unistring.NewFromString(name)
 		if u == propNameStack && !impl.stackPropAdded {
